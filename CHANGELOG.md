@@ -33,6 +33,28 @@ requires.
 
 ### Security
 
+- **Several confinement options were weaker than written.**
+  - `restrict-namespaces` still let a service make a new mount namespace
+    through `unshare(UNSHARE_EMPTY_MNTNS)`, `open_tree(OPEN_TREE_CLONE)`
+    or `fsmount()`; they are refused as in systemd.
+  - `read-write-paths` re-opened deeper read-only mounts made by
+    `protect-home = read-only` or `bind-read-only-paths`; the deeper path
+    now wins, as in systemd.
+  - `protect-hostname` left `/proc/sys/kernel/hostname` and `domainname`
+    writable; they are read-only now (it implies a mount namespace).
+  - `~@file-system` did not deny `file_getattr`/`file_setattr`, absent
+    from the syscall table; the generator now fails on any such gap.
+  - `protect-home = tmpfs` mounted writable tmpfs; they are read-only,
+    `/root` 0700, as in systemd.
+  - systemd units dropped `RestrictAddressFamilies=~...`,
+    `RestrictNamespaces=<list>` and `ProtectHostname=private` with a
+    warning; they are now translated (stricter where they cannot be
+    exact), and an empty `CapabilityBoundingSet=` refuses the unit.
+    *Compat:* such a unit no longer loads. `PrivateDevices=yes` is now a
+    visible warning (it was a silent note).
+  - Repeated `SystemCallFilter=` lines (`@system-service` then
+    `~@privileged`) are merged as systemd does instead of failing.
+
 - **The shutdown sentinel directory was trusted whoever owned it**, and
   a symlink there was followed: anyone able to write `--sentinel-dir`
   could halt or reboot the machine. The directory must now be root's and
@@ -835,6 +857,17 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **Slow `system-down` hooks or `ifdown` used up the shutdown budget**
+  before any service was told to stop, so every service was then
+  force-killed. The emergency timer is now armed after the pre-shutdown
+  hooks, which are capped at the emergency timeout themselves.
+- **The hardware watchdog was disarmed before the final shutdown steps**,
+  so a hang there was never caught. For a reboot it is now left armed
+  with a 10-minute timeout, as systemd's shutdown watchdog does.
+- **After a `remain` shutdown PID 1 could never shut down gracefully**:
+  the event loop was gone and later requests were held for ever. PID 1
+  now returns to an event loop, as dinit does.
 
 - **Path and mount activation stayed on the configuration a service was
   first loaded with.** A reload that changed `start-on-path-*` kept
