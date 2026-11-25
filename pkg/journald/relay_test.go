@@ -2,6 +2,7 @@ package journald
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -123,5 +124,32 @@ func TestReceiverRateLimitsUnprivilegedSenders(t *testing.T) {
 	}
 	if got := sink.len() - before; got != 1500 {
 		t.Errorf("root relay stored %d of 1500 messages: PID 1 must not be limited", got)
+	}
+}
+
+// An unprivileged sender over its limit used to cost a full JSON decode
+// per datagram before being dropped. It is now limited first.
+func TestReceiverLimitsBeforeParsing(t *testing.T) {
+	journal.InitIDs("testhost")
+	sink := &captureSink{}
+	r := &Receiver{sink: sink, limit: journal.NewUIDLimiter()}
+	uid := os.Getuid() + 1
+	if uid == 0 {
+		uid = 1
+	}
+	small := []byte(`{"ts":1,"msg":"x","prio":6}`)
+	for i := 0; i < journal.UIDRateLimit(uint32(uid)); i++ {
+		r.handle(small, credOOB(4300, uid))
+	}
+	big := []byte(`{"ts":1,"prio":6,"msg":"` + strings.Repeat("y", 200<<10) + `"}`)
+	oob := credOOB(4300, uid)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for i := 0; i < 20; i++ {
+		r.handle(big, oob)
+	}
+	runtime.ReadMemStats(&after)
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
+		t.Errorf("20 rate-limited 200 KiB datagrams allocated %d KiB; they should be dropped before parsing", grew>>10)
 	}
 }

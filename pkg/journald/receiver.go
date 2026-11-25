@@ -213,12 +213,26 @@ func (r *Receiver) readLoop(ctx context.Context) {
 // everyone's history to make room. Unprivileged senders get the limit
 // /dev/log applies; root, which PID 1 relays as, is never limited.
 func (r *Receiver) handle(data, oob []byte) {
+	// An untrusted sender is rate-limited before its datagram is parsed:
+	// parsing first made every datagram of a sender already over its
+	// limit cost a full JSON decode (1.4 ms for a 420 KB one), so a local
+	// user could keep a journald core busy with messages that were all
+	// dropped anyway. The limit is per uid, and an untrusted event's uid
+	// is the kernel's one stampFromSCM writes, so it is the same check.
+	limited := false
+	if uc := scmUcred(oob); uc != nil && !ucredTrusted(uc) {
+		if !r.limit.Allow(uc.Uid, r.reportSuppressed) {
+			r.dropped.Add(1)
+			return
+		}
+		limited = true
+	}
 	evt, err := journal.UnmarshalEvent(data)
 	if err != nil {
 		r.dropped.Add(1)
 		return
 	}
-	if !stampFromSCM(evt, oob) && !r.limit.Allow(uint32(evt.Uid), r.reportSuppressed) {
+	if !stampFromSCM(evt, oob) && !limited && !r.limit.Allow(uint32(evt.Uid), r.reportSuppressed) {
 		r.dropped.Add(1)
 		return
 	}
@@ -231,6 +245,29 @@ func (r *Receiver) handle(data, oob []byte) {
 		return
 	}
 	r.received.Add(1)
+}
+
+// scmUcred returns the SCM_CREDENTIALS in oob, or nil.
+func scmUcred(oob []byte) *unix.Ucred {
+	var ucred *unix.Ucred
+	if cmsgs, err := unix.ParseSocketControlMessage(oob); err == nil {
+		for _, cm := range cmsgs {
+			if cm.Header.Level != unix.SOL_SOCKET || cm.Header.Type != unix.SCM_CREDENTIALS {
+				continue
+			}
+			if len(cm.Data) < unix.SizeofUcred {
+				continue
+			}
+			ucred = castUcred(cm.Data)
+		}
+	}
+	return ucred
+}
+
+// ucredTrusted reports whether the sender is root or the daemon's own
+// user, whose events keep a relayed identity (see stampFromSCM).
+func ucredTrusted(uc *unix.Ucred) bool {
+	return uc.Uid == 0 || int(uc.Uid) == os.Getuid()
 }
 
 // stampFromSCM overwrites the trusted metadata fields on evt using the
@@ -258,19 +295,8 @@ func (r *Receiver) handle(data, oob []byte) {
 //
 // It reports whether the sender was trusted.
 func stampFromSCM(evt *journal.Event, oob []byte) bool {
-	var ucred *unix.Ucred
-	if cmsgs, err := unix.ParseSocketControlMessage(oob); err == nil {
-		for _, cm := range cmsgs {
-			if cm.Header.Level != unix.SOL_SOCKET || cm.Header.Type != unix.SCM_CREDENTIALS {
-				continue
-			}
-			if len(cm.Data) < unix.SizeofUcred {
-				continue
-			}
-			ucred = castUcred(cm.Data)
-		}
-	}
-	trusted := ucred != nil && (ucred.Uid == 0 || int(ucred.Uid) == os.Getuid())
+	ucred := scmUcred(oob)
+	trusted := ucred != nil && ucredTrusted(ucred)
 	relayed := evt.Transport == journal.TransportKernel || evt.Transport == journal.TransportSyslog
 	if relayed && trusted {
 		return true
