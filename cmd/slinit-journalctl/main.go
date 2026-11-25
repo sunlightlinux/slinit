@@ -1637,6 +1637,9 @@ func extractField(e *journal.Event, name string) string {
 func loadFileEvents(opts options) ([]*journal.Event, error) {
 	all, err := readJournalFile(opts.sourceFile)
 	filter := buildRequest(opts).ToFilter()
+	if cerr := filter.CompileGrep(); cerr != nil {
+		return nil, fmt.Errorf("--grep: %w", cerr)
+	}
 	var events []*journal.Event
 	for _, e := range all {
 		if filter.Match(e) {
@@ -1908,6 +1911,9 @@ func runFromFiles(files []string, opts options, out io.Writer) error {
 	}
 
 	filter := buildRequest(opts).ToFilter()
+	if err := filter.CompileGrep(); err != nil {
+		return fmt.Errorf("--grep: %w", err)
+	}
 	tails := map[string]*entryTail{}
 	var kept []seqEntry
 	err = each(func(seq int, e *journal.Event) {
@@ -3693,6 +3699,7 @@ func clientSideFilter(events []*journal.Event, req control.JournalQueryRequest) 
 		return events
 	}
 	filter := req.ToFilter()
+	_ = filter.CompileGrep() // validated by the daemon; on error Match compiles per event and matches nothing
 	kept := events[:0]
 	for _, e := range events {
 		if filter.Match(e) {

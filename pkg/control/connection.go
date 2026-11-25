@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -137,13 +138,19 @@ func (c *Connection) writePacket(pktType uint8, payload []byte) error {
 	}
 	err := WritePacket(c.conn, pktType, payload)
 	if err != nil {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			// Slow-reader client. Mark closed so the state machine's
-			// next event on this connection returns immediately; serve()
-			// will exit its ReadPacket loop on the next iteration and
-			// c.close() unregisters all listeners.
-			c.closed = true
-		}
+		// A slow-reader timeout, or any failed write: part of a packet
+		// may have gone out, so the stream can no longer be framed.
+		// Mark closed so the state machine's next event on this
+		// connection returns at once, and close the socket so serve()'s
+		// read fails and c.close() unregisters the listeners. Marking
+		// alone left the socket open: serve() only treats a read
+		// timeout as idleness, so a client that resumed reading (a
+		// `journalctl -f | less` scrolled back for a few seconds) got a
+		// truncated packet and then waited for ever without an EOF.
+		// Close does not block, so it is safe under writeMu and from a
+		// state-machine callback.
+		c.closed = true
+		_ = c.conn.Close()
 	}
 	return err
 }
@@ -1364,7 +1371,12 @@ func lastBytes(b []byte, n int) []byte {
 // readLogFileTail returns the last `max` bytes of a file (or whole file if smaller).
 // Aligns to the next newline after the seek point so partial first line is dropped.
 func readLogFileTail(path string, max int64) ([]byte, error) {
-	f, err := os.Open(path)
+	// Non-blocking, regular files only, and never more than max bytes.
+	// os.Open + io.ReadAll read a log path pointing at /dev/zero until
+	// PID 1 ran out of memory, and blocked the connection for ever on a
+	// FIFO. A symlink to a regular file is still followed, as the log
+	// writer follows one (logging.OpenAppend).
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1373,6 +1385,9 @@ func readLogFileTail(path string, max int64) ([]byte, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
 	}
 	size := info.Size()
 
@@ -1383,12 +1398,12 @@ func readLogFileTail(path string, max int64) ([]byte, error) {
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, max))
 	if err != nil {
 		return nil, err
 	}
 	if offset > 0 {
-		if nl := strings.IndexByte(string(data), '\n'); nl >= 0 && nl+1 < len(data) {
+		if nl := bytes.IndexByte(data, '\n'); nl >= 0 && nl+1 < len(data) {
 			data = data[nl+1:]
 		}
 	}

@@ -33,6 +33,18 @@ requires.
 
 ### Security
 
+- **`slinitctl catlog` on a file log could exhaust PID 1's memory or
+  hang.** The log tail was read with `os.Open` and `io.ReadAll`: a log
+  path pointing at `/dev/zero` was read until PID 1 ran out of memory,
+  and a FIFO there blocked the connection for ever. It now opens
+  non-blocking, reads regular files only, and never more than the tail
+  it returns.
+- **One journal query with a long `--grep` pattern held a PID 1 core for
+  close to a minute.** The pattern was compiled once per event examined,
+  4096 times for a full ring. It is now compiled once per request, and a
+  pattern that does not compile is reported instead of silently matching
+  nothing.
+
 - **A global `setenv` whose name held `=` crashed PID 1.** The global
   environment index is keyed by the text before the first `=`, so after
   an unset moved the entry, the next set of that name indexed past the
@@ -707,6 +719,12 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **A control client that stalled past the write deadline was left
+  hanging for ever.** The timed-out connection was only marked closed;
+  the socket stayed open, so a `slinit-journalctl -f | less` scrolled
+  back for a few seconds got a possibly torn packet and then no more
+  data and no EOF. Any failed write now closes the socket.
 
 - **`shared-logger-lossy` had no effect on a logger that depends on its
   producer**, which is how a shared logger is normally set up so that

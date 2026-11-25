@@ -198,3 +198,25 @@ func TestPruneOlderThan(t *testing.T) {
 		t.Errorf("post-prune snapshot: got %d events, first=%q", len(snap), snap[0].Msg)
 	}
 }
+
+// Match compiled the grep pattern for every event: a query over the
+// ring paid one compile per event. CompileGrep compiles it once and
+// reports a pattern that does not compile.
+func TestCompileGrepOnce(t *testing.T) {
+	q := QueryFilter{MinPriority: -1, GrepPattern: "(foo|bar)[a-z]{2,20}x", GrepInsensitive: true}
+	if err := q.CompileGrep(); err != nil {
+		t.Fatal(err)
+	}
+	ev := &Event{Msg: "FOOabcx"}
+	allocs := testing.AllocsPerRun(100, func() { q.Match(ev) })
+	if allocs > 0 {
+		t.Errorf("Match allocates %.0f times per event with a compiled pattern; want 0", allocs)
+	}
+	if !q.Match(ev) || q.Match(&Event{Msg: "nothing"}) {
+		t.Error("compiled pattern matches differently")
+	}
+	bad := QueryFilter{GrepPattern: "("}
+	if err := bad.CompileGrep(); err == nil {
+		t.Error("CompileGrep accepted an invalid pattern")
+	}
+}

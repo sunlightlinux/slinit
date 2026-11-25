@@ -3,10 +3,12 @@ package control
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1958,5 +1960,51 @@ func TestSetEnvRejectsUnusableAssignments(t *testing.T) {
 		if strings.HasPrefix(e, "A=") || strings.HasPrefix(e, "=") || strings.ContainsRune(e, 0) {
 			t.Errorf("unusable entry reached the global env: %q", e)
 		}
+	}
+}
+
+// readLogFileTail read a log path pointing at /dev/zero until PID 1 ran
+// out of memory, and blocked for ever on a FIFO. It now reads regular
+// files only, never past max.
+func TestReadLogFileTailRefusesNonRegular(t *testing.T) {
+	dir := t.TempDir()
+	zero := filepath.Join(dir, "zero")
+	if err := os.Symlink("/dev/zero", zero); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{zero, fifo} {
+		done := make(chan error, 1)
+		go func() {
+			data, err := readLogFileTail(p, 4096)
+			if err == nil && len(data) > 4096 {
+				err = fmt.Errorf("read %d bytes, max 4096", len(data))
+			} else if err == nil {
+				err = fmt.Errorf("no error for a non-regular file")
+			} else {
+				err = nil
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("%s: %v", p, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: readLogFileTail still blocked after 2s", p)
+		}
+	}
+
+	// A regular file is still read, tail only.
+	reg := filepath.Join(dir, "log")
+	if err := os.WriteFile(reg, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := readLogFileTail(reg, 8); err != nil || string(data) != "three\n" {
+		t.Errorf("regular file tail = %q, %v; want \"three\\n\"", data, err)
 	}
 }
