@@ -3233,23 +3233,9 @@ func runOneShot(conn net.Conn, opts options) error {
 	//   1. --after-cursor  → strictly after (Since = ts + 1)
 	//   2. --cursor        → at or after   (Since = ts)   [systemd -c semantics]
 	//   3. --cursor-file   → same as --after-cursor but read from FILE
-	cursorToken, cursorMode, err := resolveCursorInput(opts)
+	wantBoot, err := applyCursor(&req, opts)
 	if err != nil {
 		return err
-	}
-	var wantBoot string
-	if cursorToken != "" {
-		ts, boot, err := parseCursor(cursorToken)
-		if err != nil {
-			return err
-		}
-		wantBoot = boot
-		switch cursorMode {
-		case cursorAfter:
-			req.Since = ts + 1
-		default:
-			req.Since = ts
-		}
 	}
 
 	payload, err := json.Marshal(req)
@@ -3323,6 +3309,25 @@ func renderResult(out io.Writer, opts options, events []*journal.Event) error {
 	return nil
 }
 
+// applyCursor positions req at the cursor opts carry, if any, and
+// returns the cursor's boot ID.
+func applyCursor(req *control.JournalQueryRequest, opts options) (string, error) {
+	token, mode, err := resolveCursorInput(opts)
+	if err != nil || token == "" {
+		return "", err
+	}
+	ts, boot, err := parseCursor(token)
+	if err != nil {
+		return "", err
+	}
+	if mode == cursorAfter {
+		req.Since = ts + 1
+	} else {
+		req.Since = ts
+	}
+	return boot, nil
+}
+
 // cursorMode discriminates inclusive (--cursor) vs exclusive
 // (--after-cursor) positioning. --cursor-file is exclusive: the file
 // holds the cursor of the last entry already shown, so the next run
@@ -3379,8 +3384,20 @@ func writeCursorFile(path, token string) error {
 // on Ctrl-C via the closed stdin/socket path). -r is ignored under -f
 // because reversing an infinite stream would require buffering
 // forever.
+//
+// The daemon sends the matching buffered entries first, at most Limit
+// of them, then new ones. Limit is always the operator's -n here: the
+// daemon applies every filter before its limit, and the client cannot
+// trim the backlog itself, since nothing marks where it ends.
+// wireLimitFor's 0 for client-side filters made -f -n 3 -t sshd print
+// every buffered sshd entry. The cursor options position the backlog
+// as they do a one-shot query; they used to be ignored.
 func runFollow(conn net.Conn, opts options) error {
 	req := buildRequest(opts)
+	req.Limit = opts.limit
+	if _, err := applyCursor(&req, opts); err != nil {
+		return err
+	}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)

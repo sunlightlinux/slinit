@@ -1267,6 +1267,14 @@ requires.
   shown, but the next run started *at* it rather than after it
   (measured: a second run with nothing new printed one entry). It now
   starts after it, as journalctl(1) does.
+- **`slinit-journalctl -f` ignored `-n` with a filter, and ignored the
+  cursor options.** With `-t`, `-T`, `-g`, `--invocation` or
+  `--namespace`, the buffered entries printed before following were
+  not limited by `-n` (measured: `-f -n 3 -t sshd` printed 10), and
+  `-c`/`--after-cursor`/`--cursor-file` were not applied (measured:
+  `-f --after-cursor` with the newest entry's cursor printed all 20
+  buffered entries instead of none). Both now apply as they do without
+  `-f`.
 
 ## [4.0.2] — 2026-11-22
 

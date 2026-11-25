@@ -162,7 +162,11 @@ live queries.
 ## Follow mode
 
 **-f**, **--follow**
-:   Stream new events as they arrive (Ctrl-C to stop). **-r** is
+:   Print the matching events still in the ring buffer — all of
+    them, or the last *N* with **-n** *N* — then stream new events as
+    they arrive (Ctrl-C to stop). **-n** counts after the filters, and
+    **-c**, **--after-cursor** and **--cursor-file** position the
+    first part as they do a plain query (since 4.0.3). **-r** is
     ignored in this mode.
 
 **-r**, **--reverse**
