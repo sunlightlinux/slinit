@@ -246,6 +246,10 @@ func (ls *loggerSupervisor) Stop() {
 	ls.mu.Unlock()
 
 	if cmd != nil && cmd.Process != nil {
+		// The whole group (the logger runs with Setpgid): a wrapper
+		// script's child that inherited the pipe would otherwise keep
+		// it open, and a write blocked on it would never fail.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Process.Kill()
 	}
 	// Closing the read end also unblocks a drain() in progress.

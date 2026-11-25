@@ -982,6 +982,14 @@ func (lr *LogRotator) Close() {
 	// host name, holding lr.mu; Close runs under queueMu on a restart
 	// and must not wait for a resolver that does not answer.
 	lr.forwarder.abortLookup()
+	// The reader may also be blocked writing to the output-logger,
+	// holding lr.mu: a logger that stopped reading (a wrapper's child
+	// that survived it, or one that called setsid) keeps that write
+	// waiting for good. Cut it off so the reader can finish; the line
+	// is lost to the logger only — the logfile already has it.
+	if d, ok := lr.sink.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = d.SetWriteDeadline(time.Now())
+	}
 	if lr.pipeW != nil {
 		lr.pipeW.Close()
 		lr.pipeW = nil
@@ -996,6 +1004,11 @@ func (lr *LogRotator) Close() {
 	lr.mu.Unlock()
 	if doneCh != nil && running {
 		<-doneCh
+	}
+	// The reader is done with the sink: close our write end, so the
+	// output-logger sees EOF rather than only being killed.
+	if c, ok := lr.sink.(io.Closer); ok {
+		_ = c.Close()
 	}
 	// Reader is drained; the UDP socket is exclusively ours to close.
 	if lr.forwarder != nil {
