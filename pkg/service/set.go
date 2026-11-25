@@ -46,12 +46,15 @@ type ServiceSet struct {
 	records        map[string]Service
 	aliases        map[string]Service // provides → service mapping
 	activeServices int
-	restartEnabled bool
+	// restartEnabled and shutdownType (a ShutdownType) are set under
+	// queueMu by StopAllServices but read without it, by control
+	// connections through IsShuttingDown.
+	restartEnabled atomic.Bool
 	// stopsLast holds the services StopAllServices pinned because they
 	// are marked stops-last; they are released once everything else has
 	// stopped (releaseStopsLastLocked).
 	stopsLast    []Service
-	shutdownType ShutdownType
+	shutdownType atomic.Uint32
 
 	// queueMu protects the processing queues, console queue, and
 	// activeServices counter, plus service-state fields mutated during
@@ -254,11 +257,10 @@ type ServiceSet struct {
 
 // NewServiceSet creates a new ServiceSet.
 func NewServiceSet(logger ServiceLogger) *ServiceSet {
-	return &ServiceSet{
+	ss := &ServiceSet{
 		records:        make(map[string]Service),
 		aliases:        make(map[string]Service),
 		sharedLogMuxes: make(map[string]*SharedLogMux),
-		restartEnabled: true,
 		logger:         logger,
 		readyFD:        -1,
 		// Created here, not on first InactiveCh call: the boot cascade
@@ -266,6 +268,8 @@ func NewServiceSet(logger ServiceLogger) *ServiceSet {
 		// that gap must leave its notification buffered for Run.
 		inactiveCh: make(chan struct{}, 1),
 	}
+	ss.restartEnabled.Store(true)
+	return ss
 }
 
 // SetLoader sets the service loader for this set.
@@ -581,8 +585,9 @@ func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
 
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
-	ss.restartEnabled = false
-	ss.shutdownType = shutdownType
+	// The type first: whoever sees the shutdown sees its type.
+	ss.shutdownType.Store(uint32(shutdownType))
+	ss.restartEnabled.Store(false)
 	ss.stopsLast = nil
 	for _, svc := range snapshot {
 		rec := svc.Record()
@@ -786,7 +791,7 @@ func (ss *ServiceSet) InactiveCh() <-chan struct{} {
 
 // IsShuttingDown returns true if automatic restart is disabled (shutdown in progress).
 func (ss *ServiceSet) IsShuttingDown() bool {
-	return !ss.restartEnabled
+	return !ss.restartEnabled.Load()
 }
 
 // SetCrashPause flips the crash-shell freeze flag. When true, every
@@ -895,7 +900,7 @@ func (ss *ServiceSet) KillActiveServices() {
 
 // GetShutdownType returns the current shutdown type.
 func (ss *ServiceSet) GetShutdownType() ShutdownType {
-	return ss.shutdownType
+	return ShutdownType(ss.shutdownType.Load())
 }
 
 // --- Boot timing ---

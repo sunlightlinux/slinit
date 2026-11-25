@@ -72,3 +72,21 @@ func TestKillActiveServices_NoPanic(t *testing.T) {
 	set.StartService(svc)
 	set.KillActiveServices() // PID -1, kill should be skipped
 }
+
+// IsShuttingDown is called without queueMu by control connections while
+// StopAllServices sets the shutdown state under it: the -race build
+// caught the bare fields.
+func TestShutdownStateReadsDoNotRace(t *testing.T) {
+	set, _ := newTestSet()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for !set.IsShuttingDown() {
+		}
+		if got := set.GetShutdownType(); got != ShutdownPoweroff {
+			t.Errorf("shutdown type = %v, want %v", got, ShutdownPoweroff)
+		}
+	}()
+	set.StopAllServices(ShutdownPoweroff)
+	<-done
+}
