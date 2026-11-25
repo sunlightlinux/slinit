@@ -1191,14 +1191,14 @@ func main() {
 			}
 			serviceSet.SetReadyFD(readyFD)
 			readySock := sock // capture resolved socket path
-			// Chained after the system-up wrapper above (watchdog,
+			// Chained with the system-up wrapper above (watchdog,
 			// console mute, hooks, ifup, rc.local), which replacing
-			// it would switch off.
+			// it would switch off. The notification goes first: dinit
+			// reports readiness when boot is STARTED, and the hooks,
+			// ifup and rc.local can take minutes; the control socket
+			// already listens by now.
 			prev := serviceSet.OnBootReady
 			serviceSet.OnBootReady = func() {
-				if prev != nil {
-					prev()
-				}
 				f := os.NewFile(uintptr(readyFD), "ready-fd")
 				// Write socket path + null terminator (dinit compat)
 				if _, err := f.Write(append([]byte(readySock), 0)); err != nil {
@@ -1206,6 +1206,9 @@ func main() {
 				}
 				f.Close()
 				logger.Info("Readiness notification sent on fd %d (socket: %s)", readyFD, readySock)
+				if prev != nil {
+					prev()
+				}
 			}
 		}
 	}

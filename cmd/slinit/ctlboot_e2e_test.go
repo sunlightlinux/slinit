@@ -84,3 +84,35 @@ wait`, wr)
 		t.Errorf("system-up hook did not run with --ready-fd\nslinit log:\n%s", log)
 	}
 }
+
+// The readiness notification must not wait for the system-up chain:
+// hooks, ifup -a and rc.local can take minutes, and dinit reports
+// readiness when boot is STARTED. With the notifier chained after them,
+// a hook sleeping 6 s held the notification back 6.7 s.
+func TestReadyFDDoesNotWaitForSystemUpHooks(t *testing.T) {
+	dir := t.TempDir()
+	writeService(t, dir, "boot", "type = internal\n")
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+	start := time.Now()
+	startNS(t, dir, `
+mount -t tmpfs none /run && mount -t tmpfs none /etc && mkdir -p /etc/slinit/hooks.d/system-up
+printf '#!/bin/sh\nsleep 6\necho hook-ran > "$D/hook.out"\n' > /etc/slinit/hooks.d/system-up/10-slow
+chmod +x /etc/slinit/hooks.d/system-up/10-slow
+"$B/slinit" -m -d "$D/sd" -p "$D/sock" --syslog-socket "" -F 3 >"$D/log" 2>&1 &
+wait`, wr)
+	wr.Close()
+	rd.SetReadDeadline(time.Now().Add(15 * time.Second))
+	if _, err := rd.Read(make([]byte, 256)); err != nil {
+		t.Fatalf("no ready notification: %v", err)
+	}
+	if took := time.Since(start); took > 4*time.Second {
+		t.Errorf("ready notification took %s: it waited for the system-up hook", took)
+	}
+	if got := strings.TrimSpace(waitFile(t, filepath.Join(dir, "hook.out"), 10*time.Second)); got != "hook-ran" {
+		t.Errorf("system-up hook did not run after the notification")
+	}
+}
