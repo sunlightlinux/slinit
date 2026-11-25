@@ -88,11 +88,30 @@ type FileSink struct {
 	// these offsets, which become file offsets on the next Flush.
 	totalWritten int64
 
+	// durable / idxDurable are the jsonl and idx sizes known to be
+	// complete on disk. A failed write is cut back to them, so a full
+	// disk leaves no partial line behind.
+	durable    int64
+	idxDurable int64
+
+	// closed is set by Close: only then is a missing file final. A file
+	// lost to a failed rotation or reopen is reopened by a later event,
+	// at most once per reopenInterval; retryAt is when the next attempt
+	// (or the next automatic rotation, after one failed) may run.
+	closed  bool
+	retryAt time.Time
+
 	unflushed int
 	written   atomic.Uint64
 	writeErrs atomic.Uint64
 	rotations atomic.Uint64
 }
+
+// reopenInterval bounds how often a sink retries opening its file, or an
+// automatic rotation, after a failure: often enough to resume within a
+// second of space coming back, not so often that every event of a busy
+// system pays for an open that is bound to fail.
+const reopenInterval = time.Second
 
 // FileSinkOptions configures a FileSink. Any zero-valued field takes
 // the corresponding Default*. Kept as a struct (not positional args)
@@ -172,7 +191,8 @@ func (s *FileSink) Stats() (written, writeErrs uint64) {
 // Handle serializes evt to JSONL, buffers the write, and fsyncs
 // every fsyncEvery events. Errors from the write are surfaced so the
 // receiver can count them; a write failure does NOT block subsequent
-// events (the buffer stays open).
+// events: the events it lost are counted in writeErrs, the file is cut
+// back to its last complete line, and the next event tries again.
 func (s *FileSink) Handle(evt *journal.Event) error {
 	data, err := json.Marshal(evt)
 	if err != nil {
@@ -187,11 +207,16 @@ func (s *FileSink) Handle(evt *journal.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.bw == nil {
-		s.writeErrs.Add(1)
-		return errors.New("journald: sink closed")
+		if err := s.reopenLocked(); err != nil {
+			s.writeErrs.Add(1)
+			return err
+		}
 	}
 	startOff := s.totalWritten
 	if _, err := s.bw.Write(data); err != nil {
+		// bufio's error is sticky: without the discard every later
+		// event failed too, long after space came back.
+		s.discardLocked()
 		s.writeErrs.Add(1)
 		return err
 	}
@@ -203,8 +228,8 @@ func (s *FileSink) Handle(evt *journal.Event) error {
 	s.unflushed++
 	s.written.Add(1)
 	if s.unflushed >= s.fsyncEvery {
+		// A failed flush counts the events it lost itself.
 		if err := s.flushLocked(); err != nil {
-			s.writeErrs.Add(1)
 			return err
 		}
 	}
@@ -225,7 +250,7 @@ func (s *FileSink) Rotations() uint64 { return s.rotations.Load() }
 // either configured limit. maxSize/maxAge == 0 means "disabled" on
 // that dimension. Caller must hold s.mu.
 func (s *FileSink) shouldRotateLocked() bool {
-	if s.f == nil {
+	if s.f == nil || s.now().Before(s.retryAt) {
 		return false
 	}
 	if s.maxSize > 0 && s.totalWritten >= s.maxSize {
@@ -257,9 +282,7 @@ func (s *FileSink) rotateLocked() error {
 	}
 	oldPath := s.curPath
 	oldIdx := idxPath(oldPath)
-	if err := s.f.Close(); err != nil {
-		return err
-	}
+	closeErr := s.f.Close()
 	if s.idxF != nil {
 		_ = s.idxF.Close()
 	}
@@ -267,29 +290,47 @@ func (s *FileSink) rotateLocked() error {
 	s.bw = nil
 	s.idxF = nil
 
+	// Whatever fails below, a file is reopened before returning (or by
+	// a later event): a failed rename used to leave the sink without
+	// one, and every event after it failed with "sink closed".
+
 	// Rename to <basename-without-.jsonl>.<open_unix_ns>.jsonl so
 	// operators can sort chronologically and grep by date.
 	openNs := s.openedAt.UnixNano()
 	base := oldPath[:len(oldPath)-len(".jsonl")]
 	newJsonl := fmt.Sprintf("%s.%d.jsonl", base, openNs)
 	newIdx := idxPath(newJsonl)
+	var rotErr error
+	renamed := false
 	if err := os.Rename(oldPath, newJsonl); err != nil {
-		return fmt.Errorf("journald: rotate rename jsonl: %w", err)
+		rotErr = fmt.Errorf("journald: rotate rename jsonl: %w", err)
+	} else {
+		renamed = true
+		// idx may not exist yet if the sink took zero events since
+		// open; ignore ENOENT so a fresh-file rotation still succeeds.
+		if err := os.Rename(oldIdx, newIdx); err != nil && !os.IsNotExist(err) {
+			// The new current file must not inherit the old index;
+			// a missing one is rebuilt from the rotated file.
+			_ = os.Remove(oldIdx)
+			rotErr = fmt.Errorf("journald: rotate rename idx: %w", err)
+		}
+		s.rotations.Add(1)
 	}
-	// idx may not exist yet if the sink took zero events since
-	// open; ignore ENOENT so a fresh-file rotation still succeeds.
-	if err := os.Rename(oldIdx, newIdx); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("journald: rotate rename idx: %w", err)
+	if rotErr == nil && closeErr != nil {
+		rotErr = closeErr
 	}
-	s.rotations.Add(1)
 
 	if err := s.openCurrent(); err != nil {
+		s.retryAt = s.now().Add(reopenInterval)
 		return err
 	}
-	if s.rotatedHook != nil {
+	if rotErr != nil {
+		s.retryAt = s.now().Add(reopenInterval)
+	}
+	if renamed && s.rotatedHook != nil {
 		s.rotatedHook(newJsonl, s.curPath)
 	}
-	return nil
+	return rotErr
 }
 
 // Flush forces a bufio flush + fsync. Used by tests and by any future
@@ -309,7 +350,12 @@ func (s *FileSink) Rotate() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.f == nil {
-		return nil
+		if s.closed {
+			return nil
+		}
+		// Lost its file to an earlier failure: an operator's rotate
+		// is the moment to try again, whatever the rate limit says.
+		return s.openCurrent()
 	}
 	return s.rotateLocked()
 }
@@ -320,10 +366,15 @@ func (s *FileSink) Rotate() error {
 func (s *FileSink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closed = true
 	if s.bw == nil {
 		return nil
 	}
 	err := s.flushLocked()
+	if s.f == nil {
+		// The failed flush let go of the file (discardLocked).
+		return err
+	}
 	if err2 := s.f.Close(); err == nil && err2 != nil {
 		err = err2
 	}
@@ -362,6 +413,12 @@ func (s *FileSink) openCurrent() error {
 		_ = f.Close()
 		return fmt.Errorf("journald: open idx %s: %w", idxPath(path), err)
 	}
+	idxSt, err := idxF.Stat()
+	if err != nil {
+		_ = f.Close()
+		_ = idxF.Close()
+		return fmt.Errorf("journald: stat idx %s: %w", idxPath(path), err)
+	}
 	s.f = f
 	// 64 KiB matches a typical page/disk sector cluster; small enough
 	// to bound crash-window loss between fsyncs, big enough to
@@ -370,6 +427,8 @@ func (s *FileSink) openCurrent() error {
 	s.curPath = path
 	s.idxF = idxF
 	s.totalWritten = st.Size()
+	s.durable = st.Size()
+	s.idxDurable = idxSt.Size()
 	s.openedAt = s.now()
 	s.unflushed = 0
 	s.pendingIdx = s.pendingIdx[:0]
@@ -383,16 +442,25 @@ func (s *FileSink) openCurrent() error {
 // every idx offset points at a valid (already flushed) jsonl line.
 // A crash between the two fsyncs at worst loses the trailing idx
 // entries, which RebuildIdx can regenerate — never corruption.
+//
+// On a failed jsonl write the unflushed events are dropped and counted
+// (discardLocked); on a failed idx write the idx is cut back and its
+// entries kept for the next flush, since the lines they index are
+// already on disk.
 func (s *FileSink) flushLocked() error {
 	if s.bw == nil {
 		return nil
 	}
 	if err := s.bw.Flush(); err != nil {
+		s.discardLocked()
 		return err
 	}
 	if err := s.f.Sync(); err != nil {
+		s.discardLocked()
 		return err
 	}
+	s.durable = s.totalWritten
+	s.unflushed = 0
 	if len(s.pendingIdx) > 0 && s.idxF != nil {
 		buf := make([]byte, IdxRecordSize*len(s.pendingIdx))
 		out := buf
@@ -400,15 +468,68 @@ func (s *FileSink) flushLocked() error {
 			out = encodeIdxRecord(out, rec)
 		}
 		if _, err := s.idxF.Write(buf); err != nil {
+			_ = s.idxF.Truncate(s.idxDurable)
 			return err
 		}
 		if err := s.idxF.Sync(); err != nil {
+			_ = s.idxF.Truncate(s.idxDurable)
 			return err
 		}
+		s.idxDurable += int64(len(buf))
 		s.pendingIdx = s.pendingIdx[:0]
 	}
-	s.unflushed = 0
 	return nil
+}
+
+// discardLocked recovers from a failed jsonl write. bufio.Writer keeps
+// its first error and fails every later Write and Flush with it, so the
+// sink used to stay broken after a full disk had room again (and so did
+// Rotate, which flushes first), with a partial line left at the end of
+// the file. The buffered events are dropped and counted as write
+// errors, the file is cut back to its last complete line, and the
+// writer starts clean, so the next event is a fresh attempt. Caller
+// holds s.mu.
+func (s *FileSink) discardLocked() {
+	if lost := uint64(s.unflushed); lost > 0 {
+		s.written.Add(^(lost - 1))
+		s.writeErrs.Add(lost)
+	}
+	s.unflushed = 0
+	keep := s.pendingIdx[:0]
+	for _, rec := range s.pendingIdx {
+		if rec.Offset < s.durable {
+			keep = append(keep, rec)
+		}
+	}
+	s.pendingIdx = keep
+	s.totalWritten = s.durable
+	if err := s.f.Truncate(s.durable); err != nil {
+		// Cannot cut the partial line off: let go of the file and
+		// reopen it later, which starts on a fresh line.
+		_ = s.f.Close()
+		if s.idxF != nil {
+			_ = s.idxF.Close()
+		}
+		s.f, s.bw, s.idxF = nil, nil, nil
+		s.retryAt = s.now().Add(reopenInterval)
+		return
+	}
+	s.bw.Reset(s.f)
+}
+
+// reopenLocked opens the current file again for a sink that lost it to
+// a failed rotation or write, at most once per reopenInterval. Caller
+// holds s.mu.
+func (s *FileSink) reopenLocked() error {
+	if s.closed {
+		return errors.New("journald: sink closed")
+	}
+	now := s.now()
+	if now.Before(s.retryAt) {
+		return errors.New("journald: sink has no file, retrying")
+	}
+	s.retryAt = now.Add(reopenInterval)
+	return s.openCurrent()
 }
 
 // currentFileName returns "YYYY-MM-DD.jsonl" for the given time.

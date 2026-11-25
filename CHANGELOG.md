@@ -651,6 +651,19 @@ requires.
 
 ### Fixed
 
+- **The journal stopped for good after one failed write.** In the
+  JSONL sink a write that failed on a full disk kept failing every
+  later event, and every flush and rotation, after space came back
+  (0 of 10 written), and left a partial line at the end of the file.
+  The binary sink (the default) lost its file when a rotation could not
+  rename or create one, and refused every event after it with
+  "binary sink closed". Both kept that state until `slinit-journald`
+  restarted. A failed write now drops and counts only the events it
+  lost, cutting the file back to its last complete line, and a sink
+  without a file reopens one on a later event, at most once a second,
+  or on `--rotate`. The binary sink also starts a new file when the one
+  it writes is removed under it, instead of writing into the removed
+  file.
 - **The JSONL journal was never vacuumed.** With `--format=jsonl` and
   `--compress` (the default) every rotated file is gzipped to
   `.jsonl.gz`, and the vacuum after each rotation matched `.jsonl`

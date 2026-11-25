@@ -36,6 +36,12 @@ type BinarySink struct {
 	curPath   string
 	openedAt  time.Time
 	unflushed int
+	// closed is set by Close: only then is a nil w final. A writer lost
+	// to a failed rotation is reopened by a later event, at most once
+	// per reopenInterval; retryAt is when the next attempt (or the next
+	// automatic rotation, after one failed) may run.
+	closed  bool
+	retryAt time.Time
 
 	written   atomic.Uint64
 	flushes   atomic.Uint64
@@ -130,8 +136,10 @@ func (s *BinarySink) Handle(evt *journal.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.w == nil {
-		s.writeErrs.Add(1)
-		return fmt.Errorf("journald: binary sink closed")
+		if err := s.reopenLocked(); err != nil {
+			s.writeErrs.Add(1)
+			return err
+		}
 	}
 	if _, err := s.w.Append(evt); err != nil {
 		s.writeErrs.Add(1)
@@ -163,6 +171,7 @@ func (s *BinarySink) Handle(evt *journal.Event) error {
 func (s *BinarySink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closed = true
 	if s.w == nil {
 		return nil
 	}
@@ -193,12 +202,41 @@ func (s *BinarySink) openCurrent() error {
 	return nil
 }
 
+// reopenLocked opens a writer again for a sink that lost it to a
+// failed rotation, at most once per reopenInterval. Caller holds s.mu.
+func (s *BinarySink) reopenLocked() error {
+	if s.closed {
+		return fmt.Errorf("journald: binary sink closed")
+	}
+	now := time.Now()
+	if now.Before(s.retryAt) {
+		return fmt.Errorf("journald: binary sink has no file, retrying")
+	}
+	s.retryAt = now.Add(reopenInterval)
+	return s.openCurrent()
+}
+
 // maybeRotateLocked checks the size + age triggers and rotates if
 // either fires. Rename convention mirrors FileSink: current file
 // becomes `<base>.<open_unix_ns>.journal` so operators see the same
 // pattern across formats.
 func (s *BinarySink) maybeRotateLocked() error {
+	if time.Now().Before(s.retryAt) {
+		return nil // a rotation just failed; give it a moment
+	}
 	st, err := os.Stat(s.curPath)
+	if os.IsNotExist(err) {
+		// The file being written was removed (a vacuum that did not
+		// know it was current): every event since went to an
+		// unlinked inode. Start a new file under the current name.
+		_ = s.w.Close()
+		s.w = nil
+		if err := s.openCurrent(); err != nil {
+			s.retryAt = time.Now().Add(reopenInterval)
+			return err
+		}
+		return nil
+	}
 	if err != nil {
 		return nil // stat failed — skip trigger this cycle
 	}
@@ -219,23 +257,41 @@ func (s *BinarySink) rotateLocked() error {
 	}
 	oldPath := s.curPath
 	openNs := s.openedAt.UnixNano()
-	if err := s.w.Close(); err != nil {
-		return err
-	}
+	// Close leaves the writer unusable even when it fails, so w is
+	// dropped either way, and whatever fails below a writer is opened
+	// again before returning (or by a later event). A failed rename or
+	// reopen used to leave w nil for good: every event after it failed
+	// with "binary sink closed" until the daemon restarted.
+	closeErr := s.w.Close()
 	s.w = nil
 	base := oldPath[:len(oldPath)-len(".journal")]
 	newPath := fmt.Sprintf("%s.%d.journal", base, openNs)
+	var rotErr error
+	renamed := false
 	if err := os.Rename(oldPath, newPath); err != nil {
-		return fmt.Errorf("journald: binary rotate rename: %w", err)
+		if !os.IsNotExist(err) {
+			rotErr = fmt.Errorf("journald: binary rotate rename: %w", err)
+		}
+		// ENOENT: the file is gone already (vacuumed); there is
+		// nothing to rotate, only a new file to start.
+	} else {
+		renamed = true
+		s.rotations.Add(1)
 	}
-	s.rotations.Add(1)
+	if rotErr == nil && closeErr != nil {
+		rotErr = closeErr
+	}
 	if err := s.openCurrent(); err != nil {
+		s.retryAt = time.Now().Add(reopenInterval)
 		return err
 	}
-	if s.rotatedHook != nil {
+	if rotErr != nil {
+		s.retryAt = time.Now().Add(reopenInterval)
+	}
+	if renamed && s.rotatedHook != nil {
 		s.rotatedHook(newPath, s.curPath)
 	}
-	return nil
+	return rotErr
 }
 
 // Flush persists any pending writer state to disk. Delegates to the
@@ -268,6 +324,11 @@ func (s *BinarySink) flushLocked() error {
 func (s *BinarySink) Rotate() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.w == nil && !s.closed {
+		// Lost its writer to an earlier failure: an operator's rotate
+		// is the moment to try again, whatever the rate limit says.
+		return s.openCurrent()
+	}
 	return s.rotateLocked()
 }
 
