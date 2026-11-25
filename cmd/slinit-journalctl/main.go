@@ -173,6 +173,11 @@ type options struct {
 	directory   string // -D/--directory DIR — glob *.jsonl / *.slj under DIR
 	root        string // --root PATH — filesystem root prefix for source lookups
 
+	// foreignDir: directory is a container's or an image's, set by -M
+	// and --image. A symlink in it may name a host file, so only its
+	// regular files are read.
+	foreignDir bool
+
 	// --- Group B: maintenance ---
 
 	sync        bool          // --sync — force daemon fsync via SIGUSR1
@@ -1320,9 +1325,14 @@ func runQuery(opts options) error {
 			// mount source recorded in m.Root. m.Root is only
 			// meaningful for on-disk files (journal dir under
 			// /var/log/, which lives in the rootfs proper).
+			//
+			// Both are resolved inside the container: at their host
+			// paths its symlinks resolve on the host, and a
+			// /run/slinit.socket -> /run/slinit.socket showed the
+			// host's journal as the container's.
 			sockPath := fmt.Sprintf("/proc/%d/root%s", m.PID, machine.ControlSockPath)
-			if _, statErr := os.Stat(sockPath); statErr == nil {
-				opts.socketPath = sockPath
+			if p, sockErr := m.ControlSocketPath(); sockErr == nil {
+				opts.socketPath = p
 			} else {
 				// No live socket → walk the persistent journal
 				// directory instead. Falls out through --directory
@@ -1335,8 +1345,11 @@ func runQuery(opts options) error {
 					return fmt.Errorf("-M %s: no live socket at %s and no persistent journal files under container rootfs", opts.machineTarget, sockPath)
 				}
 				// Point --directory at the first journal dir we found
-				// so runFromDirectory picks up every rotated file.
-				opts.directory = filepath.Dir(files[0])
+				// so runFromDirectory picks up every rotated file. It is
+				// a /proc/self/fd link; the trailing slash makes the
+				// walk enter it rather than stop at the link.
+				opts.directory = filepath.Dir(files[0]) + "/"
+				opts.foreignDir = true
 			}
 		}
 	}
@@ -1817,6 +1830,15 @@ func runFromDirectory(opts options) error {
 	files, err := journalFilesUnder(dir)
 	if err != nil {
 		return err
+	}
+	if opts.foreignDir {
+		regular := files[:0]
+		for _, f := range files {
+			if st, err := os.Lstat(f); err == nil && st.Mode().IsRegular() {
+				regular = append(regular, f)
+			}
+		}
+		files = regular
 	}
 	if len(files) == 0 {
 		if !opts.quiet {
@@ -2326,6 +2348,7 @@ func runFromImage(opts options) error {
 	imgOpts := opts
 	imgOpts.image = ""
 	imgOpts.directory = journalDir
+	imgOpts.foreignDir = true
 	return runFromDirectory(imgOpts)
 }
 
