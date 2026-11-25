@@ -134,10 +134,14 @@ live queries.
 :   Resume strictly after *TOKEN* (exclusive).
 
 **--cursor-file=**\ *FILE*
-:   Start after the cursor stored in *FILE* (exclusive, like
-    **--after-cursor**; since 4.0.3), and store the cursor of the last
-    entry shown there at the end. A missing *FILE* starts from the
-    beginning. Useful for polling loops.
+:   Start after the entry whose cursor is stored in *FILE* (since
+    4.0.3), and store the cursor of the last entry shown there at the
+    end. A missing *FILE* starts from the beginning. Useful for polling
+    loops. Entries that share the stored cursor's time are kept: a
+    cursor names only a time and a boot, so the first entry at that
+    time is taken for the one already shown and skipped. When the
+    previous run ended on several entries of one time, the next run
+    prints those after the first of them again; it never skips one.
 
 **--show-cursor**
 :   Print a `-- cursor: s=..;b=..` line after output.

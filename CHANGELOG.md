@@ -1313,7 +1313,9 @@ requires.
   every run.** The file holds the cursor of the last entry already
   shown, but the next run started *at* it rather than after it
   (measured: a second run with nothing new printed one entry). It now
-  starts after it, as journalctl(1) does.
+  starts after it, as journalctl(1) does, and keeps the entries that
+  share its time (a binary journal keeps microseconds): the first entry
+  at that time, the one already shown, is skipped, not the time.
 - **`slinit-journalctl -f` ignored `-n` with a filter, and ignored the
   cursor options.** With `-t`, `-T`, `-g`, `--invocation` or
   `--namespace`, the buffered entries printed before following were

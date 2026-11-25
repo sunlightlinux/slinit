@@ -31,6 +31,13 @@ func startFakeJournalServer(t *testing.T) string {
 		buf.Push(&journal.Event{Ts: base.Add(time.Duration(i) * time.Minute).UnixNano(), Mts: int64(i+1) * 1e9,
 			BootID: testBoot1, Unit: id + ".service", SyslogIdentifier: id, Msg: fmt.Sprintf("msg %d", i), Prio: 6})
 	}
+	return serveJournalBuffer(t, buf)
+}
+
+// serveJournalBuffer is startFakeJournalServer over buf, which the test
+// may go on filling.
+func serveJournalBuffer(t *testing.T, buf *journal.EventBuffer) string {
+	t.Helper()
 	sock := filepath.Join(t.TempDir(), "s.sock")
 	l, err := net.Listen("unix", sock)
 	if err != nil {

@@ -1866,6 +1866,7 @@ func runFromFiles(files []string, opts options, out io.Writer) error {
 	}
 	var cursorTs int64
 	var cursorBoot string
+	skipCursor := mode == cursorResume
 	if token != "" {
 		if cursorTs, cursorBoot, err = parseCursor(token); err != nil {
 			return err
@@ -1885,6 +1886,10 @@ func runFromFiles(files []string, opts options, out io.Writer) error {
 					continue
 				}
 			} else if e.Ts < cursorTs || (mode == cursorAfter && e.Ts == cursorTs) {
+				continue
+			} else if skipCursor && e.Ts == cursorTs {
+				// The entry the last --cursor-file run ended on.
+				skipCursor = false
 				continue
 			}
 		}
@@ -3233,10 +3238,17 @@ func runOneShot(conn net.Conn, opts options) error {
 	// non-empty value wins so the semantics stay predictable):
 	//   1. --after-cursor  → strictly after (Since = ts + 1)
 	//   2. --cursor        → at or after   (Since = ts)   [systemd -c semantics]
-	//   3. --cursor-file   → same as --after-cursor but read from FILE
-	wantBoot, err := applyCursor(&req, opts)
+	//   3. --cursor-file   → after the entry it names, read from FILE
+	pos, err := applyCursor(&req, opts)
 	if err != nil {
 		return err
+	}
+	wantBoot := pos.boot
+	if pos.skip {
+		// The cursor's entry is dropped below; a daemon-side -n
+		// could have cut it off and kept one the operator has not
+		// seen in its place.
+		req.Limit = 0
 	}
 
 	payload, err := json.Marshal(req)
@@ -3255,6 +3267,9 @@ func runOneShot(conn net.Conn, opts options) error {
 	// correctness regardless of daemon vintage. Same code path also
 	// makes --file / --directory results consistent with socket ones.
 	events = clientSideFilter(events, req)
+	if pos.skip {
+		events = dropCursorEntry(events, pos)
+	}
 	// Apply -n client-side when the daemon was told Limit=0 (see
 	// wireLimitFor). Trims the most recent N matches, matching the
 	// tail semantics the daemon would have applied itself.
@@ -3310,35 +3325,63 @@ func renderResult(out io.Writer, opts options, events []*journal.Event) error {
 	return nil
 }
 
+// cursorPos is the position a cursor option names: its time and boot,
+// and whether the entry at it is to be dropped (--cursor-file).
+type cursorPos struct {
+	ts   int64
+	boot string
+	skip bool
+}
+
 // applyCursor positions req at the cursor opts carry, if any, and
-// returns the cursor's boot ID.
-func applyCursor(req *control.JournalQueryRequest, opts options) (string, error) {
+// returns the position.
+func applyCursor(req *control.JournalQueryRequest, opts options) (cursorPos, error) {
 	token, mode, err := resolveCursorInput(opts)
 	if err != nil || token == "" {
-		return "", err
+		return cursorPos{}, err
 	}
 	ts, boot, err := parseCursor(token)
 	if err != nil {
-		return "", err
+		return cursorPos{}, err
 	}
 	if mode == cursorAfter {
 		req.Since = ts + 1
 	} else {
 		req.Since = ts
 	}
-	return boot, nil
+	return cursorPos{ts: ts, boot: boot, skip: mode == cursorResume}, nil
+}
+
+// dropCursorEntry removes the first event at the cursor's time and boot:
+// the entry the previous --cursor-file run printed last.
+func dropCursorEntry(events []*journal.Event, pos cursorPos) []*journal.Event {
+	for i, e := range events {
+		if e.Ts == pos.ts && e.BootID == pos.boot {
+			return append(events[:i:i], events[i+1:]...)
+		}
+	}
+	return events
 }
 
 // cursorMode discriminates inclusive (--cursor) vs exclusive
-// (--after-cursor) positioning. --cursor-file is exclusive: the file
-// holds the cursor of the last entry already shown, so the next run
-// starts after it, as journalctl(1) does. It used to be inclusive and
-// every run printed that entry again.
+// (--after-cursor) positioning, and --cursor-file's resume.
+//
+// The file holds the cursor of the last entry already shown, so the
+// next run starts after it, as journalctl(1) does; it used to start at
+// it, and every run printed that entry again. "After" cannot be "later
+// than its time": entries share a time (a binary journal keeps
+// microseconds), and an entry written in the same microsecond after the
+// run was never shown. A cursor names only a time and a boot, so the
+// query takes the time inclusively and drops the first entry at it.
+// When a run printed several entries of one time, the next prints those
+// after the first again: a repeat, where starting past the time lost
+// entries.
 type cursorMode int
 
 const (
 	cursorInclusive cursorMode = iota
 	cursorAfter
+	cursorResume
 )
 
 // resolveCursorInput picks the effective cursor token + mode from
@@ -3363,7 +3406,7 @@ func resolveCursorInput(opts options) (string, cursorMode, error) {
 			}
 			return "", cursorInclusive, fmt.Errorf("read cursor-file %s: %w", opts.cursorFile, err)
 		}
-		return strings.TrimSpace(string(data)), cursorAfter, nil
+		return strings.TrimSpace(string(data)), cursorResume, nil
 	}
 	return "", cursorInclusive, nil
 }
@@ -3392,11 +3435,14 @@ func writeCursorFile(path, token string) error {
 // trim the backlog itself, since nothing marks where it ends.
 // wireLimitFor's 0 for client-side filters made -f -n 3 -t sshd print
 // every buffered sshd entry. The cursor options position the backlog
-// as they do a one-shot query; they used to be ignored.
+// as they do a one-shot query; they used to be ignored. With
+// --cursor-file the first entry is dropped when it is the cursor's own
+// (see cursorMode); the cursor file is read, not updated.
 func runFollow(conn net.Conn, opts options) error {
 	req := buildRequest(opts)
 	req.Limit = opts.limit
-	if _, err := applyCursor(&req, opts); err != nil {
+	pos, err := applyCursor(&req, opts)
+	if err != nil {
 		return err
 	}
 	payload, err := json.Marshal(req)
@@ -3421,6 +3467,12 @@ func runFollow(conn net.Conn, opts options) error {
 			evt, decodeErr := journal.UnmarshalEvent(body)
 			if decodeErr != nil {
 				return fmt.Errorf("decode entry: %w", decodeErr)
+			}
+			if pos.skip {
+				pos.skip = false
+				if evt.Ts == pos.ts && evt.BootID == pos.boot {
+					continue
+				}
 			}
 			if err := render(out, opts.format, evt, ro); err != nil {
 				return fmt.Errorf("render: %w", err)
