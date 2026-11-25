@@ -116,7 +116,8 @@ propagate. This is the OpenRC convention.
   fstab, and every **mount**(8) succeeded
 - **1**: nothing was selected, a selected mountpoint is not in fstab
   (the others are still printed), or the fstab file is missing,
-  unparseable or empty
+  unreadable or empty. A malformed line is skipped, as util-linux
+  skips it, rather than failing the whole file
 - with **--mount** / **--remount**: the sum of the **mount**(8) exit
   statuses, unless a mountpoint was missing from fstab, which sets
   the status back to 1 (as in OpenRC)

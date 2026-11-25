@@ -64,12 +64,37 @@ func TestParseFourAndFiveFields(t *testing.T) {
 	}
 }
 
-func TestParseRejectsBadArity(t *testing.T) {
-	if _, err := Parse(strings.NewReader("/dev/sda1 /\n")); err == nil {
-		t.Errorf("expected error for 2-field line")
+// TestParseSkipsBadLines: one malformed line used to fail the whole
+// table, so a typo in /etc/fstab hid every mount from the tools that
+// read it. util-linux warns and skips the line; so does Parse.
+func TestParseSkipsBadLines(t *testing.T) {
+	in := "/dev/sda1 /\n" +
+		"a b c d e f g\n" +
+		"/dev/sda2 /x ext4 defaults zero 0\n" +
+		"/dev/sda3 /y ext4 defaults 0 two\n" +
+		"/dev/sda4 /home ext4 defaults 0 2\n"
+	entries, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("a bad line failed the whole file: %v", err)
 	}
-	if _, err := Parse(strings.NewReader("a b c d e f g\n")); err == nil {
-		t.Errorf("expected error for 7-field line")
+	if len(entries) != 1 || entries[0].File != "/home" {
+		t.Errorf("entries = %+v, want only /home", entries)
+	}
+}
+
+// TestParseLongLine: /proc/mounts goes through Parse too, and an
+// overlay with many lower layers writes one line past bufio's 64 KiB
+// default, which made the whole mount table unreadable.
+func TestParseLongLine(t *testing.T) {
+	lower := strings.Repeat("/var/lib/layers/0123456789abcdef:", 4000)
+	in := "overlay /merged overlay rw,lowerdir=" + lower + "/base 0 0\n" +
+		"/dev/sda1 / ext4 rw 0 0\n"
+	entries, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("a %d-byte line failed the parse: %v", len(in), err)
+	}
+	if len(entries) != 2 || entries[0].File != "/merged" || entries[1].File != "/" {
+		t.Errorf("got %d entries, want /merged and /", len(entries))
 	}
 }
 
