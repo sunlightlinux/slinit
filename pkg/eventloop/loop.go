@@ -35,6 +35,10 @@ type EventLoop struct {
 	shutdownInitiated bool
 	shutdownType      service.ShutdownType
 	emergencyTimer    *time.Timer
+	// runExited is set when Run returns. A shutdown still in its
+	// pre-shutdown work then (an escalated timer returned Run) must not
+	// arm a timer or reporter that nothing will cancel.
+	runExited bool
 
 	// Emergency shutdown timeout. Zero means "use defaultEmergencyTimeout".
 	// Set via SetEmergencyTimeout before Run(); reads are unlocked because
@@ -201,6 +205,12 @@ func (el *EventLoop) Run(ctx context.Context) error {
 		signal.Notify(el.sigCh, syscall.SIGCHLD)
 	}
 	defer el.releaseSignals()
+	defer func() {
+		el.mu.Lock()
+		el.runExited = true
+		el.mu.Unlock()
+		el.cancelEmergencyTimer()
+	}()
 
 	el.logger.Info("slinit event loop started (PID %d)", os.Getpid())
 
@@ -534,6 +544,10 @@ func formatBlockingServices(active []service.ActiveServiceInfo) string {
 func (el *EventLoop) startShutdownReporter() {
 	stop := make(chan struct{})
 	el.mu.Lock()
+	if el.runExited {
+		el.mu.Unlock()
+		return
+	}
 	el.shutdownReporterStop = stop
 	el.mu.Unlock()
 	go func() {
@@ -718,11 +732,12 @@ func (el *EventLoop) runPreShutdown(shutdownType service.ShutdownType) {
 
 // armEmergencyTimer starts the emergency timeout for the stop phase.
 // A repeated shutdown signal during the pre-shutdown work has already
-// armed the shorter escalated timer; that one stays.
+// armed the shorter escalated timer; that one stays. Once Run has
+// returned there is no loop left to force out.
 func (el *EventLoop) armEmergencyTimer() {
 	el.mu.Lock()
 	defer el.mu.Unlock()
-	if el.emergencyTimer != nil {
+	if el.emergencyTimer != nil || el.runExited {
 		return
 	}
 	// Capture immutable refs to avoid racing on el fields from the

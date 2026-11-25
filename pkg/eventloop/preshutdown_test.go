@@ -2,6 +2,8 @@ package eventloop
 
 import (
 	"context"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -137,5 +139,52 @@ func TestRunLeavesNoShutdownTimersBehind(t *testing.T) {
 	if el.shutdownReporterStop != nil {
 		close(el.shutdownReporterStop)
 		t.Error("the blocker reporter outlived Run")
+	}
+}
+
+// A second shutdown signal during slow pre-shutdown work arms the
+// escalated 25% timer, whose expiry returns Run while initiateShutdown is
+// still waiting on the hooks. When they finished, initiateShutdown armed
+// a fresh emergency timer and reporter on a loop that had already
+// returned and cancelled its own: after a remain that leaked the reporter
+// goroutine and logged a forced shutdown into a system staying up.
+func TestShutdownTimersNotArmedAfterRunReturned(t *testing.T) {
+	logger := logging.New(logging.LevelError)
+	set := service.NewServiceSet(logger)
+	set.ServiceActive(nil)
+	el := New(set, logger)
+	el.sigCh = make(chan os.Signal, 4)
+	el.SetEmergencyTimeout(400 * time.Millisecond)
+	el.OnPreShutdown = func(service.ShutdownType) { time.Sleep(300 * time.Millisecond) }
+
+	runDone := make(chan struct{})
+	go func() {
+		el.Run(context.Background())
+		close(runDone)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	initDone := make(chan struct{})
+	go func() {
+		el.InitiateShutdown(service.ShutdownRemain)
+		close(initDone)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	el.sigCh <- syscall.SIGINT // escalate: 100ms timer
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return on the escalated timer")
+	}
+	<-initDone
+
+	el.mu.Lock()
+	defer el.mu.Unlock()
+	if el.emergencyTimer != nil {
+		el.emergencyTimer.Stop()
+		t.Error("an emergency timer was armed after Run returned")
+	}
+	if el.shutdownReporterStop != nil {
+		close(el.shutdownReporterStop)
+		t.Error("a blocker reporter was started after Run returned")
 	}
 }
