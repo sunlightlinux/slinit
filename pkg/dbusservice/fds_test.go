@@ -101,7 +101,7 @@ func TestReceivedFDsAreClosed(t *testing.T) {
 // A call that wants no reply never sees its descriptors: nothing would
 // say when the method is done with them.
 func TestNoReplyCallGetsNoFDs(t *testing.T) {
-	c := &fdCloser{pending: map[callKey][]int{}}
+	c := &fdCloser{pending: map[callKey]*pendingCall{}}
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -143,5 +143,49 @@ func TestWaitIdleReturnsWhenConnectionLost(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("idle %v: WaitIdle still waiting with the connection gone", idle)
 		}
+	}
+}
+
+// A peer picks its own serials. A second call reusing the key of one
+// still in flight used to have its answer close the first call's
+// descriptors while that call's method was still using them (a slow
+// polkit check before CreateSessionWithPIDFD reads its pidfd).
+func TestDuplicateSerialKeepsFirstCallsFDs(t *testing.T) {
+	c := &fdCloser{pending: map[callKey]*pendingCall{}}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	fd, err := unix.Dup(int(r.Fd()))
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr := func() map[dbus.HeaderField]dbus.Variant {
+		return map[dbus.HeaderField]dbus.Variant{dbus.FieldSender: dbus.MakeVariant(":1.5")}
+	}
+	first := &dbus.Message{Type: dbus.TypeMethodCall, Headers: hdr(), Body: []any{dbus.UnixFD(fd)}}
+	second := &dbus.Message{Type: dbus.TypeMethodCall, Headers: hdr(), Body: []any{"x"}}
+	c.incoming(first)
+	c.incoming(second) // same sender, same serial
+	answer := func() {
+		c.outgoing(&dbus.Message{Type: dbus.TypeMethodReply, Headers: map[dbus.HeaderField]dbus.Variant{
+			dbus.FieldReplySerial: dbus.MakeVariant(uint32(0)),
+			dbus.FieldDestination: dbus.MakeVariant(":1.5"),
+		}})
+	}
+	open := func() bool {
+		_, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+		return err != unix.EBADF
+	}
+	answer() // the second call's answer
+	if !open() {
+		t.Fatal("the first call's descriptor was closed by another call's answer")
+	}
+	answer() // the first call's answer
+	if open() {
+		unix.Close(fd)
+		t.Error("descriptor still open after every call under the key was answered")
 	}
 }
