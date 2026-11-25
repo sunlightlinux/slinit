@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // ExecStage identifies the stage at which process setup failed.
@@ -177,6 +179,9 @@ type ExecParams struct {
 
 	// Rlimits holds resource limits to apply after fork.
 	Rlimits []Rlimit
+	// runnerRlimits are the Rlimits StartProcess hands to slinit-runner
+	// (see runnerRlimit) instead of setting them from outside.
+	runnerRlimits []Rlimit
 
 	// IOPrioClass is the I/O scheduling class (0=none, 1=RT, 2=BE, 3=IDLE).
 	// IOPrioLevel is the priority level within the class (0-7).
@@ -531,6 +536,15 @@ type OpenFileEntry struct {
 }
 
 // Rlimit holds a resource limit (soft, hard) for a given resource.
+// runnerRlimit reports whether resource must be set by slinit-runner
+// itself rather than from outside. The runner is a Go program, and the Go
+// runtime cannot start or run under a modest address-space or data
+// limit: prlimit'ed onto the runner, rlimit-as or rlimit-data made it
+// die in runtime init before the service ever ran.
+func runnerRlimit(resource int) bool {
+	return resource == unix.RLIMIT_AS || resource == unix.RLIMIT_DATA
+}
+
 type Rlimit struct {
 	Resource int // syscall.RLIMIT_* constant
 	Soft     uint64

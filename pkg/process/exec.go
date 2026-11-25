@@ -185,6 +185,18 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	}
 
 	if wrapped {
+		// AS and DATA go to the runner, which sets them just before its
+		// exec; the rest are still applied from outside behind the start
+		// gate.
+		var outside []Rlimit
+		for _, rl := range params.Rlimits {
+			if runnerRlimit(rl.Resource) {
+				params.runnerRlimits = append(params.runnerRlimits, rl)
+			} else {
+				outside = append(outside, rl)
+			}
+		}
+		params.Rlimits = outside
 		command = wrapWithRunner(params)
 	}
 
@@ -1323,6 +1335,9 @@ func wrapWithRunner(p ExecParams) []string {
 	// argv[0] override survives the runner's own exec via --argv0.
 	if p.Argv0 != "" {
 		args = append(args, "--argv0="+p.Argv0)
+	}
+	for _, rl := range p.runnerRlimits {
+		args = append(args, fmt.Sprintf("--rlimit-late=%d:%d:%d", rl.Resource, rl.Soft, rl.Hard))
 	}
 	// LISTEN_PID must be the service's own pid, which exists only after
 	// the fork, so the runner exports it just before its exec (its pid

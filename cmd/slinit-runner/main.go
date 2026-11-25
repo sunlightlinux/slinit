@@ -124,6 +124,9 @@ func run() error {
 		"/proc subset= filter: pid (systemd ProcSubset=)")
 	var readOnlyPaths, readWritePaths, inaccessiblePaths stringList
 	var bindPaths, bindROPaths, tmpfsPaths stringList
+	var lateRlimits stringList
+	fs.Var(&lateRlimits, "rlimit-late",
+		"RESOURCE:SOFT:HARD (numbers) to set just before exec; slinit passes rlimit-as and rlimit-data this way (repeatable)")
 	fs.Var(&readOnlyPaths, "read-only-path",
 		"add a path to be bind-mounted read-only (repeatable)")
 	fs.Var(&readWritePaths, "read-write-path",
@@ -556,15 +559,35 @@ func run() error {
 	}); err != nil {
 		return err
 	}
+	// rlimit-as and rlimit-data: set as the very last thing, once the
+	// filters are compiled, since the Go runtime cannot allocate new
+	// address space under them. Lowering a limit needs no privilege.
+	setLateRlimits := func() error {
+		for _, spec := range lateRlimits {
+			var res int
+			var soft, hard uint64
+			if _, err := fmt.Sscanf(spec, "%d:%d:%d", &res, &soft, &hard); err != nil {
+				return fmt.Errorf("--rlimit-late %q: %w", spec, err)
+			}
+			if err := unix.Setrlimit(res, &unix.Rlimit{Cur: soft, Max: hard}); err != nil {
+				return fmt.Errorf("setrlimit(%d, %d, %d): %w", res, soft, hard, err)
+			}
+		}
+		return nil
+	}
+	// Everything exec needs is built now: once setLateRlimits has
+	// lowered the address-space limit below what the Go runtime has
+	// already reserved, any further allocation may fail.
+	execEnv := os.Environ()
 	if err := installSeccomp(seccompSpec{
 		filter:    syscallFilter,
 		archs:     syscallArchs,
 		errorAct:  *syscallAction,
 		logFilter: syscallLog,
-	}); err != nil {
+	}, setLateRlimits); err != nil {
 		return err
 	}
-	if err := syscall.Exec(execPath, execArgv, os.Environ()); err != nil {
+	if err := syscall.Exec(execPath, execArgv, execEnv); err != nil {
 		return fmt.Errorf("exec %s: %w", execPath, err)
 	}
 	return nil // unreachable
