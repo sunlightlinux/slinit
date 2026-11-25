@@ -177,6 +177,69 @@ var (
 	logShutdownFunc    = utmp.LogShutdown
 )
 
+// Sync can hang for good: a dead NFS or CIFS server holds its dirty pages
+// for ever. These bound the wait the way systemd's shutdown does
+// (sync_with_progress): give up after syncStallChecks intervals in a row
+// in which the dirty and writeback totals in /proc/meminfo did not
+// shrink, and leave the sync running behind.
+var (
+	syncCheckInterval = 10 * time.Second
+	syncStallChecks   = 3
+	meminfoPath       = "/proc/meminfo"
+)
+
+// syncBounded runs syncFunc, returning when it finishes or when it has
+// stopped making progress.
+func syncBounded(logger *logging.Logger) {
+	done := make(chan struct{})
+	sync := syncFunc
+	go func() {
+		sync()
+		close(done)
+	}()
+	prev := uint64(1<<64 - 1)
+	for stalls := 0; stalls < syncStallChecks; {
+		select {
+		case <-done:
+			return
+		case <-time.After(syncCheckInterval):
+		}
+		if cur, ok := pendingWritebackKB(); ok && cur < prev {
+			stalls = 0
+			prev = cur
+		} else {
+			stalls++
+		}
+	}
+	logger.Error("Syncing filesystems: no progress for %v, continuing without it",
+		time.Duration(syncStallChecks)*syncCheckInterval)
+}
+
+// pendingWritebackKB sums Dirty, Writeback and NFS_Unstable from
+// /proc/meminfo: the data a sync still has to write.
+func pendingWritebackKB() (uint64, bool) {
+	data, err := os.ReadFile(meminfoPath)
+	if err != nil {
+		return 0, false
+	}
+	var sum uint64
+	found := false
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		switch f[0] {
+		case "Dirty:", "Writeback:", "NFS_Unstable:":
+			if v, err := strconv.ParseUint(f[1], 10, 64); err == nil {
+				sum += v
+				found = true
+			}
+		}
+	}
+	return sum, found
+}
+
 // Execute performs the full shutdown sequence after all services have stopped.
 // It kills remaining processes, runs the shutdown hook (if present), performs
 // filesystem cleanup, syncs, and issues the appropriate reboot syscall.
@@ -270,7 +333,7 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	// asks for a fast exit via systemd's -n / --no-sync.
 	if syncEnabled {
 		logger.Info("Syncing filesystems...")
-		syncFunc()
+		syncBounded(logger)
 	} else {
 		logger.Info("Skipping filesystem sync (--no-sync)")
 	}
@@ -380,7 +443,7 @@ func ExecuteForce(shutdownType service.ShutdownType, logger *logging.Logger) {
 	// skips sync — same effect here via `reboot -f -n`.
 	if syncEnabled {
 		logger.Info("Syncing filesystems...")
-		syncFunc()
+		syncBounded(logger)
 	} else {
 		logger.Info("Skipping filesystem sync (--no-sync)")
 	}

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
@@ -151,7 +152,7 @@ func unmountAll(logger *logging.Logger) {
 		if shouldSkipUnmount(e) {
 			continue
 		}
-		unmountOne(e, logger)
+		unmountBounded(e, logger)
 	}
 
 	// Final step: remount / read-only so a dirty shutdown doesn't force
@@ -163,9 +164,61 @@ func unmountAll(logger *logging.Logger) {
 	}
 }
 
+// umountTimeout bounds one mount's unmount, as systemd's shutdown bounds
+// each umount2 with DEFAULT_TIMEOUT_USEC.
+var umountTimeout = 90 * time.Second
+
+// unmountBounded is unmountOne with a time limit. An unmount can block
+// for good — a dead NFS or CIFS server, a FUSE daemon that is gone — and
+// this runs after every process is dead, with nothing left to rescue the
+// shutdown. Past umountTimeout the mount is detached instead and the
+// stuck call is left behind.
+func unmountBounded(e mountEntry, logger *logging.Logger) {
+	done := make(chan struct{})
+	go func() {
+		unmountOne(e, logger)
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(umountTimeout):
+	}
+	logger.Error("Unmounting %s timed out after %v, detaching it", e.target, umountTimeout)
+	detached := make(chan error, 1)
+	go func() { detached <- unmountFunc(e.target, int(unix.MNT_DETACH)) }()
+	select {
+	case err := <-detached:
+		if err != nil {
+			logger.Debug("Lazy unmount of %s: %v", e.target, err)
+		}
+	case <-time.After(umountTimeout):
+		logger.Error("Detaching %s timed out too, leaving it", e.target)
+	}
+}
+
+// isNetworkFS reports a filesystem whose server may be gone at shutdown:
+// systemd's @network set plus the FUSE network filesystems it names.
+func isNetworkFS(fstype string) bool {
+	fstype = strings.TrimPrefix(fstype, "fuse.")
+	switch fstype {
+	case "afs", "ceph", "cifs", "gfs", "gfs2", "ncp", "ncpfs", "nfs", "nfs4",
+		"ocfs2", "orangefs", "pvfs2", "smb3", "smbfs",
+		"davfs", "glusterfs", "lustre", "sshfs":
+		return true
+	}
+	return false
+}
+
 func unmountOne(e mountEntry, logger *logging.Logger) {
-	// Clean unmount first.
-	err := unmountFunc(e.target, 0)
+	// Clean unmount first. For a network filesystem that is MNT_FORCE,
+	// which aborts requests pending on a dead server instead of waiting
+	// on them (systemd's shutdown forces every non-lazy unmount).
+	flags := 0
+	if isNetworkFS(e.fstype) {
+		flags = unix.MNT_FORCE
+	}
+	err := unmountFunc(e.target, flags)
 	if err == nil {
 		logger.Debug("Unmounted %s", e.target)
 		return
