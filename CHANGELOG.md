@@ -736,6 +736,15 @@ requires.
   (`<date>.<ns>.jsonl` with its `.idx`), so both boots are kept and read
   in the order they were written; the cross-device copy no longer
   truncates an existing file either.
+- **Shutdown could wait the emergency timeout with every service
+  stopped.** The scheduler ran one pass over the propagation queue and
+  then a transition, so a release queued during that pass waited until
+  after the transition: a dependency could reach STOPPED still counted
+  as required, and the release that came later found it STOPPED and
+  never took it off the active count. After a crash restart in a
+  dependency chain, `CountActiveServices` stayed above zero with nothing
+  running and shutdown waited out its timeout. The propagation queue is
+  now drained completely before each transition, as dinit does.
 - **Triggering a service queued for a start slot stalled later starts.**
   With `--parallel-start-limit`, `slinitctl trigger` on a triggered
   service still waiting for a slot started it at once, past the limit,

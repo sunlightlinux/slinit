@@ -661,14 +661,22 @@ func (ss *ServiceSet) processQueuesLocked() {
 // both are empty.
 func (ss *ServiceSet) drainQueuesLocked() {
 	for len(ss.propQueue) > 0 || len(ss.stopQueue) > 0 {
-		// Drain propagation queue using index to avoid reslicing overhead
-		pq := ss.propQueue
-		ss.propQueue = nil
-		for i := range pq {
-			svc := pq[i]
-			pq[i] = nil // allow GC
-			svc.Record().InPropQueue = false
-			svc.Record().DoPropagation()
+		// Drain the propagation queue until it is empty, including
+		// whatever the propagations themselves queue, before running a
+		// transition — dinit's process_queues() does the same (inner
+		// while over prop_queue). One pass over a snapshot let a
+		// transition run while a release was still queued: the
+		// dependency reached STOPPED still counted as required, and the
+		// later release found it STOPPED and never uncounted it.
+		for len(ss.propQueue) > 0 {
+			pq := ss.propQueue
+			ss.propQueue = nil
+			for i := range pq {
+				svc := pq[i]
+				pq[i] = nil // allow GC
+				svc.Record().InPropQueue = false
+				svc.Record().DoPropagation()
+			}
 		}
 
 		if len(ss.stopQueue) > 0 {
