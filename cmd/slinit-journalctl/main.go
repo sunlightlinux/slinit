@@ -1633,38 +1633,49 @@ func extractField(e *journal.Event, name string) string {
 // the filtered event slice for callers that want to project or count
 // rather than render.
 func loadFileEvents(opts options) ([]*journal.Event, error) {
+	all, err := readJournalFile(opts.sourceFile)
 	filter := buildRequest(opts).ToFilter()
-	if isBinaryJournal(opts.sourceFile) {
-		r, err := journalbin.OpenReader(opts.sourceFile)
+	var events []*journal.Event
+	for _, e := range all {
+		if filter.Match(e) {
+			events = append(events, e)
+		}
+	}
+	return events, err
+}
+
+// readJournalFile returns every entry of one journal file, binary or
+// JSONL (.gz decompressed), in the order it was written.
+func readJournalFile(path string) ([]*journal.Event, error) {
+	if isBinaryJournal(path) {
+		r, err := journalbin.OpenReader(path)
 		if err != nil {
 			return nil, err
 		}
 		defer r.Close()
 		var events []*journal.Event
 		err = r.Iter(func(e *journal.Event) bool {
-			if filter.Match(e) {
-				events = append(events, e)
-			}
+			events = append(events, e)
 			return true
 		})
 		return events, err
 	}
 	var r io.ReadCloser
-	if strings.HasSuffix(opts.sourceFile, ".gz") {
-		rc, err := journald.OpenCompressed(opts.sourceFile)
+	if strings.HasSuffix(path, ".gz") {
+		rc, err := journald.OpenCompressed(path)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("open %s: %w", path, err)
 		}
 		r = rc
 	} else {
-		f, err := os.Open(opts.sourceFile)
+		f, err := os.Open(path)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("open %s: %w", path, err)
 		}
 		r = f
 	}
 	defer r.Close()
-	return readJSONLFile(r, filter, 0)
+	return readJSONLFile(r, journal.QueryFilter{MinPriority: -1}, 0)
 }
 
 // runHeaderDump prints metadata about a --file source: for a binary
@@ -1784,10 +1795,8 @@ func runDiskUsage(opts options, out io.Writer) error {
 }
 
 // runFromDirectory walks opts.directory (honoring --root prefix if
-// set) collecting every plausible journal file and delegates to the
-// existing runFromFile-style logic per file. Renders straight to
-// stdout in walk order — deterministic per filesystem, which is what
-// scripts want when piped into grep / awk.
+// set) collecting every plausible journal file, and queries them as
+// one journal: see runFromFiles.
 func runFromDirectory(opts options) error {
 	dir := opts.directory
 	if opts.root != "" {
@@ -1803,17 +1812,122 @@ func runFromDirectory(opts options) error {
 		}
 		return nil
 	}
-	// Delegate per-file to the existing single-file renderer by
-	// mutating a shallow-copy of opts. Filter matching stays consistent
-	// because both paths derive from buildRequest → ToFilter.
+	return runFromFiles(files, opts, os.Stdout)
+}
+
+// runFromFiles queries journal files (--file, --directory, --image) as
+// one journal. Every entry is read first and ordered the way
+// journalbin.MultiReader orders a directory: boots in the order they
+// first appear, files taken in name order and each in write order, and
+// within a boot by monotonic time. Only then are the selections
+// applied, once, across all files: -b (any spec, counted over the boots
+// these files hold), the filters, the cursor, -n and -r; --list-boots
+// lists the files' boots. Each file used to be queried on its own, so
+// -n 3 printed three entries per file, -r reversed each file, -b -1
+// printed every boot, --list-boots printed entries and a cursor was
+// ignored.
+func runFromFiles(files []string, opts options, out io.Writer) error {
+	var events []*journal.Event
 	for _, f := range files {
-		perFile := opts
-		perFile.sourceFile = f
-		if err := runFromFile(perFile); err != nil {
+		evs, err := readJournalFile(f)
+		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
+		events = append(events, evs...)
 	}
-	return nil
+	byID := map[string]*bootRange{}
+	for _, e := range events {
+		aggregateBoot(byID, e)
+	}
+	sort.SliceStable(events, func(i, j int) bool {
+		a, b := events[i], events[j]
+		if a.BootID != b.BootID {
+			return bootRank(byID, a.BootID) < bootRank(byID, b.BootID)
+		}
+		return earlier(a.Mts, a.Ts, b.Mts, b.Ts)
+	})
+	boots := sortedBoots(byID)
+	if opts.listBoots {
+		printBoots(out, boots)
+		return nil
+	}
+	if opts.bootSet || opts.bootID != "" {
+		id, err := bootFromSpec(opts.bootID, boots)
+		if err != nil {
+			return err
+		}
+		opts.bootID = id
+	}
+
+	token, mode, err := resolveCursorInput(opts)
+	if err != nil {
+		return err
+	}
+	var cursorTs int64
+	var cursorBoot string
+	if token != "" {
+		if cursorTs, cursorBoot, err = parseCursor(token); err != nil {
+			return err
+		}
+		if _, ok := byID[cursorBoot]; !ok {
+			return fmt.Errorf("cursor: boot %s is not in the journal files", cursorBoot)
+		}
+	}
+
+	filter := buildRequest(opts).ToFilter()
+	kept := events[:0]
+	for _, e := range events {
+		if token != "" {
+			// Past the cursor: a later boot, or later in its boot.
+			if e.BootID != cursorBoot {
+				if bootRank(byID, e.BootID) < byID[cursorBoot].rank {
+					continue
+				}
+			} else if e.Ts < cursorTs || (mode == cursorAfter && e.Ts == cursorTs) {
+				continue
+			}
+		}
+		if filter.Match(e) {
+			kept = append(kept, e)
+		}
+	}
+	events = kept
+	if opts.limit > 0 && len(events) > opts.limit {
+		events = events[len(events)-opts.limit:]
+	}
+	return renderResult(out, opts, events)
+}
+
+// bootRank is the rank aggregateBoot gave id; entries without a boot
+// ID come first.
+func bootRank(byID map[string]*bootRange, id string) int {
+	if r, ok := byID[id]; ok {
+		return r.rank
+	}
+	return -1
+}
+
+// bootFromSpec resolves a -b spec against boots, oldest first: "" and
+// "0" are the newest boot, -N the N-th before it, a 32-hex ID itself.
+func bootFromSpec(spec string, boots []*bootRange) (string, error) {
+	if len(spec) == 32 && isAllHex(spec) {
+		return spec, nil
+	}
+	n := 0
+	if spec != "" {
+		var err error
+		if n, err = strconv.Atoi(spec); err != nil || n > 0 || (n == 0 && spec != "0") {
+			return "", fmt.Errorf("-b %s: not a recognised spec for journal files (expected empty, 0, -N, or 32-hex ID)", spec)
+		}
+	}
+	if len(boots) == 0 {
+		return "", fmt.Errorf("-b %s: no boots in the journal files", spec)
+	}
+	idx := len(boots) - 1 + n
+	if idx < 0 {
+		return "", fmt.Errorf("-b %s: only %d boots recorded; requested index out of range", spec, len(boots))
+	}
+	return boots[idx].id, nil
 }
 
 // journalFilesUnder walks dir and returns every path with a .jsonl,
@@ -2667,16 +2781,21 @@ func runListBoots(conn net.Conn) error {
 	// 3. Sort by first_ts ascending so newest boot prints last —
 	// but with a NEGATIVE index so `journalctl --list-boots`
 	// convention holds (0 = current, -1 = previous, ...).
-	sorted := sortedBoots(byID)
+	printBoots(os.Stdout, sortedBoots(byID))
+	return nil
+}
+
+// printBoots prints boots, oldest first, numbered back from 0 for the
+// newest.
+func printBoots(out io.Writer, sorted []*bootRange) {
 	for i, r := range sorted {
 		idx := i - (len(sorted) - 1)
-		fmt.Printf("%3d %s %s—%s\n",
+		fmt.Fprintf(out, "%3d %s %s—%s\n",
 			idx, r.id,
 			time.Unix(0, r.first).Format(time.RFC3339),
 			time.Unix(0, r.last).Format(time.RFC3339),
 		)
 	}
-	return nil
 }
 
 // aggregateBootsFromDir walks every journal file under dir and folds
@@ -2987,44 +3106,7 @@ func runFromFile(opts options) error {
 	if opts.verify {
 		return runVerify(opts)
 	}
-	// Peek at magic to route.
-	if isBinaryJournal(opts.sourceFile) {
-		return runFromBinaryFile(opts)
-	}
-	var r io.ReadCloser
-	if strings.HasSuffix(opts.sourceFile, ".gz") {
-		rc, err := journald.OpenCompressed(opts.sourceFile)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", opts.sourceFile, err)
-		}
-		r = rc
-	} else {
-		f, err := os.Open(opts.sourceFile)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", opts.sourceFile, err)
-		}
-		r = f
-	}
-	defer r.Close()
-
-	filter := buildRequest(opts).ToFilter()
-	events, err := readJSONLFile(r, filter, opts.limit)
-	if err != nil {
-		return err
-	}
-	if opts.reverse {
-		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-			events[i], events[j] = events[j], events[i]
-		}
-	}
-	ro := buildRenderOpts(opts)
-	out := os.Stdout
-	for _, evt := range events {
-		if err := render(out, opts.format, evt, ro); err != nil {
-			return fmt.Errorf("render: %w", err)
-		}
-	}
-	return nil
+	return runFromFiles([]string{opts.sourceFile}, opts, os.Stdout)
 }
 
 // isBinaryJournal peeks the first 8 bytes of path and reports whether
@@ -3042,47 +3124,6 @@ func isBinaryJournal(path string) bool {
 		return false
 	}
 	return buf == journalbin.Magic
-}
-
-// runFromBinaryFile opens the file via journalbin.OpenReader (which
-// validates magic + incompat flags), applies the CLI filter, and
-// renders survivors. Reuses buildRequest().ToFilter() so filter
-// semantics match every other path.
-func runFromBinaryFile(opts options) error {
-	r, err := journalbin.OpenReader(opts.sourceFile)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	filter := buildRequest(opts).ToFilter()
-	var events []*journal.Event
-	err = r.Iter(func(e *journal.Event) bool {
-		if !filter.Match(e) {
-			return true
-		}
-		events = append(events, e)
-		if opts.limit > 0 && len(events) > opts.limit {
-			events = events[1:]
-		}
-		return true
-	})
-	if err != nil {
-		return err
-	}
-	if opts.reverse {
-		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-			events[i], events[j] = events[j], events[i]
-		}
-	}
-	ro := buildRenderOpts(opts)
-	out := os.Stdout
-	for _, evt := range events {
-		if err := render(out, opts.format, evt, ro); err != nil {
-			return fmt.Errorf("render: %w", err)
-		}
-	}
-	return nil
 }
 
 // runVerify walks the FSS TAG chain of the binary journal at
@@ -3237,13 +3278,18 @@ func runOneShot(conn net.Conn, opts options) error {
 		return fmt.Errorf("cursor: boot changed (was %s, now %s); position is meaningless in the new boot",
 			wantBoot, events[0].BootID)
 	}
+	return renderResult(os.Stdout, opts, events)
+}
+
+// renderResult prints the selected events, reversed for -r, then the
+// --show-cursor line and the --cursor-file update.
+func renderResult(out io.Writer, opts options, events []*journal.Event) error {
 	if opts.reverse {
 		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
 			events[i], events[j] = events[j], events[i]
 		}
 	}
 	ro := buildRenderOpts(opts)
-	out := os.Stdout
 	for _, evt := range events {
 		if err := render(out, opts.format, evt, ro); err != nil {
 			return fmt.Errorf("render: %w", err)

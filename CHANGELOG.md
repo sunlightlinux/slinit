@@ -635,6 +635,19 @@ requires.
   *Compat:* booted from an initramfs that mounts `/run`, the system
   keeps the initramfs's `/run` and its contents and mount options; use
   `--run-mode=remount` for the old fresh tmpfs.
+- **`slinit-journalctl --directory` and `--image` queried each file on
+  its own, and `--file` ignored boots and cursors.** `-n 3` printed
+  three entries per file, `-r` reversed each file in turn, `-b -1` and
+  `-b 0` printed every boot, `--list-boots` printed entries instead of
+  boots, a malformed cursor was silently ignored and `--show-cursor`
+  printed nothing. The files are now read as one journal, ordered as
+  `--list-boots` orders boots (the order they were written, then
+  monotonic time within a boot), and `-b`, the filters, the cursor
+  options, `-n` and `-r` apply once across them; `-b` counts over the
+  boots the files hold, and a cursor is checked and applied.
+  *Compat:* with these sources `-b` and `-b 0` select the newest boot
+  in the files instead of printing every boot, and entries from
+  several files come in journal order rather than file by file.
 
 ### Fixed
 

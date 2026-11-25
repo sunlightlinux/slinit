@@ -30,9 +30,16 @@ Three query paths, chosen automatically or forced by flags:
   **RplyJournalDone**. Also the path **--follow** takes.
 - **File** (**-i** / **--file**) — read one specific journal file
   (binary or JSONL; magic-detected; **.gz** auto-decompressed).
-- **Directory** (**-D** / **--directory**) — iterate every
+- **Directory** (**-D** / **--directory**) — read every
   *\*.jsonl* / *\*.jsonl.gz* / *\*.journal* / *\*.slj* file under a
-  directory, recursively.
+  directory, recursively, as one journal.
+
+With **--file**, **--directory** and **--image**, every entry is read
+and put in journal order — boots in the order they were written, files
+taken in name order, then monotonic time within a boot — before
+anything is selected, so **-b**, the filters, the cursor options,
+**-n** and **-r** apply once across all the files, and
+**--list-boots** lists the boots the files hold (since 4.0.3).
 
 The daemon (**slinit-journald**(8)) does NOT need to be running for
 the live path — slinit itself owns the ring buffer that
@@ -109,7 +116,9 @@ live queries.
 **-b**, **--boot** [*ID*]
 :   Restrict output to a boot. Empty argument or **0** = current;
     **-N** = *N*-th prior boot; **+N** = *N*-th after the oldest;
-    full 32-hex ID also accepted.
+    full 32-hex ID also accepted. With **--file**, **--directory** or
+    **--image**, the empty argument and **0** are the newest boot in
+    the files and **-N** counts back from it; **+N** is refused.
 
 **--this-boot**
 :   Accepted for parity and ignored. The live path only holds the
@@ -138,8 +147,9 @@ live queries.
     **.gz** auto-decompress).
 
 **-D**, **--directory=**\ *DIR*
-:   Iterate every *\*.jsonl* / *\*.jsonl.gz* / *\*.journal* /
-    *\*.slj* file under *DIR*, recursively, in walk order.
+:   Read every *\*.jsonl* / *\*.jsonl.gz* / *\*.journal* /
+    *\*.slj* file under *DIR*, recursively, as one journal (see
+    **DESCRIPTION**).
 
 **--root=**\ *PATH*
 :   Prefix applied to filesystem paths: the **--directory** (or the
