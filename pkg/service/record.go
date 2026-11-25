@@ -3168,6 +3168,13 @@ func (sr *ServiceRecord) allDepsStarted() {
 				}
 				sr.waitingForStartSlot = false
 				sr.startSlotCh = nil
+				if sr.state.Load() != StateStarting {
+					// The start ended some other way while queued: the
+					// slot just granted is not needed, so give it back
+					// rather than hold it until the slow threshold.
+					sr.services.GetStartLimiter().Release(sr.self)
+					return
+				}
 				sr.callBringUp()
 				sr.services.processQueuesLocked()
 			}()

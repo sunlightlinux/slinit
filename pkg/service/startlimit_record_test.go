@@ -127,3 +127,43 @@ func TestStartLimiter_SlowStarterWakesWaiter(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// A trigger set while the triggered service waits for a start slot must
+// not start it there and then: the start waits for the slot, as it waits
+// for its dependencies. Started while still queued, the service was later
+// handed the slot it no longer needed, and since Started had already run
+// nothing gave it back — every later start waited for the slow threshold.
+func TestStartLimiter_TriggerWhileWaitingForSlot(t *testing.T) {
+	set, _ := newTestSet()
+	set.SetStartLimiter(1, time.Hour)
+	a := newTestSvc(t, set, "a")
+	a.autoStart = false
+	set.AddService(a)
+	trig := NewTriggeredService(set, "trig")
+	set.AddService(trig)
+	c := newTestSvc(t, set, "c")
+	set.AddService(c)
+
+	set.StartService(a)
+	set.StartService(trig)
+	set.SetTriggerService(trig, true)
+	set.queueMu.Lock()
+	st, waiting := trig.State(), trig.waitingForStartSlot
+	set.queueMu.Unlock()
+	if st != StateStarting || !waiting {
+		t.Errorf("triggered while queued for a slot: %v, waiting %v; want STARTING, still waiting", st, waiting)
+	}
+
+	finishStart(set, a)
+	if got := waitForState(t, trig, StateStarted, time.Second); got != StateStarted {
+		t.Fatalf("trig = %v once a's slot was free, want STARTED", got)
+	}
+
+	set.StartService(c)
+	if got := waitForState(t, c, StateStarted, time.Second); got != StateStarted {
+		set.queueMu.Lock()
+		n := set.GetStartLimiter().TotalStarting()
+		set.queueMu.Unlock()
+		t.Errorf("c = %v with nothing else starting (limiter holds %d slot(s)), want STARTED", got, n)
+	}
+}

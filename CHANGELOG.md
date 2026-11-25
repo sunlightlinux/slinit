@@ -637,6 +637,14 @@ requires.
 
 ### Fixed
 
+- **Triggering a service queued for a start slot stalled later starts.**
+  With `--parallel-start-limit`, `slinitctl trigger` on a triggered
+  service still waiting for a slot started it at once, past the limit,
+  and when the slot later came the service took it and never gave it
+  back: every later start waited for the slow-start threshold. The
+  trigger now latches until the slot (or the console) is granted, as it
+  does while dependencies are starting, and a slot granted to a service
+  that is no longer starting is released at once.
 - **A soft reboot turned a dependency's inherited pin into its own.**
   A start pin holds the pinned service's hard dependencies up, but only
   for as long as that pin lasts. The soft-reboot snapshot recorded the
