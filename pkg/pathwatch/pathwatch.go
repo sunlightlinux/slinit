@@ -439,6 +439,23 @@ func (w *Watcher) dispatch(buf []byte) {
 		}
 
 		w.mu.Lock()
+
+		// The kernel's queue filled and events were dropped (wd is -1).
+		// Any unfired entry may have missed its trigger: re-arm them
+		// all, which checks each condition afresh.
+		if raw.Mask&unix.IN_Q_OVERFLOW != 0 {
+			for _, e := range w.entries {
+				if !e.fired {
+					e.lost = true
+				}
+			}
+			w.lastRearm = time.Time{}
+			w.mu.Unlock()
+			w.logger.Warn("pathwatch: inotify queue overflowed, re-arming every watch")
+			off = nameEnd
+			continue
+		}
+
 		list := w.byWd[raw.Wd]
 
 		// IN_IGNORED means the kernel removed the watch (target was

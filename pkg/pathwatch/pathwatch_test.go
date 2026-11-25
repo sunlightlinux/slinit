@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -670,5 +671,41 @@ func TestDirNotEmptySurvivesRecreate(t *testing.T) {
 	}
 	if !waitFire(t, &fired, 1, 2*time.Second) {
 		t.Fatal("directory-not-empty did not fire after the directory was recreated")
+	}
+}
+
+// TestQueueOverflowRearms: IN_Q_OVERFLOW comes with wd -1 and was
+// dropped like an event for an unknown watch, so a trigger whose event
+// was among those lost never fired. On overflow every unfired entry is
+// re-armed, which checks its condition afresh.
+func TestQueueOverflowRearms(t *testing.T) {
+	// No Run: the file's real IN_CREATE stays unread in the kernel, as
+	// if the overflow had swallowed it.
+	w, err := New(testLogger{t})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		unix.Close(w.fd)
+		unix.Close(w.wakeFd)
+	})
+	path := filepath.Join(t.TempDir(), "marker")
+	var fired atomic.Int32
+	if err := w.Add(path, TriggerExists, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := make([]byte, unix.SizeofInotifyEvent)
+	ev := (*unix.InotifyEvent)(unsafe.Pointer(&buf[0]))
+	ev.Wd = -1
+	ev.Mask = unix.IN_Q_OVERFLOW
+	w.dispatch(buf)
+	w.rearmLost() // what Run does after each dispatch
+
+	if fired.Load() != 1 {
+		t.Fatalf("fired %d times after a queue overflow, want 1", fired.Load())
 	}
 }
