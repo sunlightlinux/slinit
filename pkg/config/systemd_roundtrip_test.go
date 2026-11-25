@@ -445,7 +445,7 @@ CapabilityBoundingSet=~CAP_SYS_ADMIN CAP_SYS_MODULE
 func TestSystemdUnmappableSandboxFormsWarn(t *testing.T) {
 	desc, warns := convertWarns(t, `[Service]
 ExecStart=/bin/true
-ReadOnlyPaths=+/etc /var/%N
+ReadOnlyPaths=+/etc /var/%h
 BindReadOnlyPaths=/usr:/opt/usr:norbind
 ProtectProc=bogus
 `)
@@ -459,8 +459,10 @@ ProtectProc=bogus
 			n++
 		}
 	}
-	if n != 4 {
-		t.Errorf("got %d WARNs, want 4 (+path, %%specifier, norbind, bogus protect-proc): %v", n, warns)
+	// %h is warned about twice: as a specifier left unexpanded, and as
+	// a path slinit cannot take.
+	if n != 5 {
+		t.Errorf("got %d WARNs, want 5 (+path, %%h twice, norbind, bogus protect-proc): %v", n, warns)
 	}
 }
 
@@ -508,4 +510,35 @@ Type=oneshot
 		}
 	}
 	t.Errorf("the dropped argv0 of a oneshot was not a WARN: %v", warns)
+}
+
+// systemd expands %-specifiers in Exec lines and paths. They passed
+// through literally, so a service ran with "%t/%N.sock" as an argument,
+// and nothing said so.
+func TestSystemdSpecifiersExpanded(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=/usr/bin/d --sock %t/%N.sock --unit %n --name %p%i --state %S/%N --pct 100%% --home %h
+PIDFile=%t/%N.pid
+WorkingDirectory=%S/%p
+ReadWritePaths=%L/%N %C/%N %E/%N
+`)
+	want := "/usr/bin/d|--sock|/run/probe.sock|--unit|probe.service|--name|probe|--state|/var/lib/probe|--pct|100%|--home|%h"
+	if got := strings.Join(desc.Command, "|"); got != want {
+		t.Errorf("command = %q;\nwant %q", got, want)
+	}
+	if desc.PIDFile != "/run/probe.pid" {
+		t.Errorf("pid-file = %q", desc.PIDFile)
+	}
+	if desc.WorkingDir != "/var/lib/probe" {
+		t.Errorf("working-dir = %q", desc.WorkingDir)
+	}
+	if got := strings.Join(desc.ReadWritePaths, " "); got != "/var/log/probe /var/cache/probe /etc/probe" {
+		t.Errorf("read-write-paths = %q", got)
+	}
+	for _, w := range warns {
+		if w.Level == "WARN" && strings.Contains(w.Msg, "%h") {
+			return
+		}
+	}
+	t.Errorf("an unexpanded %%h was not a WARN: %v", warns)
 }

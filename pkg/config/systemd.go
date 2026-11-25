@@ -138,6 +138,75 @@ var systemdHardeningNames = map[string]string{
 	"ProtectKernelLogs":      "protect-kernel-logs",
 }
 
+// specifierKeys are the mapped directives, Exec lines and paths, whose
+// %-specifiers are expanded. systemd expands them there when it loads
+// the unit; slinit has none.
+var specifierKeys = map[string]bool{
+	"ConditionPathExists": true, "ConditionPathIsDirectory": true,
+	"ConditionPathIsMountPoint": true, "ConditionFileNotEmpty": true,
+	"ExecStart": true, "ExecStop": true, "ExecStartPre": true, "ExecStartPost": true,
+	"WorkingDirectory": true, "RootDirectory": true, "EnvironmentFile": true, "PIDFile": true,
+	"ReadOnlyPaths": true, "ReadWritePaths": true, "InaccessiblePaths": true,
+	"BindReadOnlyPaths": true, "TemporaryFileSystem": true,
+	"RuntimeDirectory": true, "StateDirectory": true, "CacheDirectory": true,
+	"LogsDirectory": true, "ConfigurationDirectory": true,
+}
+
+// expandSpecifiers expands the systemd specifiers in val that have one
+// fixed meaning for a system service that is not a template (the
+// converter refuses templates): %% %n %N %p %i and the %t %S %C %L %E
+// directories. They used to pass through literally, so a service ran
+// with "%t/%N.sock" for an argument and nothing said so. Any other
+// specifier depends on the host, the user or the running unit; it is
+// left as written with a WARN. As in systemd's specifier_printf, a %
+// before anything but a letter, a digit or % is literal.
+func expandSpecifiers(cfg *SystemdConfig, key, val string) (string, []SystemdWarning) {
+	if strings.IndexByte(val, '%') < 0 {
+		return val, nil
+	}
+	var b strings.Builder
+	var unknown []string
+	for i := 0; i < len(val); i++ {
+		if val[i] != '%' || i+1 == len(val) {
+			b.WriteByte(val[i])
+			continue
+		}
+		i++
+		switch c := val[i]; c {
+		case '%':
+			b.WriteByte('%')
+		case 'n':
+			b.WriteString(cfg.svcName + ".service")
+		case 'N', 'p':
+			b.WriteString(cfg.svcName)
+		case 'i':
+			// The instance, empty outside a template.
+		case 't':
+			b.WriteString("/run")
+		case 'S':
+			b.WriteString("/var/lib")
+		case 'C':
+			b.WriteString("/var/cache")
+		case 'L':
+			b.WriteString("/var/log")
+		case 'E':
+			b.WriteString("/etc")
+		default:
+			b.WriteByte('%')
+			b.WriteByte(c)
+			if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+				unknown = append(unknown, "%"+string(c))
+			}
+		}
+	}
+	if len(unknown) == 0 {
+		return b.String(), nil
+	}
+	return b.String(), []SystemdWarning{{"WARN", fmt.Sprintf(
+		"%s=%s: specifier %s not expanded — slinit has no equivalent; it is passed on literally, so replace it by hand",
+		key, val, strings.Join(unknown, " "))}}
+}
+
 // boolWord normalises systemd's true/false/1/0/on/off to slinit's yes/no.
 func boolWord(v string) string {
 	if truthy(v) {
@@ -264,6 +333,11 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		// "/opt/my app/run" --name "a b" would lose the first and last.
 		if !strings.HasPrefix(key, "Exec") {
 			val = trimQuotes(val)
+		}
+		if section != "Install" && specifierKeys[key] {
+			var w []SystemdWarning
+			val, w = expandSpecifiers(cfg, key, val)
+			warns = append(warns, w...)
 		}
 
 		switch section {
