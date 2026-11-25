@@ -31,8 +31,10 @@ type HealthChecker struct {
 
 	mu       sync.Mutex
 	failures int // consecutive failure count
-	stopCh   chan struct{}
-	doneCh   chan struct{}
+	// cancel ends the loop and kills a check under way; doneCh is
+	// closed once the loop has exited. Both are nil while none runs.
+	cancel context.CancelFunc
+	doneCh chan struct{}
 }
 
 // NewHealthChecker creates a new health checker.
@@ -59,50 +61,39 @@ func NewHealthChecker(svc Service, cmd []string, interval, delay time.Duration,
 // Start launches the periodic health check goroutine.
 func (hc *HealthChecker) Start() {
 	hc.mu.Lock()
-	if hc.stopCh != nil {
+	if hc.cancel != nil {
 		hc.mu.Unlock()
 		return
 	}
-	hc.stopCh = make(chan struct{})
-	hc.doneCh = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	hc.cancel = cancel
+	hc.doneCh = done
 	hc.failures = 0
 	hc.mu.Unlock()
 
-	go hc.loop()
+	go hc.loop(ctx, done)
 }
 
-// Stop signals the health check loop to exit and waits for completion.
-// running reports whether the checker has been started and not stopped.
+// running reports whether the checker's loop is running.
 func (hc *HealthChecker) running() bool {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
-	return hc.stopCh != nil
+	return hc.cancel != nil
 }
 
+// Stop ends the health check loop and waits for it to exit. A check
+// under way is killed, not waited for: BringDown calls Stop with queueMu
+// held, and a check may run for its whole interval.
 func (hc *HealthChecker) Stop() {
 	hc.mu.Lock()
-	if hc.stopCh == nil {
-		hc.mu.Unlock()
+	cancel, done := hc.cancel, hc.doneCh
+	hc.mu.Unlock()
+	if cancel == nil {
 		return
 	}
-	select {
-	case <-hc.stopCh:
-	default:
-		close(hc.stopCh)
-	}
-	doneCh := hc.doneCh
-	hc.mu.Unlock()
-
-	if doneCh != nil {
-		<-doneCh
-	}
-
-	// Reset, so the next Start (after a restart of the service) runs
-	// again instead of finding stopCh set and returning.
-	hc.mu.Lock()
-	hc.stopCh = nil
-	hc.doneCh = nil
-	hc.mu.Unlock()
+	cancel()
+	<-done
 }
 
 // ConsecutiveFailures returns the current consecutive failure count.
@@ -112,20 +103,33 @@ func (hc *HealthChecker) ConsecutiveFailures() int {
 	return hc.failures
 }
 
-func (hc *HealthChecker) loop() {
-	defer close(hc.doneCh)
+func (hc *HealthChecker) loop(ctx context.Context, done chan struct{}) {
+	defer func() {
+		// Reset, so the next Start (after a restart of the service)
+		// runs again. Here rather than in Stop: a loop that ended at
+		// its failure threshold had no Stop to do it, and every later
+		// Start found it still marked running.
+		hc.mu.Lock()
+		if hc.doneCh == done {
+			hc.cancel()
+			hc.cancel = nil
+			hc.doneCh = nil
+		}
+		hc.mu.Unlock()
+		close(done)
+	}()
 
 	// Initial delay
 	if hc.delay > 0 {
 		select {
 		case <-time.After(hc.delay):
-		case <-hc.stopCh:
+		case <-ctx.Done():
 			return
 		}
 	}
 
 	// First check
-	if !hc.checkOnce() {
+	if !hc.checkOnce(ctx) {
 		return
 	}
 
@@ -135,10 +139,10 @@ func (hc *HealthChecker) loop() {
 	for {
 		select {
 		case <-ticker.C:
-			if !hc.checkOnce() {
+			if !hc.checkOnce(ctx) {
 				return
 			}
-		case <-hc.stopCh:
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -146,18 +150,19 @@ func (hc *HealthChecker) loop() {
 
 // checkOnce runs the health check command once.
 // Returns false if the loop should exit (stop requested or max failures reached).
-func (hc *HealthChecker) checkOnce() bool {
-	select {
-	case <-hc.stopCh:
+func (hc *HealthChecker) checkOnce(ctx context.Context) bool {
+	if ctx.Err() != nil {
 		return false
-	default:
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), hc.interval)
+	checkCtx, cancel := context.WithTimeout(ctx, hc.interval)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, hc.command[0], hc.command[1:]...)
+	cmd := exec.CommandContext(checkCtx, hc.command[0], hc.command[1:]...)
 	err := process.RunAdhoc(cmd)
+	if ctx.Err() != nil {
+		return false // stopped: the check was cut short, not failed
+	}
 
 	if err == nil {
 		// Healthy — reset failure counter
@@ -181,7 +186,7 @@ func (hc *HealthChecker) checkOnce() bool {
 		hc.svc.Name(), failures, hc.maxFailuresStr(), err)
 
 	// Run unhealthy callback (best-effort, don't block long)
-	hc.runUnhealthyCmd()
+	hc.runUnhealthyCmd(ctx)
 
 	// Check if we've reached max failures
 	if hc.maxFailures > 0 && failures >= hc.maxFailures {
@@ -204,12 +209,12 @@ func (hc *HealthChecker) maxFailuresStr() string {
 }
 
 // runUnhealthyCmd executes the unhealthy callback command.
-func (hc *HealthChecker) runUnhealthyCmd() {
+func (hc *HealthChecker) runUnhealthyCmd(ctx context.Context) {
 	if len(hc.unhealthyCmd) == 0 {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, hc.unhealthyCmd[0], hc.unhealthyCmd[1:]...)

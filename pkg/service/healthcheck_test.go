@@ -151,6 +151,57 @@ func TestHealthChecker_DoubleStartStop(t *testing.T) {
 	hc.Stop()
 }
 
+// Stop ends a check under way instead of waiting for it. BringDown calls
+// it with queueMu held, and a check may run for its whole interval (30 s
+// by default), then the unhealthy-command for 10 s more: every other
+// request to PID 1 waited as long.
+func TestHealthCheckStopDoesNotWaitForTheCheck(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "hc")
+	svc.SetCommand([]string{"/bin/sh", "-c", "exec sleep 60"})
+	svc.SetHealthCheck([]string{"/bin/sleep", "4"}, 10*time.Second, 0, 3, nil)
+	set.AddService(svc)
+	other := NewInternalService(set, "other")
+	set.AddService(other)
+	set.StartService(svc)
+	time.Sleep(300 * time.Millisecond) // the first check is under way
+
+	go set.StopService(svc)
+	time.Sleep(100 * time.Millisecond)
+	t0 := time.Now()
+	set.StartService(other) // any other request
+	if d := time.Since(t0); d > time.Second {
+		t.Errorf("an unrelated StartService blocked %v: queueMu held while BringDown waited for the health check", d)
+	}
+	if got := waitState(t, svc, StateStopped, 5*time.Second); got != StateStopped {
+		t.Errorf("state = %v, want STOPPED", got)
+	}
+	if svc.healthChecker.ConsecutiveFailures() != 0 {
+		t.Errorf("the check cut short by Stop was counted as a failure")
+	}
+}
+
+// A checker whose loop ended at its failure threshold must start again.
+// The loop returned without a Stop, which left it marked running, and
+// unless a Stop came before the next Start — it does not when the
+// process had already gone another way — the service was never checked
+// again.
+func TestHealthCheckerStartsAgainAfterFailureThreshold(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "hc-threshold")
+	runs := filepath.Join(t.TempDir(), "runs")
+	var failed atomic.Int32
+	hc := NewHealthChecker(svc, []string{"/bin/sh", "-c", "echo x >> " + runs + "; exit 1"},
+		50*time.Millisecond, 0, 1, nil, set.logger, func() { failed.Add(1) })
+
+	hc.Start()
+	hcWait(t, "the failure threshold", func() bool { return failed.Load() == 1 })
+	hcWait(t, "the loop to end", func() bool { return !hc.running() })
+	hc.Start()
+	hcWait(t, "a second threshold", func() bool { return failed.Load() == 2 })
+	hc.Stop()
+}
+
 // An unhealthy service must go down even when a started dependent holds
 // it. onFail used to call Stop(false), which only dropped the explicit
 // activation: with a dependent still requiring it, nothing happened.
