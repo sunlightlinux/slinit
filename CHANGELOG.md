@@ -33,6 +33,21 @@ requires.
 
 ### Security
 
+- **slinit-tmpfiles and checkpath could be steered by a user's symlink
+  or hard link into changing root's files.** Only the last path
+  component was protected: a symlink in a parent directory made `d`
+  create and chown outside the tree, `z` re-mode, `r`/`R`/`D` delete,
+  `F`/`w`/`L` write or link there, and checkpath create there. `Z`
+  checked each entry and then changed it by path, so a user swapping a
+  subdirectory for a symlink mid-walk had root chown/chmod e.g. `/etc`
+  (the CVE-2017-18078 class); a hard link to `/etc/shadow` was followed
+  too. Parents are now resolved one component at a time under systemd's
+  CHASE_SAFE rule (a user's link can only lead within that user's own
+  files; root's links such as `/var/run -> /run` are still followed), `Z`
+  walks by file descriptor, and a hard-linked file is refused while
+  `fs.protected_hardlinks` is off. `F` and `w` no longer hang on a FIFO,
+  and `w` no longer creates a missing file, as in systemd.
+
 - **slinit-supervise-daemon signalled whatever pid its pidfile named.**
   A world-writable or user-owned pidfile was trusted, so a service user
   able to write it made root SIGTERM, SIGKILL or signal any process
