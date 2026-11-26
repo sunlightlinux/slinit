@@ -137,6 +137,13 @@ verified with `git tag -v`.
   regular files of at most 1 MiB (systemd's limit, and the size of the
   credentials tmpfs, so a larger one could not be stored before either).
 
+- **A restart of an fd-store service leaked the stored descriptors in
+  PID 1**: the entries handed to the new process (`file-descriptor-store-max`)
+  were never closed on slinit's side, and stayed open until a garbage
+  collection ran their finalizers. Measured: 2 stored fds, 40 restarts,
+  81 pipe fds open in slinit (3 after the fix). They are closed right
+  after the fork now.
+
 ### Changed
 
 - **A FIFO in an `env-dir`, or an `env-file` that is one, froze PID 1**:

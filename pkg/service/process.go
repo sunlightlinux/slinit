@@ -3144,6 +3144,14 @@ func (s *ProcessService) startProcess() error {
 	}
 
 	pid, exitCh, err := process.StartProcess(params)
+	// The drained fd-store entries now belong to the child (or are lost
+	// with a failed start, as the drain already decided): close our
+	// copies, or they stay open until a GC runs their finalizers.
+	for _, e := range params.StoredFDs {
+		if e.File != nil {
+			e.File.Close()
+		}
+	}
 	if err != nil {
 		// Record it before unwinding: the error names the stage and the
 		// errno, and without this the service was left with an empty
