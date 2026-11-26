@@ -33,6 +33,17 @@ requires.
 
 ### Security
 
+- **The machine registry trusted a bare pid**: after a container's
+  launcher was SIGKILLed its entry stayed, and once the pid was reused
+  `machinectl` showed the unrelated process as the container and
+  `journalctl -M` (as root) read the host's journal through its
+  `/proc/PID/root`. Entries now record the process start time; a
+  mismatch shows as `reused` and `journalctl -M` refuses it. A newline in
+  `--class`/`--service`/`--root` could forge `ROOT=` and is rejected; a
+  machine named `X.tmp` is no longer hidden and overwritten.
+- **slinit-cgtop printed cgroup names raw**: a user with a delegated
+  subtree could put terminal escapes in a name. They are shown as
+  `\xNN` now.
 - **slinit-supervise-daemon used an inherited environment variable as
   its supervisor switch**: the daemon and everything it started carried
   `SLINIT_SSD_SUPERVISOR=1`, so a `slinit-supervise-daemon --stop` run
@@ -969,6 +980,10 @@ requires.
 
 ### Fixed
 
+- **slinit-cgtop overstated CPU% on large trees** (about 300% for one
+  busy core with 20k cgroups): it divided by `--delay`, not by the time
+  between the two reads. `machinectl` also showed root's containers as
+  dead to other users (EPERM was taken for "no such process").
 - **OpenRC helper parity (`slinit-fstabinfo`, `slinit-mountinfo`,
   `esyslog`)**:
   - `fstabinfo` obeyed an inherited `EINFO_QUIET`, so in a quiet boot
