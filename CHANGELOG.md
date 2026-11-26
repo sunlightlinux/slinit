@@ -142,6 +142,17 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **The shutdown hook runs after the final sweep even at the task
+  limit.** The final SIGKILL sweep did not wait for the killed to exit
+  and nothing reaped them any more, so every one stayed a zombie until
+  the reboot. With the system at its task limit (a fork bomb, a pids
+  cgroup, RLIMIT_NPROC) the shutdown hook's fork failed with EAGAIN and
+  the hook never ran. The sweep now waits up to the shutdown grace for
+  the killed to be gone and reaps them, as systemd's shutdown does and
+  as dinit's PID 1 keeps doing while its shutdown runs. A process that
+  SIGKILL cannot end (stuck in uninterruptible sleep) now holds the
+  shutdown for that grace (3s by default, `--shutdown-grace`) once more.
+
 - **A control socket that could not be bound at boot no longer crashes
   PID 1 later.** When `/run` had no free inode at boot (a local user can
   fill it, and `/run` survives a soft-reboot), slinit went on without
