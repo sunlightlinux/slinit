@@ -76,6 +76,21 @@ verified with `git tag -v`.
   pipe (`slinit -u --env-file <(...)`), which made a user-mode slinit
   exit.
 
+- **slinit no longer holds an OS thread per running child, and survives
+  task exhaustion.** Waiting for a service's process parked a thread in
+  `waitid` for the process's whole life, so 2000 running services meant
+  about 2000 threads (and 157 MB RSS). Under `RLIMIT_NPROC` or a cgroup's
+  `pids.max`, the fork that hit the limit became a failed start, but the
+  next thread the Go runtime needed failed too and slinit aborted with
+  `pthread_create failed` / SIGABRT, a kernel panic as PID 1. The wait
+  now parks in the netpoller on the child's pidfd and reaps it once
+  readable: 2000 running services take 18 threads and 59 MB, so the
+  thread count no longer grows with the number of children. slinit can
+  still abort if the limit is reached before the Go runtime has grown
+  its own few threads (up to about GOMAXPROCS). Exit statuses still come through the exit router when PID 1's
+  reaper collects the child first. Kernels without pollable pidfds
+  (before 5.4) keep the old wait.
+
 - **`/etc/hostname` is read the way systemd reads it.** As PID 1, slinit
   passed the whole file to `sethostname`, so a comment line above the
   name became part of the hostname, and `host.example.com.` kept its

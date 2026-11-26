@@ -681,6 +681,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		prevUmask = syscall.Umask(int(*params.Umask))
 	}
 
+	// Ask clone for a pidfd: the wait below parks in the netpoller on
+	// it instead of holding an OS thread per child (see pidfdwait.go).
+	pidfd := -1
+	cmd.SysProcAttr.PidFD = &pidfd
+
 	// Start the process
 	err = cmd.Start()
 	if prevUmask >= 0 {
@@ -721,6 +726,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// rather than routine, because applyPostForkAttrs below writes cgroup
 	// files and is not instant.
 	routedCh := DefaultExitRouter.Register(pid)
+	watch := newExitWatch(cmd.Process, pidfd)
 
 	// These are best-effort: failures are logged but don't prevent startup.
 	if errs := applyPostForkAttrs(pid, params, cgroupFD != nil); len(errs) > 0 {
@@ -766,6 +772,15 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 		waitDone := make(chan waitResult, 1)
 		go func() {
+			if watch != nil {
+				status, known := watch.wait()
+				// The child is gone, so this returns once the output
+				// copying is done; the process was released, so it has
+				// no status to give and its error says only that.
+				_ = cmd.Wait()
+				waitDone <- waitResult{status: status, known: known}
+				return
+			}
 			err := cmd.Wait()
 			switch {
 			case err == nil:
