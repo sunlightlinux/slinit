@@ -1,9 +1,13 @@
 package main
 
 import (
+	"io"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/machine"
 )
@@ -113,5 +117,57 @@ func TestDoListPopulated(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("list output missing %q; got:\n%s", want, got)
 		}
+	}
+}
+
+func captureStdout(t *testing.T, f func() error) string {
+	t.Helper()
+	r, w, _ := os.Pipe()
+	stdout := os.Stdout
+	os.Stdout = w
+	err := f()
+	w.Close()
+	os.Stdout = stdout
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
+// An entry whose launcher was SIGKILLed outlives its container; once
+// the PID is reused, list must not report the unrelated process as the
+// machine. Here the PID is this test's, which started after the entry
+// was written (legacy entry) or has another start time.
+func TestDoListReusedPIDNotAlive(t *testing.T) {
+	defer withRegistryDir(t)()
+
+	self := strconv.Itoa(os.Getpid())
+	legacy := filepath.Join(machine.Dir(), "legacy")
+	os.WriteFile(legacy, []byte(self+"\n"), 0o644)
+	past := time.Now().Add(-24 * time.Hour)
+	os.Chtimes(legacy, past, past)
+	os.WriteFile(filepath.Join(machine.Dir(), "stamped"), []byte(self+"\nSTARTTIME=1\n"), 0o644)
+	if err := doRegister([]string{"live", self}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := captureStdout(t, func() error { return doList(nil) })
+	alive := map[string]string{}
+	for _, line := range strings.Split(got, "\n") {
+		if f := strings.Fields(line); len(f) >= 3 {
+			alive[f[0]] = f[2]
+		}
+	}
+	want := map[string]string{"legacy": "reused", "stamped": "reused", "live": "yes"}
+	for name, w := range want {
+		if alive[name] != w {
+			t.Errorf("%s: ALIVE=%q, want %q\n%s", name, alive[name], w, got)
+		}
+	}
+
+	st := captureStdout(t, func() error { return doStatus([]string{"stamped"}) })
+	if !strings.Contains(st, "Alive:   false") || !strings.Contains(st, "another process") {
+		t.Errorf("status of a reused PID:\n%s", st)
 	}
 }

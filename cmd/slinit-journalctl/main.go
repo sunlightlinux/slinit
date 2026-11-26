@@ -1302,15 +1302,9 @@ func runQuery(opts options) error {
 					opts.machineTarget)
 			}
 		} else {
-			m, err := machine.Lookup(opts.machineTarget)
+			m, err := lookupMachine(opts.machineTarget)
 			if err != nil {
-				return fmt.Errorf("-M %s: %w", opts.machineTarget, err)
-			}
-			if m == nil {
-				return fmt.Errorf("-M %s: no such machine registered under %s", opts.machineTarget, machine.Dir())
-			}
-			if !machine.Alive(m.PID) {
-				return fmt.Errorf("-M %s: registered PID %d is not alive (stale registration?)", opts.machineTarget, m.PID)
+				return err
 			}
 			// Prefer control-socket dial: the container's slinit
 			// itself binds /run/slinit.socket during PID-1 setup, so
@@ -1350,6 +1344,14 @@ func runQuery(opts options) error {
 				// walk enter it rather than stop at the link.
 				opts.directory = filepath.Dir(files[0]) + "/"
 				opts.foreignDir = true
+			}
+			// The socket and directories were reached through
+			// /proc/PID/root. Had the container exited and its PID
+			// been reused after lookupMachine, they would be another
+			// process's; check that it is still the same process,
+			// now that the descriptors are held.
+			if err := checkMachine(m); err != nil {
+				return err
 			}
 		}
 	}
@@ -4529,4 +4531,36 @@ Output formats:
 Wire path: slinit-journalctl → CmdJournalQuery over /run/slinit.socket
   → RplyJournalEntry* + RplyJournalDone.
 `)
+}
+
+// lookupMachine resolves -M's registry entry and refuses one whose PID
+// no longer names the registered container: /proc/PID/root of whatever
+// has the PID now would be read as the container's root, and a reused
+// PID of a host process showed the host's journal as the container's.
+func lookupMachine(name string) (*machine.Machine, error) {
+	m, err := machine.Lookup(name)
+	if err != nil {
+		return nil, fmt.Errorf("-M %s: %w", name, err)
+	}
+	if m == nil {
+		return nil, fmt.Errorf("-M %s: no such machine registered under %s", name, machine.Dir())
+	}
+	if err := checkMachine(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// checkMachine succeeds only when m's PID is still the registered
+// process.
+func checkMachine(m *machine.Machine) error {
+	switch m.State() {
+	case machine.StateAlive:
+		return nil
+	case machine.StateReused:
+		return fmt.Errorf("-M %s: registered PID %d now belongs to another process (stale registration)", m.Name, m.PID)
+	case machine.StateUnknown:
+		return fmt.Errorf("-M %s: cannot verify that PID %d is still the registered container", m.Name, m.PID)
+	}
+	return fmt.Errorf("-M %s: registered PID %d is not alive (stale registration?)", m.Name, m.PID)
 }

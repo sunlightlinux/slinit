@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func withTempDir(t *testing.T) func() {
@@ -260,5 +261,116 @@ func TestRegisterRejectsControlCharsInFields(t *testing.T) {
 	}
 	if err := Register(Machine{Name: "ok", PID: 4242, Class: "container", Service: "my svc", Root: "/var/lib/machines/ök"}); err != nil {
 		t.Errorf("Register with plain metadata failed: %v", err)
+	}
+}
+
+func TestParseStartTime(t *testing.T) {
+	// comm may hold spaces and ')': fields count from the last ')'.
+	stat := "4242 (a) b c) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10"
+	got, err := parseStartTime(stat)
+	if err != nil || got != 987654 {
+		t.Errorf("parseStartTime = %d, %v; want 987654", got, err)
+	}
+	if _, err := parseStartTime("4242 (x) S 1 2"); err == nil {
+		t.Error("short stat accepted")
+	}
+}
+
+func readEntry(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(Dir(), name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// Register records the process's start time, and the entry then names
+// that process: Alive while it runs.
+func TestRegisterRecordsStartTime(t *testing.T) {
+	defer withTempDir(t)()
+
+	self := os.Getpid()
+	want, err := ProcStartTime(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Register(Machine{Name: "self", PID: self}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readEntry(t, "self"), "STARTTIME="+strconv.FormatUint(want, 10)+"\n") {
+		t.Errorf("entry lacks STARTTIME=%d:\n%s", want, readEntry(t, "self"))
+	}
+	m, _ := Lookup("self")
+	if m.StartTime != want {
+		t.Errorf("Lookup StartTime = %d, want %d", m.StartTime, want)
+	}
+	if s := m.State(); s != StateAlive {
+		t.Errorf("State = %v, want yes", s)
+	}
+}
+
+// The PID now belongs to a process that is not the registered one: an
+// entry left behind by a SIGKILLed launcher, the PID since reused.
+func TestStateReusedPID(t *testing.T) {
+	defer withTempDir(t)()
+
+	self := os.Getpid()
+	st, err := ProcStartTime(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(Dir(), "web"),
+		[]byte(strconv.Itoa(self)+"\nSTARTTIME="+strconv.FormatUint(st+1, 10)+"\n"), 0o644)
+	m, err := Lookup("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := m.State(); s != StateReused {
+		t.Errorf("State = %v, want reused", s)
+	}
+}
+
+// Entries written before STARTTIME existed are judged by when they
+// were written: a process that started later is not the one registered;
+// one that started before (a container still running across the
+// upgrade) is.
+func TestStateLegacyEntry(t *testing.T) {
+	defer withTempDir(t)()
+
+	self := os.Getpid()
+	p := filepath.Join(Dir(), "old")
+	os.WriteFile(p, []byte(strconv.Itoa(self)+"\nCLASS=container\n"), 0o644)
+	m, _ := Lookup("old")
+	if m.StartTime != 0 {
+		t.Fatalf("legacy StartTime = %d", m.StartTime)
+	}
+	if s := m.State(); s != StateAlive {
+		t.Errorf("legacy entry written after the process started: State = %v, want yes", s)
+	}
+
+	past := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(p, past, past); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = Lookup("old")
+	if s := m.State(); s != StateReused {
+		t.Errorf("legacy entry written before the process started: State = %v, want reused", s)
+	}
+}
+
+func TestStateDeadAndHidden(t *testing.T) {
+	m := &Machine{Name: "gone", PID: 2_000_000_000, StartTime: 5}
+	if s := m.State(); s != StateDead {
+		t.Errorf("State(no such pid) = %v, want no", s)
+	}
+
+	// /proc hides the process (hidepid=): it exists, identity unknown.
+	prev := procDir
+	procDir = t.TempDir()
+	defer func() { procDir = prev }()
+	m = &Machine{Name: "hidden", PID: os.Getpid(), StartTime: 5}
+	if s := m.State(); s != StateUnknown {
+		t.Errorf("State(hidden pid) = %v, want unknown", s)
 	}
 }

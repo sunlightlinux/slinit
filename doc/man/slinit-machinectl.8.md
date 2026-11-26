@@ -21,7 +21,12 @@ mutates those files.
 
 The registry is intentionally simple — one file per machine, all
 plain text: the PID on the first line, then optional **CLASS=**,
-**SERVICE=** and **ROOT=** lines. Scripts that prefer direct
+**SERVICE=**, **ROOT=** and **STARTTIME=** lines. **STARTTIME=** is the
+process's start time in clock ticks since boot (field 22 of
+*/proc/*\ *pid*\ */stat*), recorded at registration; with the PID it
+identifies the process, so an entry left behind by a launcher killed
+with **SIGKILL** is not mistaken for a live machine once the PID is
+reused. Scripts that prefer direct
 filesystem access can read/write the files with **cat**(1) and
 **sed**(1); this tool exists for interactive use, liveness probes,
 and shell one-liners.
@@ -35,7 +40,8 @@ and shell one-liners.
     on the host; when empty, */proc/*\ *pid*\ */root* is used). An
     existing entry with the same name is overwritten. *name* is 1–64
     characters from **A–Z a–z 0–9 _ - .**, not starting with **.** or
-    **-**; *pid* must be greater than 1. *class*, *service* and *root*
+    **-**; *pid* must be greater than 1. The start time of *pid* is
+    recorded when it can be read. *class*, *service* and *root*
     must not contain control characters (a newline would start a line
     of its own in the registry file).
 
@@ -46,19 +52,28 @@ and shell one-liners.
 
 **list**
 :   Print a table with the columns NAME, PID, ALIVE, CLASS, SERVICE and
-    ROOT. ALIVE is **yes** when the PID still exists
-    (*kill(pid, 0)* succeeds or fails with **EPERM**, as it does for a
-    root container queried by an unprivileged user) and **no** otherwise; dead entries are not
-    removed automatically (garbage-collection is the operator's
-    responsibility).
+    ROOT. ALIVE is **yes** when the PID still names the registered process,
+    **no** when no process has it, **reused** when a process has it
+    that started after the entry was registered (its start time differs
+    from **STARTTIME=**), and **unknown** when a process has it but its
+    */proc* entry cannot be read (for instance */proc* mounted with
+    **hidepid=**). A process owned by another user counts: it need not
+    be signalable. An entry without **STARTTIME=**, written by a version
+    that did not record it, is judged by when it was written: the
+    process is the registered one if it started no later than that
+    (within two seconds), so containers that were running across an
+    upgrade stay **yes**. Dead entries are not removed automatically
+    (garbage-collection is the operator's responsibility).
 
 **status** *name*
-:   Show one machine's fields plus liveness in an aligned block.
-    Suitable for direct terminal reading.
+:   Show one machine's fields plus liveness in an aligned block:
+    **Alive:** is **true** only when ALIVE above would be **yes**, and
+    **State:** says why not. Suitable for direct terminal reading.
 
 **show** *name*
 :   Print the entry in registry-file form — the PID line followed by
-    the non-empty **CLASS=**, **SERVICE=** and **ROOT=** lines.
+    the non-empty **CLASS=**, **SERVICE=**, **ROOT=** and
+    **STARTTIME=** lines.
     Suitable for scripts that want to parse it with their own tools.
 
 # ENVIRONMENT
