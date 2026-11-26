@@ -104,7 +104,7 @@ done
     done
 } > "${WORK}/overlay/etc/slinit.d/boot"
 
-(cd "${WORK}/overlay" && find . | cpio -o -H newc 2>/dev/null | gzip) > "${WORK}/overlay.cpio.gz"
+(cd "${WORK}/overlay" && find . | cpio -o -H newc -R 0:0 2>/dev/null | gzip) > "${WORK}/overlay.cpio.gz"
 cat "${OUTPUT_DIR}/initramfs-base.cpio.gz" "${WORK}/overlay.cpio.gz" > "${WORK}/initramfs.cpio.gz"
 
 console_log="${WORK}/console.log"
