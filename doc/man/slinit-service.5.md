@@ -769,6 +769,12 @@ error. Repeat the line for several targets.
     the sleep ran on, reparented to PID 1. A hook that exits by itself
     may still leave a background process behind.
 
+    Because a hook already leads its own process group, util-linux
+    `setsid cmd` inside it cannot call setsid(2) in place: it forks,
+    runs *cmd* in the child and returns at once, so the hook "finishes"
+    while *cmd* is still running, unwatched and outside the timeout. Use
+    `setsid -w cmd` (wait for the child), or leave **setsid** out.
+
 **restart-delay**=*duration*
 :   Delay before a restart attempt. Default *0.2* seconds; *0*
     restarts at once (since 3.20.0; before, an explicit *0* was ignored).
