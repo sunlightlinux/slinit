@@ -971,6 +971,15 @@ requires.
   earlier migration or live slinit-journald's file). Shutdown tails
   (`shutdown-*.jsonl`) are migrated after their day's file instead of
   after every day file.
+- **A `slinit-nspawn` container that read its terminal spun at full
+  CPU.** The container ran in its own process group while the
+  terminal's foreground group stayed the launcher's, so the init's read
+  got SIGTTIN, which a PID 1 does not act on, and restarted forever.
+  When the launcher is the terminal's foreground group the container now
+  takes that place, and the launcher takes the terminal back when it
+  exits. *Compat:* Ctrl-C reaches the container's init straight from the
+  terminal instead of being forwarded by the launcher; Ctrl-Z no longer
+  stops the launcher.
 - **slinit-start-stop-daemon `--exec` never matched through a symlinked
   directory** (merged /usr: `/usr/sbin -> bin`): `--start` launched a
   duplicate each time and `--stop` left the daemon running and returned

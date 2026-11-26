@@ -327,3 +327,28 @@ script -qec "$NSPAWN --name t11 --boot $ROOTFS --machine-dir $DIR/machines --ini
 		t.Error("output written to /dev/console did not reach the terminal")
 	}
 }
+
+// TestContainerReadsTerminal: the container ran in a process group of
+// its own while the terminal's foreground group stayed the launcher's,
+// so its init reading the terminal got SIGTTIN, which a PID 1 does not
+// act on, and the read restarted forever at full CPU. The container is
+// now the foreground group, and the launcher takes the terminal back
+// when it exits, so the shell that started it can read it again.
+func TestContainerReadsTerminal(t *testing.T) {
+	for _, tool := range []string{"script", "timeout"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " not available")
+		}
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+(sleep 1; echo hello; sleep 1; echo world) | timeout 10 script -qec "$NSPAWN --name t12 --boot $ROOTFS --machine-dir $DIR/machines --init /bin/sh -- -c 'read x; echo got=\$x'; read y; echo after=\$y" /dev/null
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "got=hello") {
+		t.Error("the container's init could not read the terminal")
+	}
+	if !strings.Contains(out, "after=world") {
+		t.Error("the shell could not read the terminal after the container exited")
+	}
+}

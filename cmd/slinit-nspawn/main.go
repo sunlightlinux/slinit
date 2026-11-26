@@ -238,10 +238,31 @@ func runParent(p childPayload) error {
 		Setpgid:      true,
 		Unshareflags: unix.CLONE_NEWNS,
 	}
+	// The container gets a process group of its own. When the launcher
+	// holds the terminal on stdin, that group is made the terminal's
+	// foreground one: the init keeps the terminal as its stdin and
+	// console, and a read from it in a background group sends SIGTTIN,
+	// which a PID 1 does not act on, so the read restarted forever at
+	// full CPU. Ctrl-C and the other terminal signals then reach the
+	// init directly, as they reach it through systemd-nspawn's pty.
+	fg := ownsTerminal(0)
+	if fg {
+		cmd.SysProcAttr.Foreground = true
+		cmd.SysProcAttr.Ctty = 0 // a descriptor of this process, for Foreground
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("clone into namespaces: %w", err)
 	}
 	childPid := cmd.Process.Pid
+	if fg {
+		// The terminal goes back to this process group when the
+		// container is gone. From the background that needs SIGTTOU
+		// ignored, which also lets this process write warnings to a
+		// terminal set to tostop meanwhile. Not before Start: the init
+		// would inherit the ignored signal.
+		signal.Ignore(syscall.SIGTTOU)
+		defer takeTerminal(0)
+	}
 
 	// Register early — journalctl -M works as soon as the child is
 	// running, even before init inside has fully come up.
@@ -291,6 +312,22 @@ func runParent(p childPayload) error {
 		return fmt.Errorf("wait: %w", err)
 	}
 	return nil
+}
+
+// ownsTerminal reports whether fd is a terminal whose foreground
+// process group is this process's own. Only then does the container
+// take the terminal over: run in the background of a job-control
+// shell, the launcher must not take it from the shell.
+func ownsTerminal(fd int) bool {
+	pgrp, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP)
+	return err == nil && pgrp == unix.Getpgrp()
+}
+
+// takeTerminal makes this process's group the foreground one of the
+// terminal on fd again. Best effort: a terminal that was hung up
+// refuses with EIO, and then there is no one to give it back to.
+func takeTerminal(fd int) {
+	_ = unix.IoctlSetPointerInt(fd, unix.TIOCSPGRP, unix.Getpgrp())
 }
 
 // childMain runs inside the new namespaces. Sets hostname, does

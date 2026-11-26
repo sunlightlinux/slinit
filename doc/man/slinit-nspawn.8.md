@@ -59,7 +59,16 @@ points for */dev/pts* and */dev/shm*; and */dev/console*. The
 container's init keeps the terminal **slinit-nspawn** was started on as
 its standard input, and that terminal is bound onto */dev/console*;
 when standard input is not a terminal, */dev/console* is */dev/null*,
-as in **systemd-nspawn**(1)'s pipe and read-only console modes. There
+as in **systemd-nspawn**(1)'s pipe and read-only console modes.
+The container runs in a process group of its own. When that terminal's
+foreground process group is the one **slinit-nspawn** was started in,
+the container's group becomes the foreground one for as long as it runs
+(since 4.0.3), and the terminal is handed back when it exits: the init
+can read the terminal, and Ctrl-C and the other terminal signals go to
+the init, not to **slinit-nspawn**. Before, an init that read the
+terminal spun at full CPU on a SIGTTIN it never acts on. Started in the
+background of a job-control shell, **slinit-nspawn** leaves the terminal
+to the shell; an init there must not read it. There
 is no */dev/kmsg* (nor under **systemd-nspawn**(1)); **slinit**(8)
 skips its kernel log reader without it.
 
