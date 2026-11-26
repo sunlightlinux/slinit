@@ -476,3 +476,35 @@ func TestStartProcessClearsParkedExit(t *testing.T) {
 	set.StopService(a)
 	waitState(t, a, StateStopped, 3*time.Second)
 }
+
+// After the shutdown's final kill, the completion of a pre-stop-hook it
+// ended started the finish-command, which nothing ended: the teardown
+// waited up to hook-timeout for it.
+func TestNoStateHookAfterFinalKill(t *testing.T) {
+	base := stateHookGoroutines()
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	a := NewProcessService(set, "a")
+	a.SetHookTimeout(10 * time.Second)
+	a.SetCommand([]string{"/bin/sh", "-c", "exec sleep 30"})
+	a.SetPreStopHook([]string{"/bin/sh", "-c", "sleep 5"})
+	a.SetFinishCommand(markerHook(dir, "finish", "3"))
+	set.AddService(a)
+	set.StartService(a)
+	if st := waitState(t, a, StateStarted, 3*time.Second); st != StateStarted {
+		t.Fatalf("a %v", st)
+	}
+	pid := a.PID()
+	set.StopService(a)
+	time.Sleep(200 * time.Millisecond)
+	killIfAlive(pid) // exits during the pre-stop-hook: parked
+	time.Sleep(200 * time.Millisecond)
+	set.KillActiveServices()
+	if st := waitState(t, a, StateStopped, time.Second); st != StateStopped {
+		t.Errorf("a %v a second after the final kill (running %q), want STOPPED", st, a.RunningStateHook())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "finish")); err == nil {
+		t.Error("finish-command ran after the final kill")
+	}
+	waitStateHooksGone(t, base, 4*time.Second)
+}

@@ -56,6 +56,9 @@ type ServiceSet struct {
 	// stopped (releaseStopsLastLocked).
 	stopsLast    []Service
 	shutdownType atomic.Uint32
+	// finalKill is set by KillActiveServices, the shutdown's last
+	// resort; no state hook is started after it (statehook.go).
+	finalKill atomic.Bool
 
 	// stopsLastBlocker is the service releaseStopsLastLocked last found
 	// still running; checked first on the next call. Under queueMu.
@@ -963,6 +966,9 @@ var stopCommandGrace = time.Second
 var killFunc = syscall.Kill
 
 func (ss *ServiceSet) KillActiveServices() {
+	// Before the hooks are cancelled: a completion of one cancelled
+	// here must not start another (startStateHookLocked).
+	ss.finalKill.Store(true)
 	ss.mu.RLock()
 	var cleaning []*ScriptedService
 	for _, svc := range ss.records {

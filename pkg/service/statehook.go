@@ -36,7 +36,10 @@ import (
 //     finish-command still runs after the pre-stop-hook. Only that
 //     process's exit, only for those two hooks, and never across runs:
 //     startProcess and every new hook clear it.
-//   - The shutdown teardown (KillActiveServices) cancels it.
+//   - The shutdown teardown (KillActiveServices) cancels it, and no
+//     hook runs after it (ServiceSet.finalKill): the completion of one
+//     it ended goes straight on, without starting the next (a
+//     pre-stop-hook's finish-command, say).
 //   - No new run of the service begins: a start does not cancel a stop
 //     still waiting for its dependents (CanInterruptStop), the service
 //     cannot reach STOPPED, so it is neither restarted nor unloaded
@@ -122,7 +125,20 @@ func (s *ProcessService) startStateHookLocked(kind hookKind,
 		})
 		return
 	}
-	run := prepare(ctx)
+	var run func() error
+	if s.services.finalKill.Load() {
+		// The shutdown's final kill has been sent: a hook started now
+		// would only hold the teardown up, for as long as hook-timeout,
+		// after the kill meant to end it. Its completion still runs,
+		// and sees the run as cancelled, as it would a hook the kill
+		// ended.
+		s.services.logger.Info("Service '%s': %s not run: processes are being killed",
+			s.serviceName, kind)
+		cancel()
+		run = func() error { return ctx.Err() }
+	} else {
+		run = prepare(ctx)
+	}
 	// A parked exit belongs to the hook that parked it, whose
 	// completion has run.
 	s.pendingExit = nil
