@@ -99,9 +99,20 @@ func startNS(t *testing.T, dir, script string, extra ...*os.File) *nsRun {
 	bin := nsBinDir(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	r := &nsRun{cancel: cancel, done: make(chan struct{})}
+	// slinit as PID 1 reads the kernel command line, and in this
+	// namespace that is still the host's /proc/cmdline. A host booted
+	// with "splash" or "slinit.quiet" turns on quiet mode and the
+	// "[ OK ]" lines the tests wait for never appear; "single" or
+	// "emergency" would change the boot itself. Mount an empty command
+	// line over it, so the tests see the same boot on every machine.
+	cmdline := filepath.Join(t.TempDir(), "cmdline")
+	if err := os.WriteFile(cmdline, nil, 0o644); err != nil {
+		t.Fatalf("empty cmdline: %v", err)
+	}
+	script = `mount --bind "$C" /proc/cmdline || exit 1` + "\n" + script
 	r.cmd = exec.CommandContext(ctx, "unshare", "-Urpfm", "--mount-proc", "--kill-child",
 		"sh", "-c", script, "sh")
-	r.cmd.Env = append(os.Environ(), "B="+bin, "D="+dir)
+	r.cmd.Env = append(os.Environ(), "B="+bin, "D="+dir, "C="+cmdline)
 	r.cmd.Stdout = &r.stdout
 	r.cmd.Stderr = &r.stderr
 	r.cmd.ExtraFiles = extra
