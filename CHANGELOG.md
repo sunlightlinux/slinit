@@ -122,6 +122,11 @@ verified with `git tag -v`.
   copying it on each doubling. It is now sized before the first service
   is framed: a list of 4000 services allocates 950 KiB instead of
   1467 KiB per request.
+- **Kernel messages stopped reaching the journal after the first burst
+  that overran the kernel log ring.** A read of `/dev/kmsg` fails with
+  EPIPE when records were overwritten before slinit read them, and the
+  reader took that as fatal and stopped for the rest of the boot. It now
+  carries on from the oldest record left, as systemd-journald does.
 
 - **A FIFO named in `required-files` froze PID 1**: the readability check
   opened it and waited for a writer with the service set's lock held.

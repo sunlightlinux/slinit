@@ -2,9 +2,12 @@ package journal
 
 import (
 	"context"
+	"io"
 	"os"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestParseKmsgLine(t *testing.T) {
@@ -191,4 +194,25 @@ func TestKmsgReaderStopWhileIdle(t *testing.T) {
 		t.Fatal("Stop did not return while the reader was idle")
 	}
 	kr.Stop() // idempotent
+}
+
+// A read of /dev/kmsg fails with EPIPE when the kernel overwrote records
+// the reader had not reached yet; the following read goes on with the
+// oldest one left. Run treated it as fatal and stopped collecting
+// kernel messages for the rest of the boot.
+func TestKmsgReadErrorEPIPEIsRetried(t *testing.T) {
+	err := &os.PathError{Op: "read", Path: KmsgPath, Err: unix.EPIPE}
+	if !kmsgRetryable(err) {
+		t.Errorf("kmsgRetryable(%v) = false; the reader would stop for good", err)
+	}
+	for _, e := range []error{unix.EAGAIN, io.EOF} {
+		if !kmsgRetryable(&os.PathError{Op: "read", Path: KmsgPath, Err: e}) {
+			t.Errorf("kmsgRetryable(%v) = false", e)
+		}
+	}
+	for _, e := range []error{unix.EIO, unix.EBADF, os.ErrClosed} {
+		if kmsgRetryable(&os.PathError{Op: "read", Path: KmsgPath, Err: e}) {
+			t.Errorf("kmsgRetryable(%v) = true; Run would spin on it", e)
+		}
+	}
 }

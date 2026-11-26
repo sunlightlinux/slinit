@@ -121,7 +121,7 @@ func (r *KmsgReader) Run(ctx context.Context) {
 		}
 		if err := scanner.Err(); err != nil {
 			// EAGAIN means no data yet; other errors we surface.
-			if errors.Is(err, unix.EAGAIN) || errors.Is(err, io.EOF) {
+			if kmsgRetryable(err) {
 				// Reset scanner state — bufio.Scanner won't resume
 				// after error unless we reconstitute it.
 				scanner = bufio.NewScanner(r.file)
@@ -156,6 +156,16 @@ func (r *KmsgReader) Run(ctx context.Context) {
 			scanner.Buffer(make([]byte, 64*1024), 64*1024)
 		}
 	}
+}
+
+// kmsgRetryable reports whether Run reads on after a read error. EPIPE
+// is the kernel saying records were overwritten before they were read
+// (the ring wrapped under a burst of messages); the next read returns
+// the oldest record still there, so the reader carries on, as
+// systemd-journald does. It used to stop reading /dev/kmsg for the rest
+// of the boot.
+func kmsgRetryable(err error) bool {
+	return errors.Is(err, unix.EAGAIN) || errors.Is(err, io.EOF) || errors.Is(err, unix.EPIPE)
 }
 
 // Stop signals Run to return. Idempotent — safe to call multiple
