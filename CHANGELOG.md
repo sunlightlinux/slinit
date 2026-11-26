@@ -943,6 +943,13 @@ requires.
 
 ### Fixed
 
+- **slinit-sysusers applied lines in file order**, so a `u`/`m` line
+  naming a group declared later (or in a later file) failed and a
+  `g name GID` after `u name` got an automatic GID. Like
+  systemd-sysusers it now reads every file first, adds the users and
+  groups that `m` lines imply, then creates all groups, all users and
+  the memberships; a conflicting duplicate loses to the first with a
+  warning.
 - **A SIGTERM during slinit-watchdogd's setup reset the board**: the
   handler was installed after the device was opened, which arms the
   watchdog, so a stop in that window killed the daemon with the timer
