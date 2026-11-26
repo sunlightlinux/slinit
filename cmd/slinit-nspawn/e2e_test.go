@@ -384,6 +384,32 @@ true
 	}
 }
 
+// TestNohupLauncherIgnoresHangup: started with SIGHUP ignored (nohup),
+// the launcher must keep ignoring it rather than stop the container at
+// logout.
+func TestNohupLauncherIgnoresHangup(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+S="sleep 46""15" # not the literal, which pgrep -f would find in this script
+(trap '' HUP; exec "$NSPAWN" --name t15 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c "trap 'exit 7' TERM; $S & wait" </dev/null) &
+P=$!
+i=0; until [ -e "$DIR/machines/t15" ] && pgrep -f "$S" >/dev/null; do i=$((i+1)); [ $i -gt 50 ] && break; sleep 0.1; done
+kill -HUP $P
+sleep 0.5
+kill -0 $P 2>/dev/null && echo LAUNCHER-ALIVE
+pgrep -f "$S" >/dev/null && echo CONTAINER-RUNNING
+kill -TERM $P; wait $P
+pkill -9 -f "$S"
+true
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	for _, want := range []string{"LAUNCHER-ALIVE", "CONTAINER-RUNNING"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %s after SIGHUP to a launcher started under nohup", want)
+		}
+	}
+}
+
 // TestKilledLauncherKillsContainer: the container had no parent death
 // signal, so a launcher killed outright left it running with no one to
 // reap it. The init now dies with the launcher, as under

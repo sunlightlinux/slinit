@@ -315,8 +315,17 @@ func runParent(p childPayload) error {
 	// SIGHUP, the terminal going away, as SIGTERM: for an init SIGHUP
 	// means reload, and the launcher must stay to see the container
 	// exit and remove its registry entry.
+	//
+	// Under nohup SIGHUP arrives ignored and must stay so: Notify would
+	// install a handler and the logout would stop the container nohup
+	// was meant to keep. The ignored state is inherited from the exec,
+	// so check it before touching the signal.
+	proxied := []os.Signal{syscall.SIGTERM, syscall.SIGINT}
+	if !signal.Ignored(syscall.SIGHUP) {
+		proxied = append(proxied, syscall.SIGHUP)
+	}
 	sigCh := make(chan os.Signal, 4)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	signal.Notify(sigCh, proxied...)
 	done := make(chan struct{})
 	go func() {
 		for {
