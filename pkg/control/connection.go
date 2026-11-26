@@ -1962,8 +1962,10 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 		fromSvc = c.getService(fromHandle)
 	}
 	if fromSvc == nil {
-		// Check @meta enable-via on the target service
-		fromName := svc.Record().EnableVia()
+		// Check @meta enable-via on the target service. Read under the
+		// graph lock: a reload rewrites it there.
+		var fromName string
+		c.server.services.WithGraphLock(func() { fromName = svc.Record().EnableVia() })
 		if fromName == "" {
 			fromName = c.server.services.BootServiceName()
 		}
@@ -2059,8 +2061,10 @@ func (c *Connection) handleDisableService(payload []byte, v7 bool) error {
 		fromSvc = c.getService(fromHandle)
 	}
 	if fromSvc == nil {
-		// Check @meta enable-via on the target service
-		fromName := svc.Record().EnableVia()
+		// Check @meta enable-via on the target service. Read under the
+		// graph lock: a reload rewrites it there.
+		var fromName string
+		c.server.services.WithGraphLock(func() { fromName = svc.Record().EnableVia() })
 		if fromName == "" {
 			fromName = c.server.services.BootServiceName()
 		}

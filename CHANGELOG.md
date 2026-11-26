@@ -203,6 +203,11 @@ verified with `git tag -v`.
   it. Unpin now travels milestone edges too. Found by the new control
   protocol fuzzer.
 
+- **`enable` and `disable` no longer race a reload of the same service.**
+  They read the service's `enable-via` without the graph lock while a
+  `reload`/`reload-all` rewrote it under that lock; the value is a string,
+  so the read could tear. Found by a `-race` stress run of the daemon.
+
 - **A control socket that could not be bound at boot no longer crashes
   PID 1 later.** When `/run` had no free inode at boot (a local user can
   fill it, and `/run` survives a soft-reboot), slinit went on without
