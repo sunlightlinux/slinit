@@ -745,7 +745,10 @@ func (c *Connection) handleLoadService(payload []byte) error {
 		var loadErr *config.ServiceLoadError
 		var parseErr *config.ParseError
 		switch {
-		case errors.As(err, &notFound):
+		case errors.As(err, &notFound), errors.Is(err, config.ErrServiceNotFound):
+			// The DirLoader reports a missing description (the
+			// service's own or a dependency's) as a ServiceLoadError
+			// wrapping ErrServiceNotFound; dinit answers NOSERVICE.
 			return c.writePacket(RplyNoService, nil)
 		case errors.As(err, &parseErr):
 			return c.writePacket(RplyServiceDescErr, nil)

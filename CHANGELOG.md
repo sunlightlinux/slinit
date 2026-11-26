@@ -131,6 +131,15 @@ verified with `git tag -v`.
   The ring buffer's "no filter set" fast path did not look at the boot
   ID, so a `boot_id`-only `CmdJournalQuery` got events of every boot,
   while the same query with any other filter added dropped them.
+- **`slinitctl start` of a service that does not exist said "could not
+  be loaded" instead of "not found".** The loader reports a missing
+  description as a load error wrapping "not found", which the control
+  server answered with the generic load-error reply; dinit answers
+  NOSERVICE, and so does slinit now, for the service's own description
+  and for a missing dependency's. Compat: a script matching slinitctl's
+  "could not be loaded" text for a missing service now sees
+  "service 'X' not found"; a client checking the reply code sees
+  `RplyNoService` (60) where it saw `RplyServiceLoadErr2` (72).
 
 - **A FIFO named in `required-files` froze PID 1**: the readability check
   opened it and waited for a writer with the service set's lock held.
