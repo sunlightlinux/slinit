@@ -815,7 +815,7 @@ func (lr *LogRotator) writeAlertLocked(out []byte) {
 	if lr.alertFile == nil {
 		f, err := os.OpenFile(
 			lr.alertFilePath,
-			os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW,
+			os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW|syscall.O_NONBLOCK,
 			lr.filePerms,
 		)
 		if err != nil {
@@ -853,8 +853,13 @@ func (lr *LogRotator) writeAlertLocked(out []byte) {
 // or similar — slinit runs as root so a followed symlink would be an
 // arbitrary write primitive. fchown on the open fd (instead of path-based
 // os.Chown) closes the same TOCTOU window for the chown step.
+//
+// O_NONBLOCK: a FIFO at the path with no reader fails with ENXIO instead
+// of blocking the open with mu held, and with it Close, which a restart
+// calls under the service set's lock. The alert file is opened the same
+// way.
 func (lr *LogRotator) openFileLocked() error {
-	f, err := os.OpenFile(lr.filePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, lr.filePerms)
+	f, err := os.OpenFile(lr.filePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, lr.filePerms)
 	if err != nil {
 		return err
 	}

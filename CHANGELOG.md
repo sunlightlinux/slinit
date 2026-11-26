@@ -104,6 +104,12 @@ verified with `git tag -v`.
   opened it for writing with the service set's lock held and waited for
   a reader. *Compat:* such a start now fails (ENXIO) instead of waiting;
   a FIFO whose reader is already running works as before.
+- **A rotated `log-file` or `alert-file` that is a FIFO with no reader
+  froze PID 1 on the next restart**: the log reader blocked opening it
+  with its lock held, and the restart's `Close` waited for that lock
+  under the service set's lock. *Compat:* lines are now dropped until a
+  reader is there (the log-file is retried on each line; the alert-file,
+  as for any open failure, is disabled for the rotator's lifetime).
 - **A `standard-input-file` that is a FIFO froze PID 1**: the start
   opened it with the service set's lock held and waited for a writer.
   *Compat:* the service now starts at once with the FIFO as fd 0; a read
