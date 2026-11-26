@@ -94,10 +94,14 @@ daemon.
 
 **-u**, **--user** *USER*[**:***GROUP*]
 :   Drop credentials before **exec**(2). The optional group shorthand
-    replaces the value **--group** would supply.
+    replaces the value **--group** would supply. The daemon's
+    supplementary groups are *USER*'s, plus its primary group, as
+    **initgroups**(3) sets them (an unknown numeric uid gets only the
+    primary group).
 
 **-g**, **--group** *GROUP*
-:   Daemon primary group.
+:   Daemon primary group. Given without **--user**, only the group
+    changes; the supplementary groups are kept.
 
 **-d**, **--chdir** *DIR*
 :   **chdir**(2) before exec.

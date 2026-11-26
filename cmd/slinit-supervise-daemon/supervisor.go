@@ -164,11 +164,11 @@ func startDaemon(opts Options) (int, <-chan string, error) {
 		sys.Chroot = opts.Chroot
 	}
 	if opts.User != "" || opts.Group != "" {
-		uid, gid, err := resolveCredentials(opts)
+		cred, err := daemonCredential(opts)
 		if err != nil {
 			return 0, nil, err
 		}
-		sys.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+		sys.Credential = cred
 	}
 	cmd.SysProcAttr = sys
 
@@ -338,6 +338,75 @@ func resolveCredentials(opts Options) (int, int, error) {
 		gid = g
 	}
 	return uid, gid, nil
+}
+
+// daemonCredential is the identity the daemon runs as. With --user
+// its supplementary groups are the user's own plus the primary gid,
+// as initgroups(3) sets them in OpenRC: a bare Credential has Go call
+// setgroups(0), which left a daemon run as a user without the groups
+// that give it access to its sockets, devices and files. With --group
+// alone only the gid changes and the supplementary set is kept, again
+// as OpenRC does.
+func daemonCredential(opts Options) (*syscall.Credential, error) {
+	uid, gid, err := resolveCredentials(opts)
+	if err != nil {
+		return nil, err
+	}
+	cred := &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+	if opts.User == "" {
+		cred.NoSetGroups = true
+		return cred, nil
+	}
+	cred.Groups = userGroups(opts.User, uint32(gid))
+	// Already exactly these groups: skip setgroups(2), which needs
+	// CAP_SETGID even when it changes nothing.
+	if cur, err := syscall.Getgroups(); err == nil && sameGIDs(cur, cred.Groups) {
+		cred.NoSetGroups = true
+	}
+	return cred, nil
+}
+
+// userGroups is name's group list (by name or numeric uid) with gid
+// added; just gid when the user has no entry to look the list up in.
+func userGroups(name string, gid uint32) []uint32 {
+	groups := []uint32{gid}
+	u, err := user.Lookup(name)
+	if err != nil {
+		if _, nerr := strconv.Atoi(name); nerr != nil {
+			return groups
+		}
+		if u, err = user.LookupId(name); err != nil {
+			return groups
+		}
+	}
+	ids, err := u.GroupIds()
+	if err != nil {
+		return groups
+	}
+	for _, id := range ids {
+		n, err := strconv.ParseUint(id, 10, 32)
+		if err != nil || uint32(n) == gid {
+			continue
+		}
+		groups = append(groups, uint32(n))
+	}
+	return groups
+}
+
+// sameGIDs reports whether a and b hold the same set of gids.
+func sameGIDs(a []int, b []uint32) bool {
+	set := make(map[uint32]bool, len(a))
+	for _, g := range a {
+		set[uint32(g)] = true
+	}
+	other := make(map[uint32]bool, len(b))
+	for _, g := range b {
+		if !set[g] {
+			return false
+		}
+		other[g] = true
+	}
+	return len(other) == len(set)
 }
 
 func lookupUID(s string) (int, error) {
