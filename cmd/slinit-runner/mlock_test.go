@@ -210,7 +210,7 @@ func TestRunnerLocksServiceMemory(t *testing.T) {
 func TestRunnerLocksMuslProgram(t *testing.T) {
 	muslgcc, err := exec.LookPath("musl-gcc")
 	if err != nil {
-		t.Skip("no musl-gcc")
+		t.Skip("no musl-gcc on PATH to build a musl program")
 	}
 	gobin, err := exec.LookPath("go")
 	if err != nil {
