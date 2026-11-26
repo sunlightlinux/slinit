@@ -1002,7 +1002,15 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 					"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
 						"run the steps from one script if they all matter", cfg.command)})
 			}
-			cfg.command, cfg.argv0 = value, c.cmd.argv0
+			cfg.command, cfg.argv0 = value, ""
+			if c.cmd.hasArgv0 {
+				if v, why, ok := slinitArgv0Value(c.cmd.argv0, c.noEnvExpand); ok {
+					cfg.argv0 = v
+				} else {
+					warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+						"%s=%s: argv[0] %q dropped — %s; the program gets its path as argv[0]", key, val, c.cmd.argv0, why)})
+				}
+			}
 			cfg.commandIgnoreFailure, cfg.commandArgv, cfg.commandLiteral = c.ignoreFailure, c.cmd.argv, c.noEnvExpand
 		case "ExecStop":
 			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)

@@ -282,8 +282,9 @@ ExecStop=:/bin/echo $HOME ${X} $$
 	// "|": the rest runs as one /bin/sh -c script; "@|" a login shell.
 	d, _ := loadSystemdDirect(t, "[Service]\nExecStart=@|echo \"a b\" $$HOME\n")
 	argvIs(t, "|: command", d.Command, []string{"/bin/sh", "-c", "echo a b $HOME"})
-	if d.Argv0 != "-sh" {
-		t.Errorf("@|: command-argv0 = %q, want -sh", d.Argv0)
+	// exec-invoke.c: "-" and the shell's path, not "-sh".
+	if d.Argv0 != "-/bin/sh" {
+		t.Errorf("@|: command-argv0 = %q, want -/bin/sh", d.Argv0)
 	}
 
 	// What slinit cannot carry is a WARN, which prints without --verbose.

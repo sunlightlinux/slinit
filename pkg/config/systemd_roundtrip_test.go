@@ -512,6 +512,43 @@ Type=oneshot
 	t.Errorf("the dropped argv0 of a oneshot was not a WARN: %v", warns)
 }
 
+// command-argv0 is written as the rest of its line, trimmed and
+// unquoted, and the argv[0] an @ gives is C-unescaped first: a "\n" in
+// it ended the line, and what followed became a setting of its own
+// (here run-as). An argv[0] that cannot be written so that it reads back
+// the same is dropped with a WARN; with ":" its $ stay literal.
+func TestSystemdExecArgv0Unwritable(t *testing.T) {
+	for _, c := range []struct{ line, why string }{
+		{`@/bin/sleep "x\nrun-as = nobody" 10`, "control character"},
+		{`@/bin/sleep "x\rrun-as = nobody" 10`, "control character"},
+		{`@/bin/sleep "x\x01y" 10`, "control character"},
+		{`@/bin/sleep "  spaced  " 10`, "blank"},
+		{`@/bin/sleep "" 10`, "empty"},
+	} {
+		unit := "[Service]\nExecStart=" + c.line + "\n"
+		desc, warns := convertWarns(t, unit)
+		if desc.RunAs != "" || desc.Argv0 != "" {
+			t.Errorf("%s: run-as = %q, command-argv0 = %q; want both unset", c.line, desc.RunAs, desc.Argv0)
+		}
+		if got := strings.Join(desc.Command, "|"); got != "/bin/sleep|10" {
+			t.Errorf("%s: command = %q; want /bin/sleep|10", c.line, got)
+		}
+		warned := false
+		for _, w := range warns {
+			warned = warned || w.Level == "WARN" && strings.Contains(w.Msg, "argv[0]") && strings.Contains(w.Msg, c.why)
+		}
+		if !warned {
+			t.Errorf("%s: no WARN naming the %s: %v", c.line, c.why, warns)
+		}
+	}
+
+	t.Setenv("SLINIT_ARGV0_PROBE", "expanded")
+	desc, _ := convertWarns(t, "[Service]\nExecStart=:@/bin/sleep \"a$SLINIT_ARGV0_PROBE $$\" 10\n")
+	if desc.Argv0 != "a$SLINIT_ARGV0_PROBE $$" {
+		t.Errorf(`":@": command-argv0 = %q; want it literal, "a$SLINIT_ARGV0_PROBE $$"`, desc.Argv0)
+	}
+}
+
 // systemd expands %-specifiers in Exec lines and paths. They passed
 // through literally, so a service ran with "%t/%N.sock" as an argument,
 // and nothing said so.

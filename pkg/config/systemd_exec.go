@@ -331,15 +331,16 @@ func parseExecLine(cfg *SystemdConfig, key, val string) (cmds []parsedExec, warn
 		c := parsedExec{execPrefixes: pre}
 		switch {
 		case pre.viaShell:
-			// "sh" (or "-sh" with @) runs the rest, joined with
-			// spaces, as one -c script; with nothing to run, the shell
-			// itself (exec-invoke.c).
+			// The shell runs the rest, joined with spaces, as one -c
+			// script; with nothing to run, the shell itself. With @
+			// its argv[0] is the shell's path with a "-" in front, the
+			// login-shell convention (exec_invoke in exec-invoke.c).
 			c.cmd.argv = []string{path}
 			if len(args) > 0 {
 				c.cmd.argv = append(c.cmd.argv, "-c", strings.Join(args, " "))
 			}
 			if pre.separateArgv0 {
-				c.cmd.argv0, c.cmd.hasArgv0 = "-sh", true
+				c.cmd.argv0, c.cmd.hasArgv0 = "-"+path, true
 			}
 		case len(args) == 0:
 			return refuse("empty executable name or zeroeth argument")
@@ -392,6 +393,26 @@ func slinitCommandValue(argv []string, literal bool) (value string, ok bool) {
 		parts[i] = b.String()
 	}
 	return strings.Join(parts, " "), true
+}
+
+// slinitArgv0Value writes argv0, the argv[0] an "@" gives, as the value
+// of command-argv0. That value is the rest of its line with the blanks
+// at either end trimmed, and it has no quoting, so an argv[0] holding a
+// control character (a newline would end the line and start a setting
+// of its own) or starting or ending with a blank cannot be written, and
+// neither can an empty one, which slinit reads as no command-argv0. ok
+// is false then, with why. The $ are escaped as in the command, since
+// slinit expands variables in command-argv0 too.
+func slinitArgv0Value(argv0 string, literal bool) (value, why string, ok bool) {
+	switch {
+	case argv0 == "":
+		return "", "it is empty, which command-argv0 cannot express", false
+	case strings.ContainsFunc(argv0, unicode.IsControl):
+		return "", "it holds a control character, which a command-argv0 value cannot", false
+	case strings.TrimSpace(argv0) != argv0:
+		return "", "it starts or ends with a blank, which slinit trims from a command-argv0 value", false
+	}
+	return escapeDollars(argv0, literal), "", true
 }
 
 // escapeDollars doubles the $ of w that slinit would expand but systemd

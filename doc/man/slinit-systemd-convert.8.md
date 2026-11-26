@@ -87,10 +87,14 @@ A line systemd refuses (unbalanced quotes after the path, an empty path) makes t
 conversion fail, unless its command has the **-** prefix.
 
 The prefixes of an **Exec** command: **@** gives **command-argv0**
-(main command only). **:** is kept exactly: every **$** is doubled, so
-slinit expands no variable either. **|** runs the rest as one
+(main command only); an argv[0] that a **command-argv0** line cannot
+carry as it is (empty, holding a control character such as a newline,
+or starting or ending with a blank) is dropped with a warning, and the
+program gets its path as argv[0]. **:** is kept exactly: every **$** is
+doubled, in **command-argv0** too, so slinit expands no variable
+either. **|** runs the rest as one
 **/bin/sh -c** script (systemd uses the login shell of **User=**, and
-**/bin/sh** when it has none; with **@**, argv[0] is **-sh**). **-** on
+**/bin/sh** when it has none; with **@**, argv[0] is **-/bin/sh**). **-** on
 **ExecStartPre**, and on the **ExecStart** of a **oneshot**, runs the
 command through **/bin/sh -c '"$@" || :'**, so that its failure,
 a missing program included, is ignored as in systemd; on **ExecStartPost**
