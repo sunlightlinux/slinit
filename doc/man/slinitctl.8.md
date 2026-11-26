@@ -736,7 +736,10 @@ service name or rejected.
 
     **-m**, **\--message** *TEXT*
     :   Wall message to broadcast. Words after *kind* and *time* are
-        also joined into the message, as with SysV **shutdown**.
+        also joined into the message, as with SysV **shutdown**. Those
+        words need the *time* before them: a word in its place that is
+        not a time is a usage error, not the message of an immediate
+        shutdown (since 4.0.4). With **-k** no *time* is needed.
 
     **-i**, **\--interactive**
     :   Ask for the host name and refuse to proceed unless it matches,

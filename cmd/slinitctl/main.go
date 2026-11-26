@@ -3121,6 +3121,14 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 			if positionalIdx == 0 {
 				return usagef("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", a)
 			}
+			// The message comes after the time, as with SysV shutdown
+			// and slinit-shutdown: a word in the time's place is a
+			// mistyped time, not the message of an immediate shutdown.
+			// -k schedules nothing, so its words are only a message.
+			if timeGiven == "" && !warnOnly {
+				_, err := parseShutdownTime(a)
+				return err
+			}
 			messageTokens = append(messageTokens, a)
 		}
 	}

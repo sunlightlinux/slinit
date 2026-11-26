@@ -362,6 +362,14 @@ verified with `git tag -v`.
 
 ### Changed
 
+- **A mistyped shutdown time shut the machine down at once**:
+  `slinitctl reboot 10:3O`, `slinitctl poweroff +5min` or
+  `slinitctl shutdown halt soon` took the word that was not a time as
+  the wall message of an immediate shutdown, instead of refusing it as
+  SysV `shutdown` and `slinit-shutdown` do. A word after the kind that
+  is not a time is now a usage error (exit 2) and nothing is sent.
+  *Compat:* a wall message given as bare words needs a time before it
+  (`slinitctl reboot now going down`) or `-m`; `-k` is unchanged.
 - **A FIFO in an `env-dir`, or an `env-file` that is one, froze PID 1**:
   the start opened it with the service set's lock held and blocked until
   something opened the other end, stopping every start, stop and
