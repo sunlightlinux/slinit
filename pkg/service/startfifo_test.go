@@ -73,3 +73,15 @@ func TestLogFileFIFOWithReader(t *testing.T) {
 		t.Errorf("read %q (%v), want hello", buf[:n], err)
 	}
 }
+
+// required-files checks a file is readable by opening it; a FIFO with
+// no writer blocked that open, under the service set's lock. A FIFO
+// exists and is readable, so the start goes ahead.
+func TestRequiredFileFIFODoesNotBlockStart(t *testing.T) {
+	st := fifoStart(t, func(s *ProcessService, f string) {
+		s.Record().SetRequiredPaths([]string{f}, nil)
+	})
+	if st != StateStarted {
+		t.Errorf("state %v, want STARTED", st)
+	}
+}

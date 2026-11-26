@@ -105,6 +105,10 @@ verified with `git tag -v`.
   a reader. *Compat:* such a start now fails (ENXIO) instead of waiting;
   a FIFO whose reader is already running works as before.
 
+### Fixed
+- **A FIFO named in `required-files` froze PID 1**: the readability check
+  opened it and waited for a writer with the service set's lock held.
+
 ## [4.0.3] — 2026-11-26
 
 **A large fix release on the 4.0 long-term-support line, and a

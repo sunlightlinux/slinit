@@ -1318,7 +1318,9 @@ func (sr *ServiceRecord) CheckRequiredPaths() error {
 			return fmt.Errorf("required file %q is a directory", f)
 		}
 		// Readability check: open O_RDONLY and immediately close.
-		rf, err := os.Open(f)
+		// O_NONBLOCK so a FIFO does not block PID 1 in open(2)
+		// waiting for a writer.
+		rf, err := os.OpenFile(f, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			return fmt.Errorf("required file %q is not readable: %w", f, err)
 		}
