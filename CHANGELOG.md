@@ -33,6 +33,22 @@ requires.
 
 ### Security
 
+- **slinit-mount bind mounts ignored `ro`, `nosuid`, `nodev` and
+  `noexec`**: the kernel drops those flags on a bind, so
+  `options = bind,ro,noexec` gave a writable, executable mount. A second
+  `MS_REMOUNT|MS_BIND` now applies them (keeping the source's locked
+  flags); if it fails the bind is undone. fstab-only options
+  (`defaults`, `nofail`, `_netdev`, `x-*`, ...) are no longer passed to
+  the filesystem, where they failed with EINVAL, and `rw`, `exec`,
+  `suid`, `dev` clear their flags.
+- **slinit-resource (Pacemaker agent) reported a STARTING service as
+  stopped and `stop` then did nothing**, so the cluster could start it on
+  a second node while it still came up on the first. Only STOPPED is
+  "not running" now; `stop` stops any other state and waits up to
+  `stop_timeout`, and `start` waits for STARTED up to `start_timeout`.
+- **slinit-svc-value accepted `RC_SVCNAME=../..`** and wrote outside
+  RC_SVCDIR; the name is now validated like a key. An explicit empty
+  value is stored, as in OpenRC, instead of deleting the key.
 - **slinit-seedrng followed symlinks in the seed directory**: a
   `seed.no-credit` symlink made root create or truncate any file, a
   `seed.credit` symlink had its target credited as entropy, and a FIFO
