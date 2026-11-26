@@ -1010,6 +1010,16 @@ requires.
 
 ### Fixed
 
+- **Hooks froze every other service while they ran**:
+  `pre-start-command`, the env-generator, `pre-stop-hook`, the stop
+  `control-command-*` and `finish-command` ran while slinit held its
+  scheduling lock, so for up to `hook-timeout` no other service could
+  start or stop and `slinitctl` hung. They now run on their own while the
+  service waits in STARTING/STOPPING, and the transition continues when
+  the hook ends; the order is unchanged (pre-start before the fork,
+  pre-stop before the stop signal, finish before a restart). A stop
+  during a pre-start kills the hook. A reload is refused while an
+  on-demand pre-start or a recovery env-generator runs.
 - **Hooks could freeze PID 1 or outlive their service**:
   - a hung `env-generator` blocked every start, stop and `slinitctl`
     command (it ran with no timeout under the global lock); it is now
