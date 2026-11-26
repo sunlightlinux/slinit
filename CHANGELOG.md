@@ -935,6 +935,13 @@ requires.
 
 ### Fixed
 
+- **slinit-killall5 killed the script that called it inside a PID
+  namespace whose session leader is outside** (a container): getsid(0)
+  is 0 there and the own-session guard only protected sessions above 0.
+  Session 0 is now protected like any other, as sysvinit compares it.
+- **slinit-binfmt sent trailing blanks to the kernel**, which rejected
+  the rule with EINVAL. Lines are now stripped at both ends, as
+  systemd-binfmt does.
 - **Stopping a paused service waited out its stop timeout, and with
   `stop-timeout = 0` never finished** (a shutdown then hung): the
   stopped process kept the TERM pending. It is now sent SIGCONT after

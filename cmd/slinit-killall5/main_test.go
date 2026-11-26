@@ -344,3 +344,19 @@ func TestUnreadableStatIsSkipped(t *testing.T) {
 		}
 	}
 }
+
+// In a PID namespace whose session leader is outside it, getsid(0) is 0
+// and so is the session of the shell that called us. That shell must
+// survive; a failed getsid (-1) must not protect session 0.
+func TestSkipSessionZero(t *testing.T) {
+	caller := procInfo{pid: 2, sid: 0}
+	if !skip(caller, 50, 0, nil) {
+		t.Error("the calling shell in session 0 was not protected")
+	}
+	if skip(caller, 50, -1, nil) {
+		t.Error("a failed getsid protected session 0")
+	}
+	if skip(procInfo{pid: 3, sid: 3}, 50, 0, nil) {
+		t.Error("a process in another session was protected")
+	}
+}
