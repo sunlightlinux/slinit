@@ -150,6 +150,14 @@ verified with `git tag -v`.
   now goes to stdout, as `dinitctl --help` does; the usage printed for
   a missing command is still an error and stays on stderr.
 
+- **slinit-journald no longer panics sealing a damaged journal.** With
+  `--seal`, the next TAG covers every object since the last TAG the
+  writer found when it reopened the file; an object there with a
+  damaged size was allocated at that size and crashed the daemon with
+  `makeslice: len out of range`. Found by the new
+  FuzzJournalBinaryWriterReopen target. Such an object is now an error
+  for that append.
+
 - **slinit-journald no longer panics on a DATA object with a huge
   size.** When an append found its field already in the day file, it
   allocated the stored object's payload at whatever size the object

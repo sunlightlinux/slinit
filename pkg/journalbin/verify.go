@@ -246,6 +246,13 @@ func collectHMACInput(f *os.File, from, to uint64) ([]byte, error) {
 		if oh.Size < ObjectHeaderSize {
 			return nil, fmt.Errorf("journalbin: collect hmac bad size %d at %d", oh.Size, off)
 		}
+		// The writer seals objects it has not walked before: a size
+		// past the span, as a damaged file can hold, was allocated as
+		// is and panicked it with "makeslice: len out of range".
+		if oh.Size > to-off {
+			return nil, fmt.Errorf("journalbin: collect hmac: object at %d claims size %d past %d: %w",
+				off, oh.Size, to, ErrObjectBounds)
+		}
 		next := off + AlignUp(oh.Size)
 		switch oh.Type {
 		case ObjectEntry:

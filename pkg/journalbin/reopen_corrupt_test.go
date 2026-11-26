@@ -122,3 +122,46 @@ func TestWriterReopenHugeDataSize(t *testing.T) {
 	pokeUint64(t, path, dataOff+8, 1<<62)
 	reopenAndAppend(t, path, &journal.Event{Ts: 1000, Msg: "m", Prio: journal.PriorityInfo})
 }
+
+// A closed sealed journal whose first ENTRY claims a huge size: the
+// writer's next TAG collects the objects since the last one it could
+// find, and allocated that ENTRY at its claimed size.
+func TestWriterReopenSealedHugeEntrySize(t *testing.T) {
+	key, err := NewFSSKey(0, DefaultFSSEpochUsec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := WriterOptions{BootID: testBootID, FSSKey: key, TagEvery: 2}
+	path := filepath.Join(t.TempDir(), "s.journal")
+	w, err := NewWriterWithOptions(path, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := w.Append(&journal.Event{Ts: 1000, Msg: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pokeUint64(t, path, first+8, 1<<62)
+
+	done := make(chan error, 1)
+	go func() {
+		w, err := NewWriterWithOptions(path, opts)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer w.Close()
+		for i := 0; i < 2 && err == nil; i++ {
+			_, err = w.Append(&journal.Event{Ts: 2000, Msg: "n"})
+		}
+		done <- err
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reopening and appending to the file did not return")
+	}
+}
