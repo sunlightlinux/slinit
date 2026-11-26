@@ -150,6 +150,13 @@ verified with `git tag -v`.
   now goes to stdout, as `dinitctl --help` does; the usage printed for
   a missing command is still an error and stays on stderr.
 
+- **A damaged binary journal header no longer grows the file to
+  gigabytes.** slinit-journald appended at the tail offset the header
+  of the reopened day file named, even far past the file's end: a tail
+  of 4 GiB left a 4 GiB file (a hole the size-based vacuum counts), and
+  on a sealed journal the next seal could read an object of that size
+  into memory. Reopening such a file now fails with an error.
+
 - **slinit-journald no longer panics sealing a damaged journal.** With
   `--seal`, the next TAG covers every object since the last TAG the
   writer found when it reopened the file; an object there with a

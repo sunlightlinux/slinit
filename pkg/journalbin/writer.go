@@ -267,6 +267,15 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 		if w.header.TailObjectOffset < HeaderSize {
 			w.header.TailObjectOffset = uint64(st.Size())
 		}
+		// A closed file's tail is never past its end (Close fsyncs
+		// before it returns). A damaged header's was appended at as
+		// is: the file grew a hole up to it, which an object claiming
+		// gigabytes then fitted in, and the next seal read it whole.
+		if w.header.TailObjectOffset > uint64(st.Size()) {
+			_ = f.Close()
+			return nil, fmt.Errorf("journalbin: %s: tail object offset %d past the file's end %d: %w",
+				path, w.header.TailObjectOffset, st.Size(), ErrObjectBounds)
+		}
 		w.header.State = StateOnline
 		w.nextSeqnum = w.header.TailEntrySeqnum + 1
 

@@ -165,3 +165,20 @@ func TestWriterReopenSealedHugeEntrySize(t *testing.T) {
 		t.Fatal("reopening and appending to the file did not return")
 	}
 }
+
+// A closed journal whose header puts the tail 4 GiB past the file's
+// end: the writer appended there, leaving a 4 GiB file (a hole the
+// size vacuum counts), in which an object claiming gigabytes then fit,
+// for the next seal to read whole.
+func TestWriterReopenTailPastEOF(t *testing.T) {
+	path, _ := closedJournal(t)
+	pokeUint64(t, path, 136, 1<<32) // TailObjectOffset
+	reopenAndAppend(t, path, &journal.Event{Ts: 2000, Msg: "n"})
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() > 1<<20 {
+		t.Fatalf("file grew to %d bytes", st.Size())
+	}
+}
