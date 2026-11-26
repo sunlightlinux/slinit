@@ -3137,13 +3137,13 @@ func (s *ProcessService) startProcess() error {
 			if s.logRotator != nil {
 				s.logRotator.Close()
 				s.logRotator = nil
-			}
-			if s.stderrRotator != nil {
-				s.stderrRotator.Close()
-				s.stderrRotator = nil
 			} else {
 				outputPipe.Close()
 			}
+		}
+		if s.stderrRotator != nil {
+			s.stderrRotator.Close()
+			s.stderrRotator = nil
 		}
 		if s.logType == LogToCommand {
 			if outputPipe != nil {
@@ -3183,12 +3183,16 @@ func (s *ProcessService) startProcess() error {
 	if outputPipe != nil && s.logType == LogToBuffer {
 		s.logBuf.CloseWriteEnd()
 		s.logBuf.StartReader()
-	} else if outputPipe != nil && s.logType == LogToFile {
-		if s.logRotator != nil {
-			s.logRotator.CloseWriteEnd()
-			s.logRotator.StartReader()
-		} else {
-			outputPipe.Close()
+	} else if s.logType == LogToFile {
+		// outputPipe is nil with stderr-logfile and no logfile; stderr
+		// still has its rotator to start.
+		if outputPipe != nil {
+			if s.logRotator != nil {
+				s.logRotator.CloseWriteEnd()
+				s.logRotator.StartReader()
+			} else {
+				outputPipe.Close()
+			}
 		}
 		if s.stderrRotator != nil {
 			s.stderrRotator.CloseWriteEnd()

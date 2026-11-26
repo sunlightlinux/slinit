@@ -14,61 +14,117 @@ func clockTestLogger() *logging.Logger {
 	return logging.New(logging.LevelDebug)
 }
 
-// TestWriteAndReadClockTimestamp verifies round-trip persistence.
+// clockScratch points the timestamp file into a temporary directory and
+// replaces settimeofday with a recorder. These tests used to copy the
+// parsing logic instead of calling it, and two of them read — or, run as
+// root, wrote — the host's own /var/lib/slinit/clock.
+func clockScratch(t *testing.T) (path string, set *[]time.Time) {
+	t.Helper()
+	path = filepath.Join(t.TempDir(), "var/lib/slinit/clock")
+	oldPath, oldSet := clockTimestampPath, settimeofdayFunc
+	clockTimestampPath = path
+	var calls []time.Time
+	settimeofdayFunc = func(tt time.Time) error { calls = append(calls, tt); return nil }
+	t.Cleanup(func() { clockTimestampPath, settimeofdayFunc = oldPath, oldSet })
+	return path, &calls
+}
+
 func TestWriteAndReadClockTimestamp(t *testing.T) {
-	// Redirect to temp dir
-	tmp := t.TempDir()
-	origPath := clockTimestampPath
-	// We can't reassign the const, so we test readClockTimestamp indirectly
-	// by writing a file and reading it.
-
-	path := filepath.Join(tmp, "clock")
+	path, _ := clockScratch(t)
 	before := time.Now().Unix()
-	content := strconv.FormatInt(before, 10) + "\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	// The directory does not exist yet: the write creates it.
+	if err := WriteClockTimestamp(); err != nil {
 		t.Fatal(err)
 	}
-
-	data, err := os.ReadFile(path)
+	ts, err := readClockTimestamp()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	_ = origPath // keep reference
-	s := string(data)
-	epoch, err := strconv.ParseInt(s[:len(s)-1], 10, 64)
-	if err != nil {
-		t.Fatal(err)
+	if ts.Unix() < before || ts.Unix() > time.Now().Unix() {
+		t.Errorf("read back %d, written around %d", ts.Unix(), before)
 	}
-
-	ts := time.Unix(epoch, 0)
-	if ts.Unix() != before {
-		t.Errorf("round-trip failed: wrote %d, got %d", before, ts.Unix())
+	// Atomic: no temporary file left beside it.
+	ents, _ := os.ReadDir(filepath.Dir(path))
+	if len(ents) != 1 || ents[0].Name() != "clock" {
+		t.Errorf("directory holds %v", ents)
 	}
 }
 
-// TestClockGuardNoFile tests behavior when no timestamp file exists.
-func TestClockGuardNoFile(t *testing.T) {
-	logger := clockTestLogger()
-
-	// Mock settimeofday to capture calls without actually changing the clock
-	var setCalled bool
-	var setTime time.Time
-	origSetFunc := settimeofdayFunc
-	settimeofdayFunc = func(tt time.Time) error {
-		setCalled = true
-		setTime = tt
-		return nil
+func TestReadClockTimestampInvalid(t *testing.T) {
+	path, _ := clockScratch(t)
+	if _, err := readClockTimestamp(); err == nil {
+		t.Errorf("missing file read without error")
 	}
-	defer func() { settimeofdayFunc = origSetFunc }()
-
-	// Current system time should be after clockFloor, so no adjustment needed
-	delta := ClockGuard(logger)
-	if delta != 0 {
-		t.Errorf("expected no adjustment, got %v", delta)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	for name, content := range map[string]string{
+		"empty": "", "whitespace": "   \n", "not_a_number": "hello",
+		"negative": "-1", "zero": "0", "float": "1234.567",
+	} {
+		os.WriteFile(path, []byte(content), 0o644)
+		if ts, err := readClockTimestamp(); err == nil {
+			t.Errorf("%s: read %v without error", name, ts)
+		}
 	}
-	if setCalled {
-		t.Errorf("settimeofday should not have been called, but was called with %v", setTime)
+	os.WriteFile(path, []byte("  1800000000 \n"), 0o644)
+	if ts, err := readClockTimestamp(); err != nil || ts.Unix() != 1800000000 {
+		t.Errorf("padded valid timestamp: %v %v", ts, err)
+	}
+}
+
+// A clock ahead of both the floor and the file is left alone.
+func TestClockGuardLeavesAGoodClock(t *testing.T) {
+	path, set := clockScratch(t)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte(strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10)), 0o644)
+	if d := ClockGuard(clockTestLogger()); d != 0 || len(*set) != 0 {
+		t.Errorf("good clock adjusted: delta %v, set %v", d, *set)
+	}
+	// No file at all: the floor alone, which a real clock is past.
+	os.Remove(path)
+	if d := ClockGuard(clockTestLogger()); d != 0 || len(*set) != 0 {
+		t.Errorf("no file: delta %v, set %v", d, *set)
+	}
+}
+
+// A clock behind the last saved time is advanced to it, and the file is
+// rewritten. A file older than the floor is outranked by the floor.
+func TestClockGuardAdvancesToTheSavedTime(t *testing.T) {
+	path, set := clockScratch(t)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	future := time.Now().Add(48 * time.Hour).Truncate(time.Second)
+	os.WriteFile(path, []byte(strconv.FormatInt(future.Unix(), 10)+"\n"), 0o644)
+
+	d := ClockGuard(clockTestLogger())
+	if len(*set) != 1 || !(*set)[0].Equal(future) {
+		t.Fatalf("clock set to %v, want %v", *set, future)
+	}
+	if d < 47*time.Hour || d > 49*time.Hour {
+		t.Errorf("delta %v, want about 48h", d)
+	}
+	if b, _ := os.ReadFile(path); string(b) == strconv.FormatInt(future.Unix(), 10)+"\n" {
+		t.Errorf("timestamp file not rewritten after the correction")
+	}
+
+	// The floor wins over an older file.
+	oldFloor := clockFloor
+	t.Cleanup(func() { clockFloor = oldFloor })
+	clockFloor = time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	os.WriteFile(path, []byte("1000000000\n"), 0o644)
+	*set = nil
+	ClockGuard(clockTestLogger())
+	if len(*set) != 1 || !(*set)[0].Equal(clockFloor) {
+		t.Errorf("clock set to %v, want the floor %v", *set, clockFloor)
+	}
+}
+
+// A failed settimeofday reports no adjustment.
+func TestClockGuardSetFailure(t *testing.T) {
+	path, _ := clockScratch(t)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte(strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)), 0o644)
+	settimeofdayFunc = func(time.Time) error { return os.ErrPermission }
+	if d := ClockGuard(clockTestLogger()); d != 0 {
+		t.Errorf("failed set reported delta %v", d)
 	}
 }
 
@@ -79,69 +135,5 @@ func TestClockFloor(t *testing.T) {
 	}
 	if clockFloor.After(time.Now()) {
 		t.Errorf("clockFloor %v is in the future", clockFloor)
-	}
-}
-
-// TestReadClockTimestampInvalid tests various malformed timestamp files.
-func TestReadClockTimestampInvalid(t *testing.T) {
-	tmp := t.TempDir()
-
-	tests := []struct {
-		name    string
-		content string
-	}{
-		{"empty", ""},
-		{"whitespace", "   \n"},
-		{"not_a_number", "hello"},
-		{"negative", "-1"},
-		{"zero", "0"},
-		{"float", "1234.567"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(tmp, tc.name)
-			os.WriteFile(path, []byte(tc.content), 0644)
-
-			// We test the internal parser logic by reading and parsing
-			data, _ := os.ReadFile(path)
-			s := string(data)
-			s = trimSpace(s)
-			if s == "" {
-				return // expected failure
-			}
-			epoch, err := strconv.ParseInt(s, 10, 64)
-			if err != nil {
-				return // expected failure for non-numeric
-			}
-			if epoch <= 0 {
-				return // expected failure for zero/negative
-			}
-			t.Errorf("expected failure for %q but got epoch=%d", tc.name, epoch)
-		})
-	}
-}
-
-// trimSpace mimics strings.TrimSpace without importing strings in test.
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t' || s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
-// TestWriteClockTimestampAtomicity verifies atomic write (temp + rename).
-func TestWriteClockTimestampAtomicity(t *testing.T) {
-	// WriteClockTimestamp uses the hardcoded path which requires /var/lib/slinit
-	// to exist. We can't easily redirect it, but we can verify the function
-	// signature and that it doesn't panic with a bad path by calling it in
-	// an environment where /var/lib may not be writable.
-	err := WriteClockTimestamp()
-	// Either succeeds (if running as root/writable) or fails with permission error
-	if err != nil {
-		t.Logf("WriteClockTimestamp (expected to fail without root): %v", err)
 	}
 }

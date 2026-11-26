@@ -371,15 +371,18 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 				cmd.SysProcAttr.Ctty = 0 // fd 0 (stdin) = /dev/console
 			}
 		}
-	} else if params.OutputPipe != nil {
+	} else {
 		// Capture stdout/stderr to a pipe for log buffering or piping.
 		// When ErrorPipe is set, stderr goes to a separate pipe (used by
 		// the error-logger feature for piping stderr to a different command).
-		cmd.Stdout = params.OutputPipe
+		// Either can be set without the other: stderr-logfile with no
+		// logfile captures stderr alone.
+		if params.OutputPipe != nil {
+			cmd.Stdout = params.OutputPipe
+			cmd.Stderr = params.OutputPipe
+		}
 		if params.ErrorPipe != nil {
 			cmd.Stderr = params.ErrorPipe
-		} else {
-			cmd.Stderr = params.OutputPipe
 		}
 	}
 

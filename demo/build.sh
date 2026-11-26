@@ -594,7 +594,10 @@ EOF
 # Step 7: Create initramfs
 echo "[7/7] Creating initramfs..."
 cd "${ROOTFS_DIR}"
-find . | cpio -o -H newc 2>/dev/null | gzip > "${OUTPUT_DIR}/initramfs.cpio.gz"
+# -R 0:0 records root ownership: unprivileged, cpio would otherwise store
+# the builder's uid on every file, and slinit refuses hook scripts and
+# hook directories root does not own ("hooks: ... is not owned by uid 0").
+find . | cpio -o -H newc -R 0:0 2>/dev/null | gzip > "${OUTPUT_DIR}/initramfs.cpio.gz"
 cp "${KERNEL}" "${OUTPUT_DIR}/vmlinuz-virt"
 
 echo ""

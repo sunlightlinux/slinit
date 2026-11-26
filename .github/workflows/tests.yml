@@ -329,6 +329,19 @@ jobs:
         # lifting the restriction makes them run here instead.
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
+      - name: Build dinit for the wire-protocol tests
+        # pkg/dinitwire and slinitctl's dinit adapter are tested against a
+        # real dinit, and skip without one, so here they had never run.
+        # v0.23.0 is the version their layouts were read from. A failed
+        # build only leaves those tests skipping, as before.
+        run: |
+          if git clone -q --depth 1 --branch v0.23.0 https://github.com/davmac314/dinit "$RUNNER_TEMP/dinit" &&
+             make -C "$RUNNER_TEMP/dinit" -j"$(nproc)" >/dev/null; then
+            echo "SLINIT_TEST_DINIT=$RUNNER_TEMP/dinit/src/dinit" >> "$GITHUB_ENV"
+          else
+            echo "::warning::dinit build failed; the dinit wire tests will skip"
+          fi
+
       - name: Unit tests with the race detector
         # -timeout well under the job default: a lock-ordering mistake
         # deadlocks rather than failing, and a hung test that burns the

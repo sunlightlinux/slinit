@@ -1057,6 +1057,18 @@ requires.
   stayed STOPPING forever**: the stop-timeout SIGKILL was sent to a
   process group the daemon does not lead. It now reaches the daemon's
   group, as the stop signal does.
+- **`localectl set-keymap` ignored `export KEYMAP=` in `rc.conf`**: the
+  line was not recognised, so `rc.conf` was left with the old keymap and
+  the boot script restored it at the next boot. It is updated now, with
+  its `export` and indentation kept.
+- **`timedatectl set-timezone` dropped `export` from `rc.conf`**: an
+  `export TIMEZONE=...` line, or an indented one, was rewritten as a bare
+  `TIMEZONE=...`. What stands before the name is kept now.
+- **`stderr-logfile` without `logfile` wrote nothing**: the service's
+  stderr went to `/dev/null` and the file was never created, so its
+  rotation settings had nothing to rotate. stderr was wired to its own
+  pipe, and that pipe read, only next to a stdout pipe. Likewise an
+  `error-logger` without a stdout logger now receives stderr.
 - **`slinitctl --pin stop` on a service already stopped did not pin it**:
   the reply said "already stopped" and the pin was dropped, so the next
   start, a dependent's or `start-all`'s, brought it up. It is pinned now,

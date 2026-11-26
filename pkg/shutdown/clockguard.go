@@ -27,11 +27,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	// clockTimestampPath is the persistent file that stores the last
-	// known-good Unix timestamp (seconds since epoch, ASCII).
-	clockTimestampPath = "/var/lib/slinit/clock"
+// clockTimestampPath is the persistent file that stores the last
+// known-good Unix timestamp (seconds since epoch, ASCII). A variable so
+// tests can point it away from the host's own file.
+var clockTimestampPath = "/var/lib/slinit/clock"
 
+const (
 	// clockFloorYear is the absolute minimum year we consider valid.
 	// Any system clock before this is definitely wrong.
 	clockFloorYear = 2024
