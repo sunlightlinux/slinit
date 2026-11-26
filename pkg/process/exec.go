@@ -751,6 +751,16 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 					}
 					return
 				}
+				if cmd.ProcessState != nil {
+					// Reaped by cmd.Wait() itself, which reported a
+					// context or WaitDelay error in place of the
+					// status; the router will never see this pid.
+					waitDone <- waitResult{
+						status: cmd.ProcessState.Sys().(syscall.WaitStatus),
+						known:  true,
+					}
+					return
+				}
 				// No status to report. Say so rather than inventing one.
 				waitDone <- waitResult{known: false}
 			}

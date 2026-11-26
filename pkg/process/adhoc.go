@@ -186,6 +186,13 @@ func waitAdhoc(cmd *exec.Cmd) error {
 			// ErrWaitDelay: the child was reaped and exited 0; only
 			// its I/O outlived cmd.WaitDelay.
 			waitDone <- result{err, true}
+		case cmd.ProcessState != nil:
+			// cmd.Wait() reaped the child but reports something else
+			// in place of its status: ctx.Err() when the context ended
+			// and Cancel claimed success — a hook's kill(-pgid) does,
+			// on a group whose leader just exited — or a copy error.
+			// The status is known; the router will never see it.
+			waitDone <- result{err, true}
 		default:
 			// No status: either the reaper took the child (ECHILD) or
 			// something else went wrong. Say so rather than passing a
