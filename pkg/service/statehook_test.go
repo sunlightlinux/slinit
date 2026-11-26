@@ -612,3 +612,48 @@ func processAlive(pid int) bool {
 	f := strings.Fields(string(b))
 	return len(f) > 2 && f[2] != "Z"
 }
+
+// A smooth recovery computes the new run's environment with the
+// env-generator; it did so under the lock, from startProcess.
+func TestSmoothRecoveryEnvGeneratorRunsOffQueueMu(t *testing.T) {
+	base := stateHookGoroutines()
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	s := NewProcessService(set, "smooth")
+	s.SetHookTimeout(10 * time.Second)
+	s.SetSmoothRecovery(true)
+	s.SetAutoRestart(RestartAlways)
+	s.SetRestartDelay(0)
+	count := filepath.Join(dir, "count")
+	// The second run (the recovery's) is slow.
+	s.SetEnvGenerator(writeScript(t, dir, "gen", "echo x >> "+count+
+		"\nn=$(wc -l < "+count+")\n[ \"$n\" -ge 2 ] && { echo x > "+filepath.Join(dir, "slow")+"; sleep "+hookSleep+"; }\necho GENV=$n\n"))
+	out := filepath.Join(dir, "out")
+	s.SetCommand([]string{"/bin/sh", "-c", `echo "$GENV" >> ` + out + `; [ "$GENV" = 1 ] && exit 1; exec sleep 30`})
+	set.AddService(s)
+	set.StartService(s)
+	if waitForFileWithin(filepath.Join(dir, "slow"), 5*time.Second) == "" {
+		t.Fatal("the recovery did not run the env-generator")
+	}
+	requireQueueMuFree(t, set, "env-generator of a smooth recovery")
+	if st := s.State(); st != StateStarted {
+		t.Errorf("state %v during the recovery, want STARTED", st)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, _ := os.ReadFile(out); strings.Fields(string(b)) != nil && len(strings.Fields(string(b))) >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	b, _ := os.ReadFile(out)
+	if got := strings.Join(strings.Fields(string(b)), " "); got != "1 2" {
+		t.Errorf("runs saw GENV %q, want \"1 2\"", got)
+	}
+	if st := s.State(); st != StateStarted || s.PID() <= 0 {
+		t.Errorf("after the recovery: state %v pid %d, want STARTED with a process", st, s.PID())
+	}
+	set.StopService(s)
+	waitState(t, s, StateStopped, 5*time.Second)
+	waitStateHooksGone(t, base, 2*time.Second)
+}

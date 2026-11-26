@@ -44,7 +44,14 @@ const (
 	hookPreStop                         // pre-stop-hook
 	hookStopControl                     // control-command-<SIG> in place of the stop signal
 	hookFinish                          // finish-command
+	hookEnvGen                          // env-generator of a smooth recovery
 )
+
+// endsWithStop reports whether a stop ends the hook rather than waiting
+// for it: one that prepares a launch the stop has called off.
+func (k hookKind) endsWithStop() bool {
+	return k == hookPreStart || k == hookEnvGen
+}
 
 func (k hookKind) String() string {
 	switch k {
@@ -56,6 +63,8 @@ func (k hookKind) String() string {
 		return "control-command"
 	case hookFinish:
 		return "finish-command"
+	case hookEnvGen:
+		return "env-generator"
 	}
 	return "hook"
 }
@@ -108,6 +117,16 @@ func (s *ProcessService) startStateHookLocked(kind hookKind,
 // queueMu.
 func (s *ProcessService) stateHookRunning() bool {
 	return s.stateHook.Load() != nil
+}
+
+// RunningStateHook names the state hook running, or returns "" when
+// none is. A reload, which holds queueMu, refuses to change a service's
+// settings under a hook that is reading them. Caller holds queueMu.
+func (s *ProcessService) RunningStateHook() string {
+	if h := s.stateHook.Load(); h != nil {
+		return h.kind.String()
+	}
+	return ""
 }
 
 // cancelStateHook ends a running state hook, killing its process group.

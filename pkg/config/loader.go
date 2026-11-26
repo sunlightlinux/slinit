@@ -227,6 +227,20 @@ func (dl *DirLoader) ReloadService(svc service.Service) (service.Service, error)
 		return nil, err
 	}
 
+	// A hook the service's transition waits on runs off the
+	// scheduling lock and reads the service's settings while it does
+	// (a pre-start-command of an on-demand service, a smooth recovery's
+	// env-generator: the service is STARTED). It is bounded by
+	// hook-timeout; reload once it is done.
+	if h, ok := svc.(interface{ RunningStateHook() string }); ok {
+		if hook := h.RunningStateHook(); hook != "" {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message:     fmt.Sprintf("cannot reload service while its %s runs", hook),
+			}
+		}
+	}
+
 	state := svc.State()
 	switch state {
 	case service.StateStopped:

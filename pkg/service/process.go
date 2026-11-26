@@ -140,19 +140,21 @@ type ProcessService struct {
 	// PID() for why the bare int read it replaced was a data race.
 	pidPublished atomic.Int64
 
-	// hookTimeout bounds every synchronous hook: pre-start-command,
-	// post-start-command, finish-command, pre-stop-hook and
-	// control-command-*. Zero means defaultFinishTimeout.
+	// hookTimeout bounds every hook: pre-start-command,
+	// post-start-command, finish-command, pre-stop-hook,
+	// control-command-* and the env-generator. Zero means
+	// defaultFinishTimeout.
 	//
 	// It is a per-service knob and not a constant because five seconds
 	// is too short for a hook that legitimately waits on something —
 	// a mount appearing, a socket accepting — and such a hook was
 	// killed and, for pre-start-command, failed the start outright.
-	// It stays a bounded wait rather than becoming optional because
-	// these hooks run inside the scheduling lock: measured, a service
-	// whose pre-start-command sleeps holds up an unrelated service's
-	// start for the remainder of this timeout. The budget is
-	// system-wide, which is why slinit-service(5) says so.
+	// It stays a bounded wait rather than becoming optional because the
+	// service's own transition waits for the hook. (Until the hooks
+	// moved off the scheduling lock, statehook.go, it was also how long
+	// one service's hook could hold up every other service: measured, a
+	// service whose pre-start-command slept held up an unrelated
+	// service's start for the remainder of this timeout.)
 	hookTimeout time.Duration
 
 	// start-delay: wait before each attempt's fork/exec. See
@@ -426,8 +428,8 @@ func (s *ProcessService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
 // SetFinishCommand sets the finish command (runs after process exits).
 func (s *ProcessService) SetFinishCommand(cmd []string) { s.finishCommand = cmd }
 
-// SetPreStartCommand records a command to run synchronously before the
-// main process is forked. A non-zero exit fails the start (systemd's
+// SetPreStartCommand records a command to run before the main process
+// is forked, which waits for it. A non-zero exit fails the start (systemd's
 // ExecStartPre= semantics).
 func (s *ProcessService) SetPreStartCommand(cmd []string) { s.preStartCommand = cmd }
 
@@ -1947,7 +1949,7 @@ func (s *ProcessService) effectiveHookTimeout() time.Duration {
 	return defaultFinishTimeout
 }
 
-// SetHookTimeout sets the bound for the synchronous hooks. Values <= 0
+// SetHookTimeout sets the bound for the hooks. Values <= 0
 // select the default.
 func (s *ProcessService) SetHookTimeout(d time.Duration) { s.hookTimeout = d }
 
@@ -1998,7 +2000,7 @@ func (s *ProcessService) BringDown() {
 	// has nothing left to do once the start is called off, so it is
 	// ended now.
 	if h := s.stateHook.Load(); h != nil {
-		if h.kind == hookPreStart {
+		if h.kind.endsWithStop() {
 			h.cancel()
 		}
 		return
@@ -2319,7 +2321,7 @@ func (s *ProcessService) InterruptStart() bool {
 	// died while starting, left to finish. There is no process; the
 	// service goes STOPPING and the hook's completion finishes the stop.
 	if h := s.stateHook.Load(); h != nil {
-		if h.kind == hookPreStart {
+		if h.kind.endsWithStop() {
 			h.cancel()
 		}
 		return true
@@ -3651,14 +3653,7 @@ func (s *ProcessService) doSmoothRecovery() {
 
 	if elapsed >= effectiveDelay {
 		// Can restart immediately
-		if err := s.startProcess(); err != nil {
-			s.services.logger.Error("Service '%s': smooth recovery failed: %v",
-				s.serviceName, err)
-			s.doingSmoothRecov = false
-			s.handleRecoveryFailureLocked()
-		} else {
-			s.doingSmoothRecov = false
-		}
+		s.smoothRelaunchLocked()
 	} else {
 		// Need to delay restart
 		delay := effectiveDelay - elapsed
@@ -3685,14 +3680,53 @@ func (s *ProcessService) fireSmoothRecoveryLocked(t *time.Timer) {
 		s.doingSmoothRecov = false
 		return
 	}
+	s.smoothRelaunchLocked()
+	s.services.processQueuesLocked()
+}
+
+// smoothRelaunchLocked launches the process again for a smooth recovery.
+// With an env-generator, the new run's environment is computed first,
+// off the lock, as for a start (BringUp): startProcess would otherwise
+// run the generator under it. The service stays STARTED meanwhile; a
+// stop ends the wait, killing the generator. Caller holds queueMu.
+func (s *ProcessService) smoothRelaunchLocked() {
+	if s.envGenerator == "" {
+		s.smoothRelaunchNowLocked()
+		return
+	}
+	s.startStateHookLocked(hookEnvGen,
+		func(ctx context.Context) func() error {
+			return func() error {
+				s.prepareStartEnvCtx(ctx)
+				return ctx.Err()
+			}
+		},
+		func(_ error, cancelled bool) {
+			switch {
+			case s.state.Load() == StateStopping:
+				// Stopped meanwhile; the stop waited for us.
+				s.discardStartEnv()
+				s.doingSmoothRecov = false
+				s.services.AddTransitionQueue(s)
+			case cancelled || !s.doingSmoothRecov || s.state.Load() != StateStarted || s.pid > 0:
+				s.discardStartEnv()
+				s.doingSmoothRecov = false
+			default:
+				s.smoothRelaunchNowLocked()
+			}
+		})
+}
+
+// smoothRelaunchNowLocked is the fork of a smooth recovery. Caller holds
+// queueMu.
+func (s *ProcessService) smoothRelaunchNowLocked() {
+	err := s.startProcess()
 	s.doingSmoothRecov = false
-	if err := s.startProcess(); err != nil {
+	if err != nil {
 		s.services.logger.Error("Service '%s': smooth recovery failed: %v",
 			s.serviceName, err)
 		s.handleRecoveryFailureLocked()
-		return
 	}
-	s.services.processQueuesLocked()
 }
 
 // cancelSmoothRecovery disarms a smooth-recovery relaunch still waiting
@@ -3903,7 +3937,8 @@ func (s *ProcessService) applyRunAs(cmd *exec.Cmd) {
 
 // execFinishCommand runs the finish-command after a process exits.
 // It passes the exit code and signal number as arguments.
-// Runs synchronously with a timeout so it doesn't block forever.
+// Runs synchronously with a timeout so it doesn't block forever; the
+// exit handler runs it off the lock instead (prepareFinishCommand).
 func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	_ = s.prepareFinishCommand(context.Background(), exit)()
 }
@@ -4055,9 +4090,10 @@ func (s *ProcessService) runReadyCheck(ctx context.Context) bool {
 	return process.RunAdhoc(cmd) == nil
 }
 
-// execPreStopHook runs the pre-stop-hook before sending stop signal.
-// Runs synchronously with a timeout. The hook receives the service PID
-// as first argument (like runit's control scripts).
+// execPreStopHook runs the pre-stop-hook synchronously, with a timeout.
+// The hook receives the service PID as its last argument (like runit's
+// control scripts). BringDown runs it off the lock instead
+// (preparePreStopHook).
 func (s *ProcessService) execPreStopHook() {
 	_ = s.preparePreStopHook(context.Background())()
 }
