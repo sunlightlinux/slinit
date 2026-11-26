@@ -76,3 +76,26 @@ func TestOpenInRootDirectory(t *testing.T) {
 		}
 	})
 }
+
+// openat2 fails RESOLVE_IN_ROOT with EAGAIN when a rename or mount
+// anywhere on the system raced the ".." check — the man page says to
+// retry. Passing it on failed opens under nothing but load (seen in the
+// full unit run). Retried, then resolved by the walk.
+func TestOpenInRootRetriesEAGAIN(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "f"), []byte("x"), 0o600)
+	for _, fails := range []int{1, 1000} {
+		calls := 0
+		openat2 = func(dfd int, p string, how *unix.OpenHow) (int, error) {
+			if calls++; calls <= fails {
+				return -1, unix.EAGAIN
+			}
+			return unix.Openat2(dfd, p, how)
+		}
+		got, err := readInRoot(t, root, "f")
+		openat2 = unix.Openat2
+		if err != nil || got != "x" {
+			t.Errorf("%d EAGAINs: read %q, %v", fails, got, err)
+		}
+	}
+}

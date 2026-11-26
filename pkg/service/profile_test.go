@@ -3,6 +3,7 @@ package service
 import (
 	"sort"
 	"testing"
+	"time"
 )
 
 // profileTestLogger is a no-op logger for tests that don't need to
@@ -195,4 +196,49 @@ func TestActivateProfileNoOp(t *testing.T) {
 	if len(res.Stopped) != 0 || len(res.Started) != 0 {
 		t.Errorf("no-op activation must not move any service; got %+v", res)
 	}
+}
+
+// ActivateProfile drove the swap through raw BringUp/BringDown: no
+// queueMu, no activation mark, no state transition, so a service it
+// reported as started was launched and then stopped by the state
+// machine (it ended STOPPING), and one it stopped kept its process.
+// The services must end in the state the reply claims.
+func TestActivateProfileLeavesServicesInTheirNewState(t *testing.T) {
+	set, _ := newTestSet()
+	mk := func(name, profile string) *ProcessService {
+		s := NewProcessService(set, name)
+		s.SetCommand([]string{"/bin/sh", "-c", "exec sleep 30"})
+		s.Record().SetProfiles([]string{profile})
+		set.AddService(s)
+		return s
+	}
+	web := mk("web", "prod")
+	batch := mk("batch", "dev")
+	set.SetActiveProfile("dev")
+	set.StartService(batch)
+	if st := waitState(t, batch, StateStarted, 3*time.Second); st != StateStarted {
+		t.Fatalf("batch %v", st)
+	}
+	batchPID := batch.PID()
+	defer killIfAlive(batchPID)
+
+	if _, err := set.ActivateProfile("prod"); err != nil {
+		t.Fatal(err)
+	}
+	if st := waitState(t, web, StateStarted, 3*time.Second); st != StateStarted {
+		t.Errorf("web %v after activating prod, want STARTED", st)
+	}
+	defer killIfAlive(web.PID())
+	if st := waitState(t, batch, StateStopped, 3*time.Second); st != StateStopped {
+		t.Errorf("batch %v after activating prod, want STOPPED", st)
+	}
+	time.Sleep(300 * time.Millisecond) // a start the state machine undoes takes this long to show
+	if st := web.State(); st != StateStarted {
+		t.Errorf("web %v a moment later, want STARTED", st)
+	}
+	if processAlive(batchPID) {
+		t.Errorf("batch's process %d outlived the swap", batchPID)
+	}
+	set.StopService(web)
+	waitState(t, web, StateStopped, 3*time.Second)
 }

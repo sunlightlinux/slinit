@@ -1020,6 +1020,43 @@ requires.
   pre-stop before the stop signal, finish before a restart). A stop
   during a pre-start kills the hook. A reload is refused while an
   on-demand pre-start or a recovery env-generator runs.
+  `exec-condition` is evaluated off the lock too. A start arriving while
+  a stop waits keeps the process the stop left running, even when that
+  process exits before the start gets a start slot or the console; no
+  new run begins while a hook of the previous one still runs, and no
+  hook starts after the shutdown's final kill.
+- **A hook cancelled as it finished stalled 5s**: when its context ended
+  just as it exited, slinit took the status for lost and waited 5s for
+  it, then logged `ad-hoc command status lost`; the same for a main
+  process whose wait reported a context or `WaitDelay` error.
+- **`slinitctl edit` failed for every service**: it asked the daemon for
+  the loader's search path and expected a reply the daemon never sends.
+  It now asks for the service's own load directory and opens the file
+  the loader read (full name, template base name, or `NAME.service`).
+- **`slinitctl activate-profile` did not leave services running**: the
+  services it reported as started were stopped again by the state
+  machine. Profile swaps now start and stop services as
+  `slinitctl start`/`stop` do.
+- **The control socket could drop a client mid-request** when a packet
+  straddled the 30s idle deadline.
+- **`condition-path-is-mount-point`** reported `/proc/`, `/proc/.` and
+  `/proc//` as not mount points, and judged a symlink by the directory
+  it sits in rather than by its target.
+- **A bgprocess daemon that ignores SIGTERM and never called `setsid()`
+  stayed STOPPING forever**: the stop-timeout SIGKILL was sent to a
+  process group the daemon does not lead. It now reaches the daemon's
+  group, as the stop signal does.
+- **`slinitctl --pin stop` on a service already stopped did not pin it**:
+  the reply said "already stopped" and the pin was dropped, so the next
+  start, a dependent's or `start-all`'s, brought it up. It is pinned now,
+  as in dinit and as `--pin start` already did for a running service.
+- **`nice=` with `sched-policy = batch` or `idle`** was undone (as root)
+  or made the policy fail with EPERM (unprivileged); likewise
+  `slinit-start-stop-daemon --nicelevel` with `--scheduler batch|idle`.
+- **Opening a path inside a container or image could fail under load**:
+  `openat2` reports `EAGAIN` when a rename or mount anywhere raced its
+  check; slinit now retries, then resolves the path component by
+  component.
 - **Hooks could freeze PID 1 or outlive their service**:
   - a hung `env-generator` blocked every start, stop and `slinitctl`
     command (it ran with no timeout under the global lock); it is now

@@ -612,7 +612,13 @@ func applySched(pid int, params ExecParams) error {
 		attr.Period = params.SchedPeriod
 
 	case unix.SCHED_NORMAL, unix.SCHED_BATCH, unix.SCHED_IDLE:
-		// No priority field; nothing else to fill.
+		// No priority field, but sched_setattr(2) sets the nice value
+		// of these policies too. Pass the one the process has (nice=
+		// was applied just before), not 0: as root, 0 undid nice=; and
+		// unprivileged, lowering it failed with EPERM.
+		if prio, err := unix.Getpriority(unix.PRIO_PROCESS, pid); err == nil {
+			attr.Nice = int32(20 - prio) // the raw syscall returns 20 - nice
+		}
 
 	default:
 		return fmt.Errorf("unsupported sched-policy %d", params.SchedPolicy)

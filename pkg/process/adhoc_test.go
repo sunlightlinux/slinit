@@ -1,11 +1,14 @@
 package process
 
 import (
+	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // reaperLoop mimics eventloop.reapOrphans: Wait4(-1, WNOHANG) over and
@@ -171,5 +174,27 @@ func TestExitCodeOfRefusesToInventAStatus(t *testing.T) {
 	}
 	if code, ok := ExitCodeOf(err); ok {
 		t.Errorf("ExitCodeOf reported code %d for an exec failure; want ok=false", code)
+	}
+}
+
+// A command whose context ended while it was finishing was still reaped
+// by cmd.Wait() itself: when the Cancel hook reports success (a hook's
+// kill(-pgid) does, on a group whose leader is a zombie), Wait returns
+// ctx.Err() instead of the exit status, with ProcessState set. That is a
+// known status, not a lost one: waiting on the router for it cost a hook
+// cancelled by a start or a stop waitStatusGrace (5s) and a false
+// "status lost" line.
+func TestRunAdhocContextCancelIsNotALostStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "sleep", "0.2")
+	cmd.Cancel = func() error { return nil } // "interrupted" — the child exits 0 anyway
+	time.AfterFunc(20*time.Millisecond, cancel)
+	start := time.Now()
+	err := RunAdhoc(cmd)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("RunAdhoc took %v after the context was cancelled", d)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }

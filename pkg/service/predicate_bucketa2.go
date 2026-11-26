@@ -98,29 +98,29 @@ func checkFirmware(param string) (bool, string) {
 	name := strings.ToLower(strings.TrimSpace(param))
 	switch name {
 	case "uefi":
-		if _, err := os.Stat("/sys/firmware/efi"); err == nil {
+		if _, err := os.Stat(hostPath("/sys/firmware/efi")); err == nil {
 			return true, ""
 		}
 		return false, "no /sys/firmware/efi (not a UEFI boot)"
 	case "bios":
-		data, err := os.ReadFile("/sys/class/dmi/id/bios_vendor")
+		data, err := os.ReadFile(hostPath("/sys/class/dmi/id/bios_vendor"))
 		if err != nil || len(strings.TrimSpace(string(data))) == 0 {
 			return false, "no DMI bios_vendor (no legacy BIOS?)"
 		}
 		return true, ""
 	case "device-tree":
-		if _, err := os.Stat("/sys/firmware/devicetree"); err == nil {
+		if _, err := os.Stat(hostPath("/sys/firmware/devicetree")); err == nil {
 			return true, ""
 		}
 		return false, "no /sys/firmware/devicetree"
 	case "smbios":
-		if _, err := os.Stat("/sys/firmware/dmi/tables"); err == nil {
+		if _, err := os.Stat(hostPath("/sys/firmware/dmi/tables")); err == nil {
 			return true, ""
 		}
 		return false, "no /sys/firmware/dmi/tables"
 	}
 	// Fallback: product-name substring match.
-	pn, err := os.ReadFile("/sys/class/dmi/id/product_name")
+	pn, err := os.ReadFile(hostPath("/sys/class/dmi/id/product_name"))
 	if err != nil {
 		return false, fmt.Sprintf("firmware: unknown key %q + no DMI product_name", name)
 	}
@@ -140,7 +140,7 @@ func checkMachineTag(param string) (bool, string) {
 	if want == "" {
 		return false, "machine-tag: empty tag"
 	}
-	f, err := os.Open("/etc/machine-info")
+	f, err := os.Open(hostPath("/etc/machine-info"))
 	if err != nil {
 		return false, fmt.Sprintf("machine-tag: /etc/machine-info: %v", err)
 	}

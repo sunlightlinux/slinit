@@ -1821,10 +1821,11 @@ func TestPinnedStoppedReply(t *testing.T) {
 	binary.LittleEndian.PutUint32(stopPayload, handle)
 	stopPayload[4] = 0x01 // pin
 	WritePacket(conn, CmdStopService, stopPayload)
-	readReply(t, conn) // ACK (already stopped)
-
-	// Pin stop the service
-	svc.PinStop()
+	// Already stopped, and pinned all the same: the pin must not be
+	// lost because there was nothing to stop.
+	if rply, _ := readReply(t, conn); rply != RplyAlreadySS {
+		t.Fatalf("stop --pin of a stopped service: reply %d, want AlreadySS", rply)
+	}
 
 	// Try to start — should get PinnedStopped
 	WritePacket(conn, CmdStartService, EncodeHandle(handle))

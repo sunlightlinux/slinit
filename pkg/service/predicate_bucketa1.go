@@ -215,7 +215,7 @@ func checkKernelModuleLoaded(param string) (bool, string) {
 	if want == "" {
 		return false, "kernel-module-loaded: empty module name"
 	}
-	f, err := os.Open("/proc/modules")
+	f, err := os.Open(hostPath("/proc/modules"))
 	if err != nil {
 		return false, fmt.Sprintf("kernel-module-loaded: /proc/modules: %v", err)
 	}

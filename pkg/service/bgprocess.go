@@ -1595,7 +1595,15 @@ func (s *BGProcessService) handleTimerExpired(timer *time.Timer) {
 		if pid > 0 {
 			s.services.logger.Error("Service '%s': stop timeout exceeded, sending SIGKILL",
 				s.serviceName)
-			process.SignalProcess(pid, syscall.SIGKILL, false)
+			// kill(-pid) reaches the daemon only when it leads its own
+			// group. One that never called setsid() (backgrounded by a
+			// shell launcher, say) is still in the launcher's group, no
+			// group carries its pid, and the SIGKILL went nowhere: the
+			// service stayed STOPPING for good. Look the group up then,
+			// as the stop signal does and as dinit's kill_pg does.
+			if err := process.SignalProcess(pid, syscall.SIGKILL, false); errors.Is(err, syscall.ESRCH) {
+				process.SignalDaemonGroup(pid, syscall.SIGKILL, s.signalProcessOnly(pid))
+			}
 		}
 		// Kill entire cgroup tree on SIGKILL escalation
 		if s.Flags.KillAllOnStop {

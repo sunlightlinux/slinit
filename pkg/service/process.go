@@ -118,6 +118,10 @@ type ProcessService struct {
 	// pre-stop-hook or control-command was running. It is handled once
 	// that hook has finished, as it was when the hook held the lock.
 	pendingExit *process.ChildExit
+	// queuedHooks are state hooks asked for while another ran, started
+	// one at a time as each completes (see startStateHookLocked). Not
+	// expected to be used.
+	queuedHooks []func()
 
 	// Credentials
 	runAsUID          uint32
@@ -1670,6 +1674,35 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
+	// The previous run's state hook (a finish-command, say) is still
+	// running: a new run must not begin under it (statehook.go).
+	if s.bringUpBlockedLocked() {
+		return true
+	}
+
+	// A stop that was still waiting for its dependents, and so had not
+	// yet touched the process, has been cancelled by this start: the
+	// process it would have stopped is still running. Forking another
+	// orphaned that one (it ran on, unsupervised, and its exit was
+	// taken for the new run's). It is the service's process still;
+	// the start is over.
+	if s.pid > 0 {
+		if s.stopIssued || s.stopPID > 0 {
+			// Being stopped after all: not expected, since a stop
+			// that has begun is not cancelled. Wait for the exit,
+			// which looks at the start again (dispatchAfterExitLocked).
+			s.services.logger.Error("Service '%s': start while its process %d is being stopped; it waits for the exit",
+				s.serviceName, s.pid)
+			s.waitingForDeps = true
+			s.dropStartSlot()
+			return true
+		}
+		s.services.logger.Info("Service '%s': stop cancelled, keeping process %d",
+			s.serviceName, s.pid)
+		s.Started()
+		return true
+	}
+
 	if err := s.Record().resolveDeferredRunAs(); err != nil {
 		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
 		return false
@@ -1700,14 +1733,14 @@ func (s *ProcessService) BringUp() bool {
 	// process so dependents see a satisfied dep.
 	//
 	// An environment kept for a fork that never came (an earlier start
-	// that failed before it) is not this start's. An exec-condition runs
-	// with the start's environment, so with an env-generator that is
-	// computed now, once, and the pre-start-command and the fork reuse
-	// it: the generator ran once for the condition and again for the
-	// start.
+	// that failed before it) is not this start's.
 	s.discardStartEnv()
-	if s.envGenerator != "" && s.hasExecCondition() {
-		s.prepareStartEnv()
+	// An exec-condition runs a command, for up to execConditionTimeout:
+	// the predicates are then evaluated off the lock, as a state hook
+	// (execConditionDoneLocked carries the start on).
+	if s.hasExecCondition() {
+		s.startExecConditionLocked()
+		return true
 	}
 	switch outcome, reason := s.CheckPredicates(); outcome {
 	case PredFailed:
@@ -1718,7 +1751,101 @@ func (s *ProcessService) BringUp() bool {
 		s.markSkippedStartReason(reason)
 		return true
 	}
+	return s.bringUpCheckedLocked()
+}
 
+// startExecConditionLocked evaluates the start's predicates, one of
+// them an exec-condition, off the lock: the service stays STARTING
+// meanwhile, and a stop ends the evaluation, killing the command. An
+// exec-condition runs with the start's environment, so with an
+// env-generator that is computed first, once, and the pre-start-command
+// and the fork reuse it. A service-started predicate asks about the
+// service set and is answered under the lock, by the completion; the
+// verdict is the one CheckPredicates gives (combinePredicates). Caller
+// holds queueMu.
+func (s *ProcessService) startExecConditionLocked() {
+	preds := s.predicates
+	res := make([]predResult, len(preds))
+	envGen := s.envGenerator != ""
+	// Reads the service's settings when the command is prepared, off
+	// the lock: a reload refuses to change them while a state hook
+	// runs (RunningStateHook).
+	prep := prepareExecCondition(s)
+	s.startStateHookLocked(hookExecCondition,
+		func(ctx context.Context) func() error {
+			return func() error {
+				if envGen {
+					s.prepareStartEnvCtx(ctx)
+				}
+				for i, p := range preds {
+					if ctx.Err() != nil {
+						break
+					}
+					if p.Kind != PredServiceStarted {
+						res[i].ok, res[i].why = p.evaluateCtx(ctx, prep)
+					}
+				}
+				return ctx.Err()
+			}
+		},
+		func(_ error, cancelled bool) {
+			s.execConditionDoneLocked(preds, res, cancelled)
+		})
+}
+
+// execConditionDoneLocked carries a start on once its predicates have
+// been evaluated (startExecConditionLocked): as BringUp did when it
+// evaluated them itself. Caller holds queueMu.
+func (s *ProcessService) execConditionDoneLocked(preds []Predicate, res []predResult, cancelled bool) {
+	switch s.state.Load() {
+	case StateStarting:
+	case StateStopping:
+		// A stop came while the predicates were evaluated, and ended
+		// that: the start ends here, and the stop, which waited for
+		// the hook, goes on.
+		s.discardStartEnv()
+		s.services.AddTransitionQueue(s)
+		return
+	default:
+		s.discardStartEnv()
+		return
+	}
+	if cancelled {
+		// Cancelled with no stop asked for: the shutdown's final kill.
+		s.services.logger.Error("Service '%s': exec-condition ended", s.serviceName)
+		s.discardStartEnv()
+		s.state.Store(StateStopping)
+		s.failedToStart(false, true)
+		return
+	}
+	for i, p := range preds {
+		if p.Kind == PredServiceStarted {
+			res[i].ok, res[i].why = s.checkServiceStarted(p)
+		}
+	}
+	switch outcome, reason := combinePredicates(preds, res); outcome {
+	case PredFailed:
+		s.services.logger.Error("Service '%s': %s", s.serviceName, reason)
+		s.state.Store(StateStopping)
+		s.failedToStart(false, true)
+		return
+	case PredSkip:
+		s.services.logger.Info("Service '%s': skipped (%s)", s.serviceName, reason)
+		s.markSkippedStartReason(reason)
+		return
+	}
+	if !s.bringUpCheckedLocked() {
+		// As callBringUp does for a BringUp that fails.
+		s.state.Store(StateStopping)
+		s.failedToStart(false, true)
+	}
+}
+
+// bringUpCheckedLocked is the rest of BringUp once the start's
+// predicates have passed: required paths, the activation socket, the
+// pre-start-command and the launch. False means the start failed.
+// Caller holds queueMu.
+func (s *ProcessService) bringUpCheckedLocked() bool {
 	// Fail-fast pre-start check: required_files / required_dirs must exist
 	// before we even attempt fork/exec. Produces a clear error instead of
 	// a cryptic ENOENT crash from the child.
@@ -1761,7 +1888,7 @@ func (s *ProcessService) BringUp() bool {
 	// there too, so the pre-start-command sees what the main process
 	// will get and startProcess uses it rather than running the
 	// generator under the lock. An exec-condition may have computed it
-	// already.
+	// already (startExecConditionLocked).
 	if len(s.preStartCommand) > 0 || s.envGenerator != "" {
 		argv := s.preStartCommand
 		cred := s.hookCredential(s.privHooks.PreStart)
@@ -2021,8 +2148,9 @@ func (s *ProcessService) BringDown() {
 	// its completion issues the stop (issueStopLocked), or, if the
 	// process has exited meanwhile, handles that exit.
 	if len(s.preStopHook) > 0 {
+		pid := s.pid
 		s.startStateHookLocked(hookPreStop, s.preparePreStopHook, func(error, bool) {
-			if exit, ok := s.takePendingExit(); ok {
+			if exit, ok := s.takePendingExit(pid); ok {
 				s.afterExitLocked(exit)
 				return
 			}
@@ -2081,6 +2209,7 @@ func (s *ProcessService) issueStopLocked() {
 
 	sigName := signalName(sig)
 	if cmd, ok := s.controlCommands[sigName]; ok && len(cmd) > 0 {
+		pid := s.pid
 		// Run custom control command instead of raw signal, off the
 		// lock. What follows the signal follows the command's
 		// completion, as it followed the command before.
@@ -2090,7 +2219,7 @@ func (s *ProcessService) issueStopLocked() {
 			},
 			func(error, bool) {
 				s.stopSignalSentLocked(sig)
-				if exit, ok := s.takePendingExit(); ok {
+				if exit, ok := s.takePendingExit(pid); ok {
 					s.afterExitLocked(exit)
 					return
 				}
@@ -2665,6 +2794,8 @@ func (s *ProcessService) startProcess() error {
 	s.startDelayDone = false
 	s.stopIssued = false
 	s.exitStatus = ExitStatus{}
+	// An exit parked for a stop hook belongs to the run before this one.
+	s.pendingExit = nil
 
 	// Set up output pipe based on log type
 	var outputPipe *os.File
@@ -3439,10 +3570,22 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	// A pre-stop-hook or a stop's control-command is still running: the
 	// exit is handled when it has finished, so the finish-command still
 	// follows the pre-stop-hook and the stop is not declared over under
-	// a hook that is still at work.
-	if s.stateHookRunning() {
-		e := exit
-		s.pendingExit = &e
+	// a hook that is still at work. Only the exit of the process that
+	// stop is for: no other hook's completion would take it, and one
+	// left parked was taken later, by another run's stop, as that run's
+	// exit.
+	if h := s.stateHook.Load(); h != nil {
+		if h.kind.parksExit() && exit.PID == h.pid {
+			e := exit
+			s.pendingExit = &e
+			return
+		}
+		// Not expected: no other hook runs while there is a process
+		// (a new run does not begin under one). Its completion
+		// carries the transition on; dispatching this exit too would
+		// have it handled twice.
+		s.services.logger.Error("Service '%s': process %d exited during its %s; exit not handled",
+			s.serviceName, exit.PID, h.kind)
 		return
 	}
 	s.afterExitLocked(exit)
@@ -3516,6 +3659,26 @@ func (s *ProcessService) dispatchExitLocked(exit process.ChildExit) {
 func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit process.ChildExit) {
 	switch state {
 	case StateStarting:
+		if s.waitingForDeps {
+			// The start has not launched anything yet: this is the
+			// process of an earlier run, whose stop a start
+			// cancelled (BringUp keeps such a process), exiting
+			// before the start got to it. The start goes on, and
+			// launches a new one.
+			s.services.logger.Info("Service '%s': process of the previous run exited (status: %v)",
+				s.serviceName, exit.Status)
+			s.services.AddTransitionQueue(s)
+			s.services.processQueuesLocked()
+			return
+		}
+		if s.waitingForStartSlot || s.waitingForConsole {
+			// The same, with the deps up and the start queued for a
+			// start slot or the console: the grant reaches BringUp,
+			// which finds no process and launches one.
+			s.services.logger.Info("Service '%s': process of the previous run exited (status: %v)",
+				s.serviceName, exit.Status)
+			return
+		}
 		// Process died while we thought it was starting
 		s.services.logger.Error("Service '%s': process exited during startup (status: %v)",
 			s.serviceName, exit.Status)

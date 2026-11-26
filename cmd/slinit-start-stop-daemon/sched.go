@@ -45,5 +45,14 @@ func applySched(pid int, policy, priority uint32) error {
 		Policy:   policy,
 		Priority: priority,
 	}
+	// sched_setattr(2) sets the nice value of the non-real-time
+	// policies too: pass the one --nicelevel just applied, not 0, which
+	// undid it as root and failed with EPERM unprivileged.
+	switch policy {
+	case unix.SCHED_NORMAL, unix.SCHED_BATCH, unix.SCHED_IDLE:
+		if prio, err := unix.Getpriority(unix.PRIO_PROCESS, pid); err == nil {
+			attr.Nice = int32(20 - prio) // the raw syscall returns 20 - nice
+		}
+	}
 	return unix.SchedSetAttr(pid, &attr, 0)
 }
