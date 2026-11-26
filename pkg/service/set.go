@@ -632,13 +632,13 @@ func (ss *ServiceSet) ContinueService(svc *ProcessService) bool {
 	return ok
 }
 
-// StartOnceService starts the service with auto-restart turned off
-// (`slinitctl once`).
+// StartOnceService starts the service for one run, not restarted when
+// it stops (`slinitctl once`). Its restart setting is left alone: the
+// next ordinary start restores it.
 func (ss *ServiceSet) StartOnceService(svc Service) {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
-	svc.Record().SetAutoRestart(RestartNever)
-	svc.Start()
+	svc.Record().StartOnce()
 	ss.processQueuesLocked()
 }
 

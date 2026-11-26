@@ -123,7 +123,11 @@ type ServiceRecord struct {
 	desired atomicServiceState
 
 	// Flags
-	autoRestart    AutoRestartMode
+	autoRestart AutoRestartMode
+	// onceRun: this activation was started by `once` and is not to be
+	// restarted, whatever autoRestart says (runit's `sv once`). Cleared
+	// by the next ordinary Start; see autoRestartThisRun.
+	onceRun        bool
 	smoothRecovery bool
 	manualStart    bool // upstart-style: refuse all auto-activation
 	// systemd-style RefuseManualStart / RefuseManualStop. Reject the
@@ -1361,6 +1365,15 @@ func (sr *ServiceRecord) RemoveListener(l ServiceListener) {
 			return
 		}
 	}
+}
+
+// autoRestartThisRun is the auto-restart mode in force for the current
+// activation: RestartNever for one started by `once`, else autoRestart.
+func (sr *ServiceRecord) autoRestartThisRun() AutoRestartMode {
+	if sr.onceRun {
+		return RestartNever
+	}
+	return sr.autoRestart
 }
 
 // --- Setters ---
@@ -2652,8 +2665,18 @@ func (sr *ServiceRecord) Start() {
 		sr.requiredBy++
 		sr.startExplicit = true
 	}
+	// An ordinary start ends a `once` (StartOnce sets it again after).
+	sr.onceRun = false
 
 	sr.doStart()
+}
+
+// StartOnce starts the service, as Start does, for one run: when it
+// stops it is not restarted, whatever its restart setting (runit's
+// `sv once`). The next ordinary Start restores the restart policy.
+func (sr *ServiceRecord) StartOnce() {
+	sr.Start()
+	sr.onceRun = true
 }
 
 // Wake re-attaches a service to its active dependents without marking it as
@@ -3706,13 +3729,14 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		// restart-limit-exhausted branch below and treat the service
 		// as failed instead of looping.
 		wantedRestart := false
+		autoRestart := sr.autoRestartThisRun()
 
 		// systemd RestartForceExitStatus: codes that force a restart
 		// regardless of the `restart =` setting. Applied FIRST so
 		// even a normal-exit code entry gets overridden — the
 		// operator's declared "always come back on THIS code" wins
 		// over both `restart = no` and `normal-exit`.
-		if sr.desired.Load() == StateStarted && sr.IsForceRestartExit(exitStatus) {
+		if !sr.onceRun && sr.desired.Load() == StateStarted && sr.IsForceRestartExit(exitStatus) {
 			wantedRestart = true
 			forRestart = sr.self.CheckRestart()
 			sr.inAutoRestart = forRestart
@@ -3723,13 +3747,13 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		}
 
 		// Check for auto-restart
-		if sr.autoRestart == RestartAlways && sr.desired.Load() == StateStarted {
+		if autoRestart == RestartAlways && sr.desired.Load() == StateStarted {
 			if !normal {
 				wantedRestart = true
 				forRestart = sr.self.CheckRestart()
 				sr.inAutoRestart = forRestart
 			}
-		} else if sr.autoRestart == RestartOnFailure && sr.desired.Load() == StateStarted {
+		} else if autoRestart == RestartOnFailure && sr.desired.Load() == StateStarted {
 			// failure-conditions decides what "failure" means here;
 			// its default is the exit-status reading below.
 			if sr.stopReason == ReasonDepFailed && sr.failureConditions.Dependency {
@@ -3743,7 +3767,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 				forRestart = sr.self.CheckRestart()
 				sr.inAutoRestart = forRestart
 			}
-		} else if sr.autoRestart == RestartOnSuccess && sr.desired.Load() == StateStarted {
+		} else if autoRestart == RestartOnSuccess && sr.desired.Load() == StateStarted {
 			if !normal {
 				// The inverse of on-failure, and deliberately strict
 				// about what counts: only a real exit with code 0.
