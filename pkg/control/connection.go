@@ -907,6 +907,12 @@ func (c *Connection) handleStopService(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
+	// As dinit: a restart would start the service again, so it is
+	// refused once a shutdown has begun, as a start is.
+	if restart && c.server.services.IsShuttingDown() {
+		return c.writePacket(RplyShuttingDown, nil)
+	}
+
 	if svc.State() == service.StateStopped {
 		// Drop its activation anyway, as dinit's stop always does: a
 		// service waiting out its restart delay (after a crash, or in
@@ -965,10 +971,14 @@ func (c *Connection) handleStopService(payload []byte) error {
 		}
 	}
 	if restart {
-		// Re-start the service after stopping (restart operation)
-		c.server.services.StartService(svc)
+		// Re-start the service after stopping (restart operation).
+		// The shutdown check again, in one step with the start: one
+		// that began since the check above has stopped everything
+		// (see StartServiceUnlessShuttingDown).
+		if !c.server.services.StartServiceUnlessShuttingDown(svc, pin) {
+			return c.writePacket(RplyShuttingDown, nil)
+		}
 		if pin {
-			c.server.services.PinStartService(svc)
 			if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStarted); err != nil {
 				fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
 			}

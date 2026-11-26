@@ -278,6 +278,16 @@ verified with `git tag -v`.
   that then failed to start (again), its dependencies could not be
   stopped any more, and a shutdown waited for them until its timeout.
 
+- **A server-side restart during a shutdown is refused.** A stop
+  request with the restart flag (0x04, dinit's restart) sent once a
+  shutdown had begun stopped the service and started it again,
+  explicitly active, with nothing left to stop it, so the shutdown
+  waited for it until its timeout. It is now answered "shutting down",
+  as dinit answers it, also when the shutdown begins between the stop
+  and the start. `slinitctl restart` sends a stop and a separate start,
+  which was already refused. *Compat:* such a request during a shutdown
+  fails instead of restarting the service.
+
 - **`slinitctl add-dep`/`rm-dep` with `prepared-by` work.** slinitctl
   accepted the kind and slinitctl(8) documents it, but the daemon took
   only the kinds up to `after` and refused every prepared-by request, so
