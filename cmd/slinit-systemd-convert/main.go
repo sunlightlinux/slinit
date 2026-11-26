@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sunlightlinux/slinit/internal/atomicfile"
 	"github.com/sunlightlinux/slinit/pkg/config"
 )
 
@@ -106,7 +107,7 @@ Flags:
 			if dryRun {
 				fmt.Fprintf(os.Stderr, "--- would write %s ---\n", outPath)
 				os.Stderr.Write(buf.Bytes())
-			} else if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
+			} else if err := atomicfile.Write(outPath, buf.Bytes(), 0o644, true); err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-systemd-convert: write %s: %v\n", outPath, err)
 				hadErrors = true
 				continue

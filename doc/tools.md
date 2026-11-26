@@ -288,6 +288,13 @@ automatically. `chpst` flags map to slinit equivalents where
 possible (`-u` → `run-as`, `-e` → `env-dir`, `-C` → `working-dir`, `-o` →
 `rlimit-nofile`, `-A N` → WARN since slinit has no runtime alarm).
 
+With `--output-dir`, this and the other converters (`slinit-openrc-convert`,
+`slinit-systemd-convert`, `slinit-sysvinit-convert`,
+`slinit-immortal-convert`) replace a service file that is already
+there, so a rerun regenerates it, but refuse a symlink at an output
+name rather than write through it. Files are written to a temporary
+name and renamed into place.
+
 ```bash
 # Single service to stdout
 slinit-runit-convert /etc/sv/nginx

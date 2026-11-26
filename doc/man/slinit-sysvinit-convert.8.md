@@ -153,6 +153,11 @@ outcome.
 :   Write one file per service into *DIR*, which must already exist.
     Without it the files go to standard output, separated by a header
     comment naming each one.
+    A file already at an output name is replaced, so a rerun
+    regenerates it; each file is written to a temporary name in *DIR*
+    and renamed into place, so an interrupted run never leaves a
+    partial file. A symbolic link at an output name is refused, never
+    written through or replaced.
 
 **\--dry-run**
 :   Report what would be written, with sizes, and touch nothing.
@@ -183,7 +188,8 @@ Read the generated files without writing them:
 **1**
 :   The input could not be read, at least one line was not an inittab
     entry (the lines that did parse are still converted), or a file
-    could not be written — which stops the run at that file.
+    could not be written — which stops the run at that file. A symbolic
+    link at an output name is one that could not be written.
 
 **2**
 :   Wrong number of arguments, an unknown flag, or an unknown

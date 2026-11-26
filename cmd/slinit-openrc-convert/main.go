@@ -33,6 +33,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/internal/atomicfile"
 )
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -112,7 +114,7 @@ Flags:
 			if dryRun {
 				fmt.Fprintf(os.Stderr, "--- would write %s ---\n", outPath)
 				os.Stderr.Write(buf.Bytes())
-			} else if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
+			} else if err := atomicfile.Write(outPath, buf.Bytes(), 0o644, true); err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-openrc-convert: write %s: %v\n", outPath, err)
 				hadErrors = true
 				continue

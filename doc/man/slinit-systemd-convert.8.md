@@ -127,6 +127,11 @@ suffix stripped.
 :   Batch mode: write one slinit file per input into *DIR*, which is
     created if missing. Without this flag, output goes to stdout and
     only one unit may be passed at a time.
+    A file already at an output name is replaced, so a rerun
+    regenerates it; each file is written to a temporary name in *DIR*
+    and renamed into place, so an interrupted run never leaves a
+    partial file. A symbolic link at an output name is refused, never
+    written through or replaced.
 
 **-dry-run**
 :   With **-output-dir**: print each file that would be written, on
@@ -164,7 +169,8 @@ Preview a bulk conversion:
 **1**
 :   No input, several inputs without **-output-dir**, the output
     directory could not be created, or one or more inputs could not be
-    read, parsed or written — a non-**.service** unit included.
+    read, parsed or written — a non-**.service** unit, or a symbolic
+    link at an output name, included.
 
 **2**
 :   Unknown flag.

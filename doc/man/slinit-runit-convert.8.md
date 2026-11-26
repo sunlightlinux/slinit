@@ -59,6 +59,11 @@ printed only with **-verbose**.
 :   Batch mode: write the slinit files into *DIR*, which is created if
     missing. Without this flag, output goes to stdout and only one
     svdir may be passed at a time.
+    A file already at an output name is replaced, so a rerun
+    regenerates it; each file is written to a temporary name in *DIR*
+    and renamed into place, so an interrupted run never leaves a
+    partial file. A symbolic link at an output name is refused, never
+    written through or replaced.
 
 **-dry-run**
 :   With **-output-dir**: print each file that would be written, on
@@ -100,7 +105,8 @@ Preview a bulk conversion with enable-mapping suggestions:
 **1**
 :   No input, several inputs without **-output-dir**, the output
     directory could not be created, or one or more svdirs could not be
-    read (missing *./run*, permission denied) or written.
+    read (missing *./run*, permission denied) or written (a symbolic
+    link at an output name counts).
 
 **2**
 :   Unknown flag.
