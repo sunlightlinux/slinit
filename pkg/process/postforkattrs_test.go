@@ -158,3 +158,31 @@ func TestApplyPostForkAttrsNothingSet(t *testing.T) {
 		t.Error("nice changed")
 	}
 }
+
+// nice= and a non-real-time sched-policy= together: sched_setattr(2)
+// sets the nice value as well, and was passed 0. As root the service
+// silently ran at nice 0; unprivileged the call needed to lower the nice
+// value and failed with EPERM, so the policy was not applied either.
+func TestApplyPostForkAttrsNiceSurvivesSchedPolicy(t *testing.T) {
+	for _, pol := range []uint32{unix.SCHED_BATCH, unix.SCHED_IDLE} {
+		pid := startSleeper(t)
+		nice := niceOf(t, pid) + 4
+		if nice > 19 {
+			nice = 19
+		}
+		errs := applyPostForkAttrs(pid, ExecParams{Nice: &nice, SchedPolicy: pol}, false)
+		if len(errs) != 0 {
+			t.Errorf("policy %d: errors: %v", pol, errs)
+		}
+		if got := niceOf(t, pid); got != nice {
+			t.Errorf("policy %d: nice = %d, want %d", pol, got, nice)
+		}
+		attr, err := unix.SchedGetAttr(pid, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attr.Policy != pol {
+			t.Errorf("policy = %d, want %d", attr.Policy, pol)
+		}
+	}
+}
