@@ -133,11 +133,15 @@ func (s *ProcessService) onDemandListening() bool {
 // (about 1300 forks a second from a single connect). Like systemd, the
 // service is failed when the limit is hit.
 //
-// Unlike systemd, a launch whose process exited 0 does not count, and
-// clears the count: a service that serves one client per launch and
-// exits must survive a burst of clients, and slinit has no
-// TriggerLimitBurst= to raise the limit for it. Only failed launches
-// (exec failure, non-zero exit, signal, failed pre-start) count.
+// Unlike systemd, hitting the limit right after a launch whose process
+// exited 0 does not fail the service: the next launch waits until the
+// oldest launch leaves the window. A service that serves one client per
+// launch and exits must survive a burst of clients (slinit has no
+// TriggerLimitBurst= to raise the limit for it), and a process that
+// exits 0 without accepting is held to 20 launches every 2 seconds
+// rather than relaunched as fast as PID 1 can fork. A failed launch
+// (exec failure, non-zero exit, signal, failed pre-start) at the limit
+// fails the service, as in systemd.
 const (
 	onDemandTriggerBurst    = 20
 	onDemandTriggerInterval = 2 * time.Second
@@ -165,16 +169,30 @@ func (s *ProcessService) activateOnDemandLocked() {
 	if !s.onDemandListening() || s.pid > 0 {
 		return
 	}
-	if s.demandLastClean {
-		s.demandTriggers = s.demandTriggers[:0]
-	}
-	s.demandLastClean = false
-	if !s.allowOnDemandTrigger(time.Now()) {
+	now := time.Now()
+	if !s.allowOnDemandTrigger(now) {
+		if s.demandLastClean {
+			// Held back, not failed: launch once the oldest launch
+			// leaves the window.
+			wait := s.demandTriggers[0].Add(onDemandTriggerInterval).Sub(now)
+			gen := s.demandGen
+			time.AfterFunc(wait, func() {
+				s.services.queueMu.Lock()
+				defer s.services.queueMu.Unlock()
+				if s.demandGen != gen {
+					return // stopped or re-armed meanwhile
+				}
+				s.activateOnDemandLocked()
+				s.services.processQueuesLocked()
+			})
+			return
+		}
 		s.services.logger.Error("Service '%s': socket activated %d times in %v, stopping (trigger limit hit)",
 			s.serviceName, onDemandTriggerBurst, onDemandTriggerInterval)
 		s.handleTerminationLocked(ReasonFailed)
 		return
 	}
+	s.demandLastClean = false
 	s.services.logger.Info("Service '%s': socket activity, launching process", s.serviceName)
 
 	// The pre-start-command, and the env-generator, run off the lock as

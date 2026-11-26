@@ -378,3 +378,39 @@ func osThreadCount(t *testing.T) int {
 	t.Fatal("no Threads: line in /proc/self/status")
 	return 0
 }
+
+// A process that exits 0 without accepting leaves its client in the
+// backlog, so the re-armed watcher fires at once. Clean exits used to
+// clear the trigger count, and one connect then kept PID 1 relaunching
+// the process about 630 times a second. Clean launches are now held to
+// the limit's rate instead: the service stays up, launched at most
+// onDemandTriggerBurst times per interval.
+func TestOnDemandCleanExitWithoutAcceptIsThrottled(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "od.sock")
+	count := filepath.Join(t.TempDir(), "launches")
+	set, _ := newTestSet()
+	svc := newOnDemand(t, set, "od-clean-loop", sock,
+		[]string{"/bin/sh", "-c", "echo x >> " + count + "; exit 0"})
+	defer stopAndWait(t, set, svc)
+
+	set.StartService(svc)
+	if got := waitState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		t.Fatalf("state = %v, want STARTED", got)
+	}
+	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	time.Sleep(3 * time.Second)
+	b, _ := os.ReadFile(count)
+	launches := len(b) / 2
+	// Two full windows fit in 3 s, plus the launches of the first.
+	if max := 2*onDemandTriggerBurst + onDemandTriggerBurst/2; launches > max {
+		t.Errorf("one client launched a clean-exiting process %d times in 3s, want at most %d", launches, max)
+	}
+	if st := svc.State(); st != StateStarted {
+		t.Errorf("state = %v, want STARTED: a clean exit is not a failure", st)
+	}
+}

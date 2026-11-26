@@ -1888,6 +1888,7 @@ func (s *ProcessService) bringUpCheckedLocked() bool {
 	// the process waits for the first client (see ondemand.go).
 	if s.socketOnDemand && s.socketFD != nil {
 		s.demandTriggers = nil
+		s.demandLastClean = false
 		if err := s.armOnDemand(); err != nil {
 			s.services.logger.Error("Service '%s': socket activation: %v", s.serviceName, err)
 			return false

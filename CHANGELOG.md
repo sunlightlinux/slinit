@@ -51,13 +51,14 @@ verified with `git tag -v`.
   the moment the watcher re-armed, and a process that failed before
   accepting (missing binary, bad config) was relaunched about 1300
   times a second, each launch taking the service set's lock and logging.
-  Failed launches are now held to systemd's socket trigger limit, 20 in
-  2 seconds; past it the service is stopped as failed. Unlike systemd,
-  a launch whose process exits 0 does not count and clears the count,
-  so a process that serves one client per launch survives a burst of
-  clients (slinit has no `TriggerLimitBurst=` to raise the limit).
-  *Compat:* an on-demand service whose process fails more than 20 times
-  in 2 seconds is now stopped as failed.
+  Launches are now held to systemd's socket trigger limit, 20 in 2
+  seconds. Past it, after a failed launch, the service is stopped as
+  failed; after a launch that exited 0 the next one waits until the
+  window allows it, so a process that serves one client per launch
+  survives a burst of clients (slinit has no `TriggerLimitBurst=` to
+  raise the limit) and one that exits 0 without accepting is held to
+  10 launches a second. *Compat:* an on-demand service whose process
+  fails more than 20 times in 2 seconds is now stopped as failed.
 
 - **Inhibitor locks could exhaust `slinit-logind`'s descriptors**: the
   cap is systemd's 8192, which systemd pairs with logind's
