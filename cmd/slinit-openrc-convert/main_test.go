@@ -63,8 +63,9 @@ depend() {
 	if cfg.umask != "022" {
 		t.Errorf("umask = %q", cfg.umask)
 	}
-	if cfg.restartDelay != "5" || cfg.restartLimitCount != "3" || cfg.restartLimitCounti != "60" {
-		t.Errorf("respawn_* mapping wrong: %+v", cfg)
+	// No supervise-daemon: OpenRC neither respawns nor reads respawn_*.
+	if cfg.restart != "no" || cfg.restartDelay != "" || cfg.restartLimitCount != "" || cfg.restartLimitCounti != "" {
+		t.Errorf("restart/respawn_* mapping wrong: %+v", cfg)
 	}
 	if !cfg.noNewPrivs {
 		t.Errorf("noNewPrivs not set")
@@ -682,5 +683,44 @@ func TestDependShellIsReported(t *testing.T) {
 		if strings.Contains(d, "$") {
 			t.Errorf("dependency on %q emitted", d)
 		}
+	}
+}
+
+// OpenRC respawns a daemon only under supervise-daemon, which is also
+// the only one that reads respawn_*; start-stop-daemon starts it once.
+// Every converted daemon used to get restart = yes, so one OpenRC left
+// dead was restarted by slinit.
+func TestRestartOnlyUnderSuperviseDaemon(t *testing.T) {
+	const respawn = "respawn_delay=5\nrespawn_max=3\nrespawn_period=60\n"
+	for _, tc := range []struct {
+		name, vars string
+		restart    service.AutoRestartMode
+		limits     bool
+	}{
+		{"start-stop-daemon", "command_background=yes\n" + respawn, service.RestartNever, false},
+		{"supervise-daemon", "supervisor=supervise-daemon\n" + respawn, service.RestartAlways, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "d")
+			os.WriteFile(p, []byte("#!/sbin/openrc-run\ncommand=/usr/sbin/d\n"+tc.vars), 0o755)
+			cfg, _, err := convertScript(p, "/usr/sbin/openrc-run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+			emitSlinitFile(&buf, cfg)
+			d, err := config.Parse(strings.NewReader(buf.String()), "d", "d")
+			if err != nil {
+				t.Fatalf("does not load: %v\n%s", err, buf.String())
+			}
+			if d.AutoRestart != tc.restart {
+				t.Errorf("restart = %v, want %v\n%s", d.AutoRestart, tc.restart, buf.String())
+			}
+			for _, k := range []string{"restart-delay = 5", "restart-limit-count = 3", "restart-limit-interval = 60"} {
+				if strings.Contains(buf.String(), k) != tc.limits {
+					t.Errorf("%s emitted = %v, want %v\n%s", k, !tc.limits, tc.limits, buf.String())
+				}
+			}
+		})
 	}
 }

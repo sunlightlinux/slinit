@@ -205,7 +205,6 @@ func convertScript(path, wrapper string) (*slinitConfig, []warning, error) {
 		svcName:    name,
 		scriptPath: abs,
 		svcType:    "process",
-		restart:    "yes", // openrc respawns supervised daemons by default
 	}
 
 	warns := parseOpenrcScript(cfg, string(data), wrapper)
@@ -579,6 +578,35 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 		// in the foreground by command_args_foreground or run under
 		// supervise-daemon. Otherwise start-stop-daemon expects the daemon
 		// to fork itself, which slinit follows through the pidfile.
+		// OpenRC respawns a daemon only under supervise-daemon, which
+		// is also the only one that reads respawn_*; start-stop-daemon
+		// starts it once and leaves it dead when it exits (openrc-run(8),
+		// sh/start-stop-daemon.sh). Every converted daemon used to get
+		// restart = yes.
+		if vars["supervisor"] == "supervise-daemon" {
+			cfg.restart = "yes"
+		} else {
+			cfg.restart = "no"
+			var dropped []string
+			for _, f := range []struct {
+				name string
+				val  *string
+			}{
+				{"respawn_delay", &cfg.restartDelay},
+				{"respawn_max", &cfg.restartLimitCount},
+				{"respawn_period", &cfg.restartLimitCounti},
+			} {
+				if *f.val != "" {
+					dropped = append(dropped, f.name)
+					*f.val = ""
+				}
+			}
+			if len(dropped) > 0 {
+				warns = append(warns, warning{"NOTE", fmt.Sprintf(
+					"%s left out: OpenRC applies them under supervise-daemon only, and without it does not respawn the daemon (restart = no)",
+					strings.Join(dropped, ", "))})
+			}
+		}
 		bg := strings.ToLower(vars["command_background"])
 		foreground := bg == "yes" || bg == "true" || bg == "1" ||
 			vars["command_args_foreground"] != "" || vars["supervisor"] == "supervise-daemon"

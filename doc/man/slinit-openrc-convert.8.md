@@ -29,7 +29,7 @@ Script variables are mapped as follows:
 | **pidfile** | **pid-file** (self-forking daemon only, see below) |
 | **stopsig** | **term-signal** |
 | **umask** | **umask** |
-| **respawn_delay**, **respawn_max**, **respawn_period** | **restart-delay**, **restart-limit-count**, **restart-limit-interval** |
+| **respawn_delay**, **respawn_max**, **respawn_period** | **restart-delay**, **restart-limit-count**, **restart-limit-interval** (under **supervisor=supervise-daemon** only) |
 | **no_new_privs=yes** | **options = no-new-privs** |
 | **command_background=yes** | **type = process** |
 | **description**, **name** | comments |
@@ -46,8 +46,13 @@ Otherwise start-stop-daemon expects the daemon to fork itself: with a
 one it stays **process** with a warning, as slinit cannot follow a
 daemon that forks without a pidfile.
 
-Generated services get **restart = yes**, since OpenRC respawns
-supervised daemons. In **depend()**, **need** becomes **depends-on**,
+OpenRC respawns a daemon only under **supervisor=supervise-daemon**,
+which is also the only supervisor that reads **respawn_\***;
+start-stop-daemon, the default, starts the daemon once and leaves it
+stopped when it exits. So such a script gets **restart = yes** and its
+**respawn_\*** values (where one is unset, slinit's own default
+applies, not supervise-daemon's), and any other gets **restart = no**,
+with a note when **respawn_\*** values were left out. In **depend()**, **need** becomes **depends-on**,
 and **want**, **use** and **after** become **waits-for**. slinit fails
 to load a service whose dependency does not exist, where OpenRC skips a missing **use**,
 **want** or **after** and resolves virtual names such as **net** or
