@@ -147,6 +147,13 @@ verified with `git tag -v`.
   RTC started from whenever the file was last written: the previous
   clock correction, not the last shutdown. It is now written before the
   shutdown hook and the unmounts.
+- **A restarted `log-type = buffer` service's output was lost, and the
+  service could block writing it.** Each run gets a new pipe, but the
+  reader was not started for it while the previous pipe's reader was
+  still running, which it is for as long as anything the old run left
+  behind (a setsid'd child, a daemonised helper) holds that pipe open.
+  Nothing read the new pipe: `slinitctl catlog` never showed the new
+  run, and once 64 KiB were written the service hung in `write(1)`.
 
 - **A FIFO named in `required-files` froze PID 1**: the readability check
   opened it and waited for a writer with the service set's lock held.

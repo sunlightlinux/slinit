@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -211,4 +212,81 @@ func TestLogBuffer_OutputPipeIntegration(t *testing.T) {
 	if string(got) != "child output\n" {
 		t.Errorf("buffer = %q, want %q", got, "child output\n")
 	}
+}
+
+// A restart creates a new pipe while the reader of the previous one may
+// still be running: the old process left a child holding the pipe's
+// write end, or the reader has simply not seen EOF yet. StartReader used
+// to return early whenever any reader was running, so nothing ever read
+// the new pipe: the restarted service's output was lost and, once the
+// pipe filled, the service blocked writing to stdout for ever.
+func TestLogBuffer_RestartWhileOldReaderRuns(t *testing.T) {
+	lb := NewLogBuffer(4096)
+
+	w1, err := lb.CreatePipe()
+	if err != nil {
+		t.Fatalf("CreatePipe: %v", err)
+	}
+	// The old process's child keeps the first pipe open.
+	fd, err := syscall.Dup(int(w1.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	lb.StartReader()
+	lb.CloseWriteEnd()
+
+	// Restart: a new pipe for the new process.
+	w2, err := lb.CreatePipe()
+	if err != nil {
+		t.Fatalf("CreatePipe: %v", err)
+	}
+	lb.StartReader()
+	if _, err := w2.Write([]byte("after restart\n")); err != nil {
+		t.Fatal(err)
+	}
+	lb.CloseWriteEnd()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if bytes.Contains(lb.GetBuffer(), []byte("after restart")) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("output of the restarted process never reached the buffer: %q", lb.GetBuffer())
+}
+
+// The same through a process service: the first run leaves a setsid'd
+// child holding stdout and exits (the sleep lets setsid run before the
+// exit kills the process group), so the restart happens while the
+// reader of the first pipe is still running. The second run's output
+// must reach the buffer.
+func TestProcessBufferLogAfterRestartWithLeakedStdout(t *testing.T) {
+	set, _ := newTestSet()
+	dir := t.TempDir()
+	svc := NewProcessService(set, "buf-restart")
+	svc.SetCommand([]string{"/bin/sh", "-c",
+		"if [ -e " + dir + "/ran ]; then echo second-run; exec sleep 30; fi; " +
+			"echo first-run; touch " + dir + "/ran; setsid sleep 3 & sleep 0.2; exit 1"})
+	svc.SetLogType(LogToBuffer)
+	svc.SetAutoRestart(RestartAlways)
+	svc.SetRestartDelay(20 * time.Millisecond)
+	svc.SetRestartLimits(time.Minute, 20)
+	set.AddService(svc)
+	set.StartService(svc)
+	defer set.StopService(svc)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if lb := svc.GetLogBuffer(); lb != nil && bytes.Contains(lb.GetBuffer(), []byte("second-run")) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var got []byte
+	if lb := svc.GetLogBuffer(); lb != nil {
+		got = lb.GetBuffer()
+	}
+	t.Fatalf("the restarted process's output never reached the buffer: %q", got)
 }
