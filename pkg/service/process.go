@@ -1748,25 +1748,73 @@ func (s *ProcessService) BringUp() bool {
 		return true
 	}
 
-	// systemd-style ExecStartPre=: synchronous, non-zero exit fails
-	// the start. Runs after sandbox prep / required paths but before
-	// the main fork, so a failed pre-hook never leaves a half-started
-	// process behind.
-	if len(s.preStartCommand) > 0 {
-		// The environment of this start, computed now so the
-		// pre-start-command sees what the main process will get;
-		// startProcess uses it rather than running the env-generator
-		// a second time. An exec-condition may have computed it already.
-		s.ensureStartEnv()
-		if err := s.runHookCommand(s.preStartCommand, "pre-start-command",
-			s.hookCredential(s.privHooks.PreStart)); err != nil {
+	// systemd-style ExecStartPre=: the fork waits for it, and a
+	// non-zero exit fails the start. Runs after sandbox prep / required
+	// paths but before the main fork, so a failed pre-hook never leaves
+	// a half-started process behind.
+	//
+	// It runs off the lock, as a state hook (statehook.go), with the
+	// service STARTING; preStartDoneLocked carries the start on. So
+	// does the env-generator: the environment of this start is computed
+	// there too, so the pre-start-command sees what the main process
+	// will get and startProcess uses it rather than running the
+	// generator under the lock. An exec-condition may have computed it
+	// already.
+	if len(s.preStartCommand) > 0 || s.envGenerator != "" {
+		argv := s.preStartCommand
+		cred := s.hookCredential(s.privHooks.PreStart)
+		s.startStateHookLocked(hookPreStart,
+			func(ctx context.Context) func() error {
+				return func() error {
+					s.ensureStartEnvCtx(ctx)
+					if len(argv) == 0 || ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return s.runHookCommandCtx(ctx, argv, "pre-start-command", cred)
+				}
+			},
+			s.preStartDoneLocked)
+		return true
+	}
+	return s.launchLocked()
+}
+
+// preStartDoneLocked carries a start on once its pre-start hook
+// (statehook.go) has run. Caller holds queueMu.
+func (s *ProcessService) preStartDoneLocked(err error, cancelled bool) {
+	switch s.state.Load() {
+	case StateStarting:
+		switch {
+		case err == nil && !cancelled:
+			if s.launchLocked() {
+				return
+			}
+		case err != nil && !cancelled:
 			s.services.logger.Error("Service '%s': pre-start-command failed: %v",
 				s.serviceName, err)
-			s.discardStartEnv()
-			return false
+		default:
+			// Cancelled with no stop asked for: the shutdown's
+			// final kill.
+			s.services.logger.Error("Service '%s': pre-start-command ended: %v",
+				s.serviceName, err)
 		}
+		s.discardStartEnv()
+		s.state.Store(StateStopping)
+		s.failedToStart(false, true)
+	case StateStopping:
+		// A stop came while the hook ran, and ended it: the start ends
+		// here, and the stop, which waited for the hook, goes on.
+		s.discardStartEnv()
+		s.services.AddTransitionQueue(s)
+	default:
+		s.discardStartEnv()
 	}
+}
 
+// launchLocked is the rest of a start once its pre-start-command has
+// run: start-when-idle and start-delay, the fork, the post-start-command.
+// False means the fork failed. Caller holds queueMu.
+func (s *ProcessService) launchLocked() bool {
 	// launchLater is the launch from a timer's callback, where a failure
 	// can no longer be BringUp's return value.
 	launchLater := func() {
@@ -2266,11 +2314,14 @@ func (s *ProcessService) InterruptStart() bool {
 		s.cancelIdleWait()
 		return true
 	}
-	// A state hook is running: a pre-start-command (BringDown, reached
-	// next, kills it) or the finish-command of a process that died
-	// while starting. There is no process, and the service goes
-	// STOPPING; the hook's completion finishes the stop.
-	if s.stateHookRunning() {
+	// A state hook is running: a pre-start-command, ended here (its
+	// process group killed), or the finish-command of a process that
+	// died while starting, left to finish. There is no process; the
+	// service goes STOPPING and the hook's completion finishes the stop.
+	if h := s.stateHook.Load(); h != nil {
+		if h.kind == hookPreStart {
+			h.cancel()
+		}
 		return true
 	}
 
@@ -2335,7 +2386,13 @@ func (s *ProcessService) CheckRestart() bool {
 // prepareStartEnv computes the environment for a start that is about to
 // run its pre-start-command, and keeps it for the fork.
 func (s *ProcessService) prepareStartEnv() {
-	env := s.buildEnv()
+	s.prepareStartEnvCtx(context.Background())
+}
+
+// prepareStartEnvCtx is prepareStartEnv with an env-generator run that
+// ctx can end early.
+func (s *ProcessService) prepareStartEnvCtx(ctx context.Context) {
+	env := s.buildEnvCtx(ctx)
 	s.envMu.Lock()
 	s.startEnv, s.startEnvFresh = env, true
 	s.envMu.Unlock()
@@ -2365,11 +2422,17 @@ func (s *ProcessService) launchEnv() []string {
 // environment already (for an exec-condition) and the fork has not used
 // it yet.
 func (s *ProcessService) ensureStartEnv() {
+	s.ensureStartEnvCtx(context.Background())
+}
+
+// ensureStartEnvCtx is ensureStartEnv with an env-generator run that
+// ctx can end early.
+func (s *ProcessService) ensureStartEnvCtx(ctx context.Context) {
 	s.envMu.Lock()
 	fresh := s.startEnvFresh
 	s.envMu.Unlock()
 	if !fresh {
-		s.prepareStartEnv()
+		s.prepareStartEnvCtx(ctx)
 	}
 }
 
@@ -2436,6 +2499,12 @@ func (s *ProcessService) hookCmdEnv() []string {
 
 // buildEnv merges env-file, env-dir, and runtime extraEnv into a single slice.
 func (s *ProcessService) buildEnv() []string {
+	return s.buildEnvCtx(context.Background())
+}
+
+// buildEnvCtx is buildEnv with an env-generator run that ctx can end
+// early.
+func (s *ProcessService) buildEnvCtx(ctx context.Context) []string {
 	env := s.Record().BuildEnvWithFile(s.envFile)
 
 	// Merge env-dir variables (runit-style: one file per variable)
@@ -2482,7 +2551,7 @@ func (s *ProcessService) buildEnv() []string {
 	// keeping this a soft failure prevents a misconfigured generator
 	// from turning into a system-wide boot outage.
 	if s.envGenerator != "" {
-		genEnv, err := s.runEnvGenerator()
+		genEnv, err := s.runEnvGenerator(ctx)
 		if err != nil {
 			s.services.logger.Error("Service '%s': env-generator '%s' failed: %v",
 				s.serviceName, s.envGenerator, err)
@@ -2516,15 +2585,16 @@ const envGeneratorMaxOutput = 64 << 10
 // are skipped so the generator can be a hand-written shell script with
 // comments. Non-zero exit yields an error.
 //
-// It runs while the start holds the scheduling lock, so it is bounded
-// like the other synchronous hooks: hook-timeout, then SIGKILL to its
-// process group. Before, a generator that hung froze every start and
-// stop in the system for as long as it hung, and its output was read
-// into an unbounded buffer inside PID 1. It runs as the service's
-// run-as user, as the service's other commands do.
-func (s *ProcessService) runEnvGenerator() (map[string]string, error) {
+// It is bounded like the other hooks: hook-timeout (or parent ending),
+// then SIGKILL to its process group. Before, a generator that hung
+// froze every start and stop in the system for as long as it hung — it
+// ran under the scheduling lock, as it still does for an exec-condition
+// (BringUp) — and its output was read into an unbounded buffer inside
+// PID 1. It runs as the service's run-as user, as the service's other
+// commands do.
+func (s *ProcessService) runEnvGenerator(parent context.Context) (map[string]string, error) {
 	timeout := s.effectiveHookTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := newHookCmd(ctx, []string{s.envGenerator})
 	s.applyRunAs(cmd)

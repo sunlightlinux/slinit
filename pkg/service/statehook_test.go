@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -369,4 +370,245 @@ func TestExitDuringPreStopHook(t *testing.T) {
 		t.Errorf("order %q, want \"prestop prestop-end finish\"", got)
 	}
 	waitStateHooksGone(t, base, 2*time.Second)
+}
+
+func TestPreStartCommandRunsOffQueueMu(t *testing.T) {
+	base := stateHookGoroutines()
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	s := NewProcessService(set, "pre")
+	s.SetHookTimeout(10 * time.Second)
+	s.SetPreStartCommand(markerHook(dir, "prestart", hookSleep))
+	s.SetCommand([]string{"/bin/sh", "-c", "echo start >> " + filepath.Join(dir, "log") + "; exec sleep 30"})
+	set.AddService(s)
+	done := make(chan struct{})
+	go func() {
+		set.StartService(s)
+		close(done)
+	}()
+	if waitForFile(filepath.Join(dir, "prestart")) == "" {
+		t.Fatal("pre-start-command did not run")
+	}
+	requireQueueMuFree(t, set, "pre-start-command")
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Error("StartService blocked behind the pre-start-command")
+	}
+	if st := s.State(); st != StateStarting {
+		t.Errorf("state %v while the pre-start-command runs, want STARTING", st)
+	}
+	if s.PID() > 0 {
+		t.Error("main process forked before the pre-start-command finished")
+	}
+	if st := waitState(t, s, StateStarted, 5*time.Second); st != StateStarted {
+		t.Fatalf("state %v, want STARTED", st)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(readLog(dir)) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := strings.Join(readLog(dir), " "); got != "prestart start" {
+		t.Errorf("order %q, want \"prestart start\"", got)
+	}
+	set.StopService(s)
+	waitState(t, s, StateStopped, 5*time.Second)
+	waitStateHooksGone(t, base, 2*time.Second)
+}
+
+// A pre-start-command that fails still fails the start.
+func TestPreStartCommandFailureFailsTheStart(t *testing.T) {
+	base := stateHookGoroutines()
+	set, _ := newTestSet()
+	s := NewProcessService(set, "pref")
+	s.SetPreStartCommand([]string{"/bin/false"})
+	s.SetCommand([]string{"/bin/sleep", "30"})
+	set.AddService(s)
+	set.StartService(s)
+	if st := waitState(t, s, StateStopped, 5*time.Second); st != StateStopped {
+		t.Fatalf("state %v, want STOPPED", st)
+	}
+	if !s.DidStartFail() {
+		t.Error("a failed pre-start-command did not fail the start")
+	}
+	if s.PID() > 0 {
+		t.Error("main process forked after a failed pre-start-command")
+	}
+	waitStateHooksGone(t, base, 2*time.Second)
+}
+
+func TestEnvGeneratorRunsOffQueueMu(t *testing.T) {
+	base := stateHookGoroutines()
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	s := NewProcessService(set, "gen")
+	s.SetHookTimeout(10 * time.Second)
+	s.SetEnvGenerator(writeScript(t, dir, "gen",
+		"echo x > "+filepath.Join(dir, "genran")+"\nsleep "+hookSleep+"\necho GENV=7\n"))
+	out := filepath.Join(dir, "out")
+	s.SetCommand([]string{"/bin/sh", "-c", `echo "$GENV" > ` + out + "; exec sleep 30"})
+	set.AddService(s)
+	go set.StartService(s)
+	if waitForFile(filepath.Join(dir, "genran")) == "" {
+		t.Fatal("env-generator did not run")
+	}
+	requireQueueMuFree(t, set, "env-generator")
+	if got := waitForFileWithin(out, 5*time.Second); got != "7" {
+		t.Errorf("process saw GENV=%q, want 7", got)
+	}
+	set.StopService(s)
+	waitState(t, s, StateStopped, 5*time.Second)
+	waitStateHooksGone(t, base, 2*time.Second)
+}
+
+// A stop during the pre-start-command kills it and ends the start: the
+// main process never forks, and nothing is left running.
+func TestStopDuringPreStartCommand(t *testing.T) {
+	base := stateHookGoroutines()
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	s := NewProcessService(set, "prestop")
+	s.SetHookTimeout(60 * time.Second)
+	pidFile := filepath.Join(dir, "hookpid")
+	s.SetPreStartCommand([]string{"/bin/sh", "-c", "echo $$ > " + pidFile + "; sleep 30; echo late >> " +
+		filepath.Join(dir, "log")})
+	s.SetCommand([]string{"/bin/sh", "-c", "echo start >> " + filepath.Join(dir, "log") + "; exec sleep 30"})
+	set.AddService(s)
+	go set.StartService(s)
+	hp := waitForFile(pidFile)
+	if hp == "" {
+		t.Fatal("pre-start-command did not run")
+	}
+	t0 := time.Now()
+	set.StopService(s)
+	if st := waitState(t, s, StateStopped, 3*time.Second); st != StateStopped {
+		t.Fatalf("state %v, want STOPPED", st)
+	}
+	if d := time.Since(t0); d > 2*time.Second {
+		t.Errorf("stop took %v; the pre-start-command was waited out, not ended", d)
+	}
+	pid, _ := strconv.Atoi(hp)
+	if pid > 0 && processAlive(pid) {
+		t.Errorf("pre-start-command (pid %d) still alive after the stop", pid)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := readLog(dir); len(got) != 0 {
+		t.Errorf("after the stop: %v (main process forked or hook finished)", got)
+	}
+	if s.DidStartFail() {
+		t.Error("a start stopped by request was reported as failed")
+	}
+	waitStateHooksGone(t, base, 2*time.Second)
+
+	// The service starts normally afterwards.
+	s.SetPreStartCommand([]string{"/bin/true"})
+	set.StartService(s)
+	if st := waitState(t, s, StateStarted, 3*time.Second); st != StateStarted {
+		t.Fatalf("restart after a cancelled pre-start: state %v", st)
+	}
+	set.StopService(s)
+	waitState(t, s, StateStopped, 5*time.Second)
+}
+
+// A shutdown during a pre-start-command ends the start, and the final
+// kill ends a pre-stop-hook that would otherwise run on.
+func TestShutdownDuringHooks(t *testing.T) {
+	base := stateHookGoroutines()
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	a := NewProcessService(set, "sa")
+	a.SetHookTimeout(60 * time.Second)
+	a.SetPreStartCommand(markerHook(dir, "a", "30"))
+	a.SetCommand([]string{"/bin/sleep", "30"})
+	b := NewProcessService(set, "sb")
+	b.SetHookTimeout(60 * time.Second)
+	b.SetPreStopHook(markerHook(dir, "b", "30"))
+	b.SetCommand([]string{"/bin/sleep", "30"})
+	set.AddService(a)
+	set.AddService(b)
+	set.StartService(b)
+	if st := waitState(t, b, StateStarted, 3*time.Second); st != StateStarted {
+		t.Fatalf("b: state %v", st)
+	}
+	go set.StartService(a)
+	if waitForFile(filepath.Join(dir, "a")) == "" {
+		t.Fatal("a's pre-start-command did not run")
+	}
+	t0 := time.Now()
+	set.StopAllServices(ShutdownPoweroff)
+	if waitForFile(filepath.Join(dir, "b")) == "" {
+		t.Fatal("b's pre-stop-hook did not run")
+	}
+	if st := waitState(t, a, StateStopped, 2*time.Second); st != StateStopped {
+		t.Errorf("a: state %v after the shutdown, want STOPPED", st)
+	}
+	if st := b.State(); st != StateStopping {
+		t.Errorf("b: state %v while its pre-stop-hook runs, want STOPPING", st)
+	}
+	requireQueueMuFree(t, set, "pre-stop-hook during shutdown")
+	set.KillActiveServices()
+	if st := waitState(t, b, StateStopped, 3*time.Second); st != StateStopped {
+		t.Errorf("b: state %v after the final kill, want STOPPED", st)
+	}
+	if d := time.Since(t0); d > 5*time.Second {
+		t.Errorf("shutdown took %v", d)
+	}
+	waitStateHooksGone(t, base, 2*time.Second)
+}
+
+// An on-demand service's pre-start-command, run for its first client.
+func TestOnDemandPreStartRunsOffQueueMu(t *testing.T) {
+	base := stateHookGoroutines()
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "od.sock")
+	set, _ := newTestSet()
+	svc := newOnDemand(t, set, "od-pre", sock, []string{"/bin/sleep", "60"})
+	svc.SetHookTimeout(60 * time.Second)
+	svc.SetPreStartCommand(markerHook(dir, "prestart", "30"))
+	set.StartService(svc)
+	if st := waitState(t, svc, StateStarted, 2*time.Second); st != StateStarted {
+		t.Fatalf("state %v, want STARTED", st)
+	}
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if waitForFile(filepath.Join(dir, "prestart")) == "" {
+		t.Fatal("pre-start-command did not run for the first client")
+	}
+	requireQueueMuFree(t, set, "on-demand pre-start-command")
+	t0 := time.Now()
+	set.StopService(svc)
+	if st := waitState(t, svc, StateStopped, 3*time.Second); st != StateStopped {
+		t.Fatalf("state %v, want STOPPED", st)
+	}
+	if d := time.Since(t0); d > 2*time.Second {
+		t.Errorf("stop took %v", d)
+	}
+	if svc.PID() > 0 {
+		t.Error("process launched after the stop")
+	}
+	waitStateHooksGone(t, base, 2*time.Second)
+}
+
+func waitForFileWithin(path string, d time.Duration) string {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
+			return strings.TrimSpace(string(b))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return ""
+}
+
+func processAlive(pid int) bool {
+	// A zombie still answers kill(0); read its state instead.
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	f := strings.Fields(string(b))
+	return len(f) > 2 && f[2] != "Z"
 }
