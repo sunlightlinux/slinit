@@ -212,7 +212,7 @@ func cunescapeOne(s string) (out []byte, n int, ok bool) {
 // execPrefixes are the flags a word's leading prefix characters set,
 // as in config_parse_exec.
 type execPrefixes struct {
-	ignoreFailure, separateArgv0, noEnvExpand, fullPriv, noSetuid bool
+	ignoreFailure, separateArgv0, noEnvExpand, viaShell, fullPriv, noSetuid bool
 }
 
 // cutExecPrefixes reads the prefix characters off the first word. Each
@@ -231,6 +231,8 @@ loop:
 			p.separateArgv0 = true
 		case c == ':' && !p.noEnvExpand:
 			p.noEnvExpand = true
+		case c == '|' && !p.viaShell:
+			p.viaShell = true
 		case c == '+' && !p.fullPriv && !p.noSetuid && !ambientHack:
 			p.fullPriv = true
 		case c == '!' && !p.fullPriv && !p.noSetuid && !ambientHack:
@@ -284,13 +286,22 @@ func parseExecLine(cfg *SystemdConfig, key, val string) (cmds []parsedExec, warn
 		}
 
 		var args []string
-		path, w := expandSpecifiers(cfg, key, f)
-		warns = append(warns, w...)
-		if path == "" {
-			return refuse("empty executable path")
-		}
-		if !pre.separateArgv0 {
-			args = append(args, path)
+		var path string
+		if pre.viaShell {
+			path = "/bin/sh"
+			if f != "" {
+				args = append(args, f)
+			}
+		} else {
+			var w []SystemdWarning
+			path, w = expandSpecifiers(cfg, key, f)
+			warns = append(warns, w...)
+			if path == "" {
+				return refuse("empty executable path")
+			}
+			if !pre.separateArgv0 {
+				args = append(args, path)
+			}
 		}
 		for p != "" {
 			if p[0] == ';' && (len(p) == 1 || isSDSpace(p[1])) {
@@ -319,6 +330,17 @@ func parseExecLine(cfg *SystemdConfig, key, val string) (cmds []parsedExec, warn
 
 		c := parsedExec{execPrefixes: pre}
 		switch {
+		case pre.viaShell:
+			// "sh" (or "-sh" with @) runs the rest, joined with
+			// spaces, as one -c script; with nothing to run, the shell
+			// itself (exec-invoke.c).
+			c.cmd.argv = []string{path}
+			if len(args) > 0 {
+				c.cmd.argv = append(c.cmd.argv, "-c", strings.Join(args, " "))
+			}
+			if pre.separateArgv0 {
+				c.cmd.argv0, c.cmd.hasArgv0 = "-sh", true
+			}
 		case len(args) == 0:
 			return refuse("empty executable name or zeroeth argument")
 		case pre.separateArgv0:

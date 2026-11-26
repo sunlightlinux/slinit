@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -229,5 +230,62 @@ func TestParseExecLineRefusals(t *testing.T) {
 	if err != nil || len(cmds) != 2 || strings.Join(cmds[0].cmd.argv, "|") != "/bin/a" ||
 		strings.Join(cmds[1].cmd.argv, "|") != "/bin/b|x;" {
 		t.Errorf("two commands: %+v, %v", cmds, err)
+	}
+}
+
+// The Exec prefixes used to be stripped with a note that only --verbose
+// shows. "-" on ExecStartPre= is the common one, and stripped it made a
+// pre-start that may fail (ExecStartPre=-/bin/mkdir ...) fail the whole
+// start. ":" let slinit expand what the unit asked to keep literal, and
+// "|" was left in the path, which then did not exist.
+func TestSystemdExecPrefixes(t *testing.T) {
+	unit := `[Service]
+Type=oneshot
+ExecStartPre=-/nonexistent/prog "a b"
+ExecStart=-/bin/sh -c "exit 3"
+ExecStartPost=+/bin/true
+ExecStop=:/bin/echo $HOME ${X} $$
+`
+	direct, _ := loadSystemdDirect(t, unit)
+	for name, d := range map[string]*ServiceDescription{"converted": parseEmitted(t, unit), "direct": direct} {
+		for what, argv := range map[string][]string{"pre-start-command": d.PreStartCommand, "command": d.Command} {
+			if len(argv) == 0 {
+				t.Errorf("%s: %s missing", name, what)
+				continue
+			}
+			if err := exec.Command(argv[0], argv[1:]...).Run(); err != nil {
+				t.Errorf("%s: %s %q failed (%v); \"-\" asks for its failure to be ignored", name, what, argv, err)
+			}
+		}
+		argvIs(t, name+": pre-start-command", d.PreStartCommand,
+			[]string{"/bin/sh", "-c", `"$@" || :`, "sh", "/nonexistent/prog", "a b"})
+		// ":": no variable is expanded, $$ stays $$.
+		argvIs(t, name+": stop-command", d.StopCommand, []string{"/bin/echo", "$HOME", "${X}", "$$"})
+	}
+	// "|": the rest runs as one /bin/sh -c script; "@|" a login shell.
+	d, _ := loadSystemdDirect(t, "[Service]\nExecStart=@|echo \"a b\" $$HOME\n")
+	argvIs(t, "|: command", d.Command, []string{"/bin/sh", "-c", "echo a b $HOME"})
+	if d.Argv0 != "-sh" {
+		t.Errorf("@|: command-argv0 = %q, want -sh", d.Argv0)
+	}
+
+	// What slinit cannot carry is a WARN, which prints without --verbose.
+	for _, c := range []struct{ unit, want string }{
+		{"[Service]\nExecStart=-/usr/bin/daemon\n", `"-" (exit failure counts as success) not carried`},
+		{"[Service]\nExecStart=+/usr/bin/daemon\nUser=x\n", `"+" (full privileges, no sandbox) not carried`},
+		{"[Service]\nExecStart=!/usr/bin/daemon\nUser=x\n", `"!" (sandbox, but no User=/Group=) not carried`},
+		{"[Service]\nExecStart=/usr/bin/daemon\nExecStartPre=!/usr/bin/pre\n", `"!" (sandbox, but no User=/Group=) not carried`},
+	} {
+		d, got := loadSystemdDirect(t, c.unit)
+		found := false
+		for _, g := range got {
+			found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, c.want))
+		}
+		if !found {
+			t.Errorf("%q: no WARN %q: %v", c.unit, c.want, got)
+		}
+		if d.Command[0] != "/usr/bin/daemon" {
+			t.Errorf("%q: command = %q", c.unit, d.Command)
+		}
 	}
 }

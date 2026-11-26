@@ -86,6 +86,18 @@ be written in a slinit file: that command is dropped with a warning.
 A line systemd refuses (unbalanced quotes after the path, an empty path) makes the
 conversion fail, unless its command has the **-** prefix.
 
+The prefixes of an **Exec** command: **@** gives **command-argv0**
+(main command only). **:** is kept exactly: every **$** is doubled, so
+slinit expands no variable either. **|** runs the rest as one
+**/bin/sh -c** script (systemd uses the login shell of **User=**, and
+**/bin/sh** when it has none; with **@**, argv[0] is **-sh**). **-** on
+**ExecStartPre**, and on the **ExecStart** of a **oneshot**, runs the
+command through **/bin/sh -c '"$@" || :'**, so that its failure,
+a missing program included, is ignored as in systemd; on **ExecStartPost**
+and **ExecStop** a failure already fails nothing in slinit. **-** on the
+**ExecStart** of a long-running service, and **+** and **!** wherever
+their meaning is lost, are reported as warnings.
+
 **TimeoutStartSec** becomes **start-timeout** and **TimeoutStopSec**
 **stop-timeout**; **TimeoutSec** sets both. **infinity** and **0** both
 mean no timeout, as in systemd, and are written as **0**. A

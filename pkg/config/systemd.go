@@ -77,6 +77,15 @@ type SystemdConfig struct {
 	stopTimeout  string
 	closeStdin   bool
 
+	// The ExecStart= command with "-": ignoring its failure needs the
+	// type, which may come later in the unit (finishExecStart).
+	commandIgnoreFailure bool
+	commandArgv          []string
+	commandLiteral       bool
+
+	// The hook had "+": systemd too runs it with full privileges.
+	preStartPriv, postStartPriv bool
+
 	// TimeoutStartSec= / TimeoutSec=; startTimeoutSet records that the
 	// unit gave one, which a oneshot's default depends on.
 	startTimeout    string
@@ -425,6 +434,7 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		// systemd; ":group" is a run-as slinit rejects.
 		cfg.runAs = "root" + cfg.runAs
 	}
+	warns = append(warns, cfg.finishExecStart()...)
 	if cfg.svcType == "scripted" && !cfg.startTimeoutSet {
 		// systemd gives a oneshot no start timeout unless the unit
 		// sets one (service_add_extras: DefaultTimeoutStartSec does not
@@ -949,13 +959,13 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 		// An empty assignment resets the list, as in systemd.
 		switch key {
 		case "ExecStart":
-			cfg.command, cfg.argv0 = "", ""
+			cfg.command, cfg.argv0, cfg.commandIgnoreFailure, cfg.commandArgv = "", "", false, nil
 		case "ExecStop":
 			cfg.stopCommand, cfg.stopSignal, cfg.stopLine = "", "", ""
 		case "ExecStartPre":
-			cfg.preStart, *preN = "", 0
+			cfg.preStart, cfg.preStartPriv, *preN = "", false, 0
 		case "ExecStartPost":
-			cfg.postStart, *postN = "", 0
+			cfg.postStart, cfg.postStartPriv, *postN = "", false, 0
 		}
 		return nil
 	}
@@ -965,13 +975,22 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 		return warns
 	}
 	for _, c := range cmds {
-		warns = append(warns, execPrefixNotes(key, c.execPrefixes)...)
-		value, ok := slinitCommandValue(c.cmd.argv, false)
+		argv := c.cmd.argv
+		if c.ignoreFailure && key == "ExecStartPre" {
+			// slinit fails the start on a failing pre-start-command and
+			// has no way to say otherwise; the shell ignores it instead.
+			argv = ignoreFailureArgv(argv)
+		}
+		value, ok := slinitCommandValue(argv, c.noEnvExpand)
 		if !ok {
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
 				"%s=%s: an argument holds a newline, which a slinit command setting cannot — command dropped", key, val)})
 			continue
 		}
+		if !c.noEnvExpand {
+			warns = append(warns, warnExecVars(key, value)...)
+		}
+		warns = append(warns, execPrefixNotes(key, val, c.execPrefixes)...)
 		switch key {
 		case "ExecStart":
 			// A oneshot may list several, run in turn; slinit runs one
@@ -983,13 +1002,14 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 						"run the steps from one script if they all matter", cfg.command)})
 			}
 			cfg.command, cfg.argv0 = value, c.cmd.argv0
-			warns = append(warns, warnExecVars(key, value)...)
+			cfg.commandIgnoreFailure, cfg.commandArgv, cfg.commandLiteral = c.ignoreFailure, c.cmd.argv, c.noEnvExpand
 		case "ExecStop":
 			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
 			// slinit has no $MAINPID: it would expand to nothing. The
 			// usual `kill -s SIG $MAINPID` is what term-signal does; any
-			// other use cannot act on the right process.
-			if strings.Contains(value, "$MAINPID") || strings.Contains(value, "${MAINPID}") {
+			// other use cannot act on the right process. With ":" it is
+			// no variable but text.
+			if !c.noEnvExpand && (strings.Contains(value, "$MAINPID") || strings.Contains(value, "${MAINPID}")) {
 				if sig, ok := killMainPID(value); ok {
 					// Decided once KillSignal=, which may follow, is known.
 					cfg.stopSignal, cfg.stopLine = sig, val
@@ -1004,11 +1024,10 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 					"multiple ExecStop= — slinit takes one stop-command, keeping the last (dropped: %q)", cfg.stopCommand)})
 			}
 			cfg.stopCommand = value
-			warns = append(warns, warnExecVars(key, value)...)
 		case "ExecStartPre", "ExecStartPost":
-			n, cur, setting := preN, &cfg.preStart, "pre-start-command"
+			n, cur, priv, setting := preN, &cfg.preStart, &cfg.preStartPriv, "pre-start-command"
 			if key == "ExecStartPost" {
-				n, cur, setting = postN, &cfg.postStart, "post-start-command"
+				n, cur, priv, setting = postN, &cfg.postStart, &cfg.postStartPriv, "post-start-command"
 			}
 			*n++
 			if *n > 1 {
@@ -1016,25 +1035,72 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 					"multiple %s= — slinit takes one %s, keeping the first (dropped: %q)", key, setting, value)})
 				continue
 			}
-			*cur = value
+			*cur, *priv = value, c.fullPriv
 			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
-			warns = append(warns, warnExecVars(key, value)...)
 		}
 	}
 	return warns
 }
 
-// execPrefixNotes reports the prefix characters whose meaning the
-// slinit command does not carry.
-func execPrefixNotes(key string, p execPrefixes) []SystemdWarning {
-	var warns []SystemdWarning
-	for _, f := range []struct {
-		set bool
-		c   string
-	}{{p.ignoreFailure, "-"}, {p.fullPriv, "+"}, {p.noSetuid, "!"}, {p.noEnvExpand, ":"}} {
-		if f.set {
-			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s prefix %q stripped — behaviour not carried into slinit", key, f.c)})
+// ignoreFailureArgv runs argv through a shell that turns any failure,
+// a missing program or a signal included, into success, as systemd's
+// "-" prefix does. "$@" passes the words on untouched; slinit leaves
+// "$@" alone, @ starting no variable name.
+func ignoreFailureArgv(argv []string) []string {
+	return append([]string{"/bin/sh", "-c", `"$@" || :`, "sh"}, argv...)
+}
+
+// finishExecStart settles ExecStart= with "-" once the type is known.
+// A oneshot's failure fails the start in slinit as in systemd, so the
+// command is wrapped to ignore it; a long-running process cannot be
+// wrapped without the shell becoming the main process, and its exit
+// status keeps the meaning slinit gives it.
+func (cfg *SystemdConfig) finishExecStart() []SystemdWarning {
+	if !cfg.commandIgnoreFailure {
+		return nil
+	}
+	if cfg.svcType == "scripted" {
+		if v, ok := slinitCommandValue(ignoreFailureArgv(cfg.commandArgv), cfg.commandLiteral); ok {
+			cfg.command = v
+			return []SystemdWarning{{"NOTE", `ExecStart= "-": run through /bin/sh -c '"$@" || :' so that its failure is ignored, as in systemd`}}
 		}
+		return nil
+	}
+	return []SystemdWarning{{"WARN", fmt.Sprintf(`ExecStart= "-" (exit failure counts as success) not carried: `+
+		`slinit counts a failing %s service as failed, and restart = on-failure restarts it`, cfg.svcType)}}
+}
+
+// execPrefixNotes reports what becomes of an Exec prefix in slinit.
+// ":" is carried exactly (the $ are doubled), "-" on ExecStartPre= by
+// a shell and on ExecStart= by finishExecStart; "@" is argv0.
+func execPrefixNotes(key, val string, p execPrefixes) []SystemdWarning {
+	var warns []SystemdWarning
+	note := func(level, msg string) {
+		warns = append(warns, SystemdWarning{level, fmt.Sprintf("%s=%s: %s", key, val, msg)})
+	}
+	hook := key == "ExecStartPre" || key == "ExecStartPost"
+	if p.ignoreFailure {
+		switch key {
+		case "ExecStartPre":
+			note("NOTE", `"-" — run through /bin/sh -c '"$@" || :' so that its failure is ignored, as in systemd`)
+		case "ExecStartPost":
+			note("NOTE", `"-" — slinit only logs a failing post-start-command, which is what "-" asks`)
+		case "ExecStop":
+			note("NOTE", `"-" — a failing stop-command does not fail the stop in slinit, which is what "-" asks`)
+		}
+	}
+	if p.viaShell {
+		note("NOTE", `"|" — run with /bin/sh -c; systemd uses the login shell of User=, /bin/sh when it has none`)
+	}
+	switch {
+	case p.fullPriv && hook:
+		note("NOTE", `"+" — slinit runs this hook as root without the sandbox already`)
+	case p.fullPriv:
+		note("WARN", `"+" (full privileges, no sandbox) not carried: slinit runs it with the service's run-as and sandbox`)
+	case p.noSetuid && hook:
+		note("WARN", `"!" (sandbox, but no User=/Group=) not carried: slinit runs this hook as root without the sandbox`)
+	case p.noSetuid:
+		note("WARN", `"!" (sandbox, but no User=/Group=) not carried: slinit runs it with the service's run-as`)
 	}
 	return warns
 }
