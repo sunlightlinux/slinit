@@ -350,3 +350,40 @@ func TestRunQuietFlagSuppresses(t *testing.T) {
 		}
 	}
 }
+
+// OpenRC prints the raw /proc/mounts field; fstab.Parse decodes the
+// octal escapes, so they must be re-encoded on output while matching
+// (positional, regex) keeps working on the decoded path.
+func TestRunPrintsEscapedFieldsLikeProcMounts(t *testing.T) {
+	const table = `/dev/sda1 / ext4 rw 0 0
+srv:/x\040y /mnt/my\040share nfs rw 0 0
+/dev/sdb1 /mnt/a\011b\012c\134d ext4 rw 0 0
+host:/e\0431 /mnt/h ext4 rw 0 0
+`
+	proc := filepath.Join(t.TempDir(), "mounts")
+	if err := os.WriteFile(proc, []byte(table), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		args []string
+		out  string
+	}{
+		{"all mountpoints", nil, "/mnt/h\n/mnt/a\\011b\\012c\\134d\n/mnt/my\\040share\n/\n"},
+		{"positional matches decoded path", []string{"/mnt/my share"}, "/mnt/my\\040share\n"},
+		{"point regex matches decoded path", []string{"-p", "my share"}, "/mnt/my\\040share\n"},
+		{"node escaped incl #", []string{"-t", "-f", "nfs|ext4", "-P", "^/$"}, "host:/e\\0431\n/dev/sdb1\nsrv:/x\\040y\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts, err := parseArgs(append([]string{"--proc-mounts", proc}, c.args...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, code := captureStdout(t, func() int { return run(opts) })
+			if code != exitOK || out != c.out {
+				t.Errorf("out=%q code=%d, want %q 0", out, code, c.out)
+			}
+		})
+	}
+}

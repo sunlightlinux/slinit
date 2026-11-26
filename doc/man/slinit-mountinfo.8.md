@@ -21,6 +21,15 @@ Rows are printed in reverse order (deepest / most-recent first).
 This is the order init.d scripts want for **umount** sequencing, and
 matches OpenRC's behaviour.
 
+Fields are printed exactly as they appear in **/proc/mounts**, as
+OpenRC prints them: the kernel's octal escapes in the mountpoint and
+device fields (**\\040** space, **\\011** tab, **\\012** newline,
+**\\134** backslash, and **\\043** **#** in the device) are kept,
+so every entry is one line and one word. Matching works on the
+decoded value: the positional argument **"/mnt/my share"** and
+**--point-regex 'my share'** both select the mount printed as
+**/mnt/my\\040share**.
+
 The pseudo entry with **rootfs** as its filesystem type is always
 skipped, matching the C original.
 
