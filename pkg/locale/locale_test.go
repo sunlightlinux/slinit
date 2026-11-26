@@ -235,3 +235,26 @@ func TestLanguageIsValidated(t *testing.T) {
 		}
 	}
 }
+
+// rc.conf is sourced by a shell: `export KEYMAP=...` is its active keymap.
+// It was read as a key named "EXPORT KEYMAP", so the file counted as
+// having no KEYMAP and was never updated, and the boot script restored the
+// old keymap at the next boot. The export and the indentation are kept.
+func TestRCConfKeymapExported(t *testing.T) {
+	scratch(t)
+	os.WriteFile(RCConfPath, []byte("# rc.conf\nexport KEYMAP=\"us\"\n  export   HARDWARECLOCK=UTC\n"), 0o644)
+	if err := SetRCConfKeymap("de"); err != nil {
+		t.Fatal(err)
+	}
+	want := "# rc.conf\nexport KEYMAP=de\n  export   HARDWARECLOCK=UTC\n"
+	if b, _ := os.ReadFile(RCConfPath); string(b) != want {
+		t.Errorf("rc.conf:\n%s\nwant:\n%s", b, want)
+	}
+	os.WriteFile(RCConfPath, []byte("\tKEYMAP=us\n"), 0o644)
+	if err := SetRCConfKeymap("ro"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(RCConfPath); string(b) != "\tKEYMAP=ro\n" {
+		t.Errorf("indented KEYMAP: rc.conf %q", b)
+	}
+}

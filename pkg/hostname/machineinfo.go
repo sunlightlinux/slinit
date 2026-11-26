@@ -32,9 +32,10 @@ type MachineInfo struct {
 }
 
 type miLine struct {
-	raw   string // original text (blank, comment, or KEY=VALUE)
-	key   string // upper-case KEY when this is an assignment, else ""
-	value string // decoded value (quotes stripped, escapes resolved)
+	raw    string // original text (blank, comment, or KEY=VALUE)
+	key    string // upper-case KEY when this is an assignment, else ""
+	value  string // decoded value (quotes stripped, escapes resolved)
+	prefix string // what stood before KEY in a shell file: indentation, "export "
 }
 
 // LoadMachineInfo reads the file; missing file yields an empty struct
@@ -44,7 +45,16 @@ func LoadMachineInfo() (*MachineInfo, error) { return LoadEnvFile(MachineInfoPat
 // LoadEnvFile reads any file in the same KEY=VALUE grammar (os-release(5),
 // vconsole.conf(5), locale.conf(5)), keeping comments and every line it
 // does not change; Save writes it back to the same path.
-func LoadEnvFile(path string) (*MachineInfo, error) {
+func LoadEnvFile(path string) (*MachineInfo, error) { return loadEnvFile(path, false) }
+
+// LoadShellEnvFile is LoadEnvFile for a file sourced by a shell, such as
+// Void's /etc/rc.conf: an assignment may be preceded by "export ", and
+// Set keeps that, and the line's indentation, when it rewrites one. The
+// files systemd reads keep the plain grammar, where "export KEY=" is not
+// an assignment of KEY.
+func LoadShellEnvFile(path string) (*MachineInfo, error) { return loadEnvFile(path, true) }
+
+func loadEnvFile(path string, shell bool) (*MachineInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -65,6 +75,12 @@ func LoadEnvFile(path string) (*MachineInfo, error) {
 			mi.lines = append(mi.lines, miLine{raw: raw})
 			continue
 		}
+		prefix := raw[:len(raw)-len(strings.TrimLeft(raw, " \t"))]
+		if shell && strings.HasPrefix(trimmed, "export ") {
+			rest := strings.TrimLeft(trimmed[len("export "):], " \t")
+			prefix += trimmed[:len(trimmed)-len(rest)]
+			trimmed = rest
+		}
 		eq := strings.IndexByte(trimmed, '=')
 		if eq <= 0 {
 			mi.lines = append(mi.lines, miLine{raw: raw})
@@ -72,7 +88,10 @@ func LoadEnvFile(path string) (*MachineInfo, error) {
 		}
 		key := strings.ToUpper(strings.TrimSpace(trimmed[:eq]))
 		val := decodeValue(strings.TrimSpace(trimmed[eq+1:]))
-		mi.lines = append(mi.lines, miLine{raw: raw, key: key, value: val})
+		if !shell {
+			prefix = ""
+		}
+		mi.lines = append(mi.lines, miLine{raw: raw, key: key, value: val, prefix: prefix})
 	}
 	if err := s.Err(); err != nil {
 		return nil, err
@@ -112,7 +131,7 @@ func (mi *MachineInfo) Set(key, value string) {
 	line := fmt.Sprintf("%s=%s", key, encodeValue(value))
 	for i, l := range mi.lines {
 		if l.key == key {
-			mi.lines[i] = miLine{raw: line, key: key, value: value}
+			mi.lines[i] = miLine{raw: l.prefix + line, key: key, value: value, prefix: l.prefix}
 			// Drop later duplicates so a single key = single line.
 			mi.lines = removeDupes(mi.lines, key, i)
 			return

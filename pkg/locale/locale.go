@@ -344,7 +344,7 @@ func WriteXorgKeyboard(x X11) error {
 // the boot script loads on every boot; an rc.conf without one is left
 // alone.
 func SetRCConfKeymap(keymap string) error {
-	f, err := hostname.LoadEnvFile(RCConfPath)
+	f, err := hostname.LoadShellEnvFile(RCConfPath)
 	if err != nil {
 		return err
 	}

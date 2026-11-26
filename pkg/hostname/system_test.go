@@ -142,3 +142,24 @@ func TestStaticHostnameFile(t *testing.T) {
 		t.Errorf("removing an already missing file: %v", err)
 	}
 }
+
+// The files systemd reads keep its grammar: "export KEY=" is not an
+// assignment of KEY there, only in a shell-sourced file.
+func TestExportOnlyInShellEnvFiles(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	os.WriteFile(p, []byte("export KEYMAP=us\n"), 0o644)
+	plain, err := LoadEnvFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := plain.Get("KEYMAP"); v != "" {
+		t.Errorf("plain env file read export KEYMAP as KEYMAP=%q", v)
+	}
+	sh, err := LoadShellEnvFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := sh.Get("KEYMAP"); v != "us" {
+		t.Errorf("shell env file: KEYMAP=%q, want us", v)
+	}
+}
