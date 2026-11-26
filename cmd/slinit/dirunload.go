@@ -36,7 +36,7 @@ func unloadDisappeared(set *service.ServiceSet, name string, heldByClient func(s
 	if svc.Record().State() != service.StateStopped {
 		return dirUnloadRunning
 	}
-	if heldByClient(svc) || !set.UnloadServiceIfLone(svc) {
+	if !set.UnloadServiceIfLone(svc, heldByClient) {
 		return dirUnloadReferenced
 	}
 	return dirUnloadDone

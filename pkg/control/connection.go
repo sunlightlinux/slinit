@@ -214,12 +214,12 @@ func (c *Connection) close() {
 	})
 }
 
-func (c *Connection) allocHandle(svc service.Service) uint32 {
+func (c *Connection) allocHandle(svc service.Service) (uint32, bool) {
 	c.handlesMu.Lock()
 	// O(1) check if this service already has a handle
 	if h, ok := c.revHandles[svc]; ok {
 		c.handlesMu.Unlock()
-		return h
+		return h, true
 	}
 	h := c.nextHandle
 	c.nextHandle++
@@ -227,11 +227,34 @@ func (c *Connection) allocHandle(svc service.Service) uint32 {
 	c.revHandles[svc] = h
 	closing := c.closing
 	c.handlesMu.Unlock()
+
+	// The service was looked up before the handle went in, and an unload
+	// from another client may have removed it since. Unload checks for
+	// other clients' handles and removes the service under the graph
+	// lock, so looking again under it after inserting settles the race:
+	// either unload saw this handle and refused, or the service is gone
+	// here and the handle is taken back.
+	var present bool
+	c.server.services.WithGraphLock(func() {
+		present = c.server.services.FindService(svc.Name(), true) == svc
+	})
+	if !present {
+		c.handlesMu.Lock()
+		if c.handles[h] == svc {
+			delete(c.handles, h)
+		}
+		if c.revHandles[svc] == h {
+			delete(c.revHandles, svc)
+		}
+		c.handlesMu.Unlock()
+		return 0, false
+	}
+
 	// Auto-subscribe as listener for service events
 	if !closing {
 		c.subscribe(svc)
 	}
-	return h
+	return h, true
 }
 
 func (c *Connection) getService(handle uint32) service.Service {
@@ -673,7 +696,10 @@ func (c *Connection) handleFindService(payload []byte) error {
 		return c.writePacket(RplyNoService, nil)
 	}
 
-	handle := c.allocHandle(svc)
+	handle, ok := c.allocHandle(svc)
+	if !ok {
+		return c.writePacket(RplyNoService, nil)
+	}
 	reply := getReplyBuf(6)
 	reply[0] = uint8(svc.State())
 	binary.LittleEndian.PutUint32(reply[1:], handle)
@@ -719,7 +745,10 @@ func (c *Connection) handleLoadService(payload []byte) error {
 		}
 	}
 
-	handle := c.allocHandle(svc)
+	handle, ok := c.allocHandle(svc)
+	if !ok {
+		return c.writePacket(RplyNoService, nil)
+	}
 	reply := getReplyBuf(6)
 	reply[0] = uint8(svc.State())
 	binary.LittleEndian.PutUint32(reply[1:], handle)
@@ -1650,35 +1679,20 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 		return c.writePacket(RplyNotStopped, nil)
 	}
 
-	// Count how many handles in this connection point to the service
-	handleCount := 0
-	c.handlesMu.RLock()
-	for _, s := range c.handles {
-		if s == svc {
-			handleCount++
-		}
-	}
-	c.handlesMu.RUnlock()
-
-	// Check if service has only ordering dependents (no active non-ordering refs)
-	if !svc.Record().HasLoneRef(handleCount) {
+	// Check and unload as one step under the graph lock: STOPPED, only
+	// ordering dependents (HasLoneRef), and no other client holding a
+	// handle, as in dinit, where has_lone_ref requires this connection
+	// to be the only listener. Checked first and unloaded after, a find
+	// from another client in between got a handle to the detached
+	// object: a start through it ran a service that was in no list,
+	// could not be found, and was not stopped at shutdown.
+	if !c.server.services.UnloadServiceIfLone(svc, func(svc service.Service) bool {
+		return c.server.heldElsewhere(c, svc)
+	}) {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	// Nor may another client hold a handle to it, as in dinit, where
-	// has_lone_ref requires this connection to be the only listener.
-	// Unloaded anyway, that client's handle kept the detached object:
-	// a start through it ran a service that was in no list, could not
-	// be found, and was not stopped at shutdown.
-	if c.server.heldElsewhere(c, svc) {
-		return c.writePacket(RplyNAK, nil)
-	}
-
-	// Unregister as listener before removing handles
 	svc.Record().RemoveListener(c)
-
-	// Unload: clean up deps and remove from set
-	c.server.services.UnloadService(svc)
 
 	// Remove all handles pointing to this service
 	c.handlesMu.Lock()
@@ -2261,14 +2275,18 @@ func (c *Connection) handleQueryDependents(payload []byte) error {
 	dependents := c.server.services.DependentsOf(svc)
 	// Allocate handles for each dependent and return them
 	// Wire format: count(4) + [handle(4)]*
-	buf := make([]byte, 4+4*len(dependents))
-	binary.LittleEndian.PutUint32(buf, uint32(len(dependents)))
-	off := 4
+	// A dependent unloaded since the snapshot gets no handle and is left out.
+	buf := make([]byte, 4, 4+4*len(dependents))
+	n := 0
 	for _, dep := range dependents {
-		depHandle := c.allocHandle(dep.From)
-		binary.LittleEndian.PutUint32(buf[off:], depHandle)
-		off += 4
+		depHandle, ok := c.allocHandle(dep.From)
+		if !ok {
+			continue
+		}
+		buf = binary.LittleEndian.AppendUint32(buf, depHandle)
+		n++
 	}
+	binary.LittleEndian.PutUint32(buf, uint32(n))
 	return c.writePacket(RplyDependents, buf)
 }
 
@@ -2285,15 +2303,19 @@ func (c *Connection) handleQueryDependencies(payload []byte) error {
 
 	deps := c.server.services.DependenciesOf(svc)
 	// Wire format: count(4) + [handle(4) + depType(1)]*
-	buf := make([]byte, 4+5*len(deps))
-	binary.LittleEndian.PutUint32(buf, uint32(len(deps)))
-	off := 4
+	// A dependency unloaded since the snapshot gets no handle and is left out.
+	buf := make([]byte, 4, 4+5*len(deps))
+	n := 0
 	for _, dep := range deps {
-		depHandle := c.allocHandle(dep.To)
-		binary.LittleEndian.PutUint32(buf[off:], depHandle)
-		buf[off+4] = uint8(dep.DepType)
-		off += 5
+		depHandle, ok := c.allocHandle(dep.To)
+		if !ok {
+			continue
+		}
+		buf = binary.LittleEndian.AppendUint32(buf, depHandle)
+		buf = append(buf, uint8(dep.DepType))
+		n++
 	}
+	binary.LittleEndian.PutUint32(buf, uint32(n))
 	return c.writePacket(RplyDependencies, buf)
 }
 

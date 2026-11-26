@@ -397,15 +397,20 @@ func (ss *ServiceSet) UnloadService(svc Service) {
 	ss.unloadService(svc, nil)
 }
 
-// UnloadServiceIfLone unloads svc only if it is STOPPED and nothing but
-// ordering links refer to it (HasLoneRef), checked under the graph lock
-// that the unload itself takes, so no dependent can attach in between.
-// It reports whether the service was unloaded. This is the gate the
-// unload control command applies; a caller that skips it strips a hard
-// dependency from every dependent, which then starts without it.
-func (ss *ServiceSet) UnloadServiceIfLone(svc Service) bool {
+// UnloadServiceIfLone unloads svc only if it is STOPPED, nothing but
+// ordering links refer to it (HasLoneRef), and held, when non-nil, reports
+// no control client holding it. All three are checked under the graph
+// lock that the unload and the removal from the set take, so no
+// dependent can attach and no client can take a handle in between (a
+// client allocating one re-checks, under the same lock, that the service
+// is still in the set). It reports whether the service was unloaded.
+// This is the gate the unload control command applies; a caller that
+// skips it strips a hard dependency from every dependent, which then
+// starts without it.
+func (ss *ServiceSet) UnloadServiceIfLone(svc Service, held func(Service) bool) bool {
 	return ss.unloadService(svc, func() bool {
-		return svc.State() == StateStopped && svc.Record().HasLoneRef(0)
+		return svc.State() == StateStopped && svc.Record().HasLoneRef(0) &&
+			(held == nil || !held(svc))
 	})
 }
 
@@ -438,8 +443,9 @@ func (ss *ServiceSet) unloadService(svc Service, allowed func() bool) bool {
 		orphan.CloseOutputPipe()
 	}
 	ss.processQueuesLocked()
-	ss.queueMu.Unlock()
-
+	// Removed from the set before the lock is let go, so a lookup made
+	// under the lock sees the service either loaded or gone, never
+	// unloaded but still listed.
 	ss.RemoveService(svc)
 	if orphan != nil {
 		ss.RemoveService(orphan)
@@ -447,6 +453,8 @@ func (ss *ServiceSet) unloadService(svc Service, allowed func() bool) bool {
 	if ph != nil {
 		ss.AddService(ph)
 	}
+	ss.queueMu.Unlock()
+
 	if ss.OnServiceUnloaded != nil {
 		ss.OnServiceUnloaded(svc)
 	}
