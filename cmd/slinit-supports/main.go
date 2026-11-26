@@ -3,9 +3,10 @@
 // Answers "does slinit support X?" and where the feature originated
 // (dinit, systemd, runit, s6, OpenRC, upstart, slinit-native). Uses
 // pkg/features's hybrid canonical-list-plus-annotation design: the
-// list of accepted directives + opcodes is auto-discovered from
-// slinit's own source at test-time, so this CLI's answers can't
-// drift from what slinit actually parses.
+// list of accepted directives + opcodes is discovered from slinit's
+// own source by tools/featuresgen and compiled in, and a test fails
+// when it is stale, so this CLI's answers can't drift from what
+// slinit actually parses.
 //
 // Modes:
 //
@@ -33,13 +34,12 @@ import (
 // version stamped at build time via ldflags -X main.version=vX.Y.Z.
 var version = "dev"
 
-// The pkg/features Load call needs the auto-discovered lists from
-// pkg/config/parser.go and pkg/control/protocol.go. Two source paths
-// slinit-supports handles:
-//   - test / development: relative paths within the module
-//   - installed binary: no source available → provenance-only mode
-//     (still fully useful for the yes/no + list use cases since
-//     provenance already enumerates every real feature).
+// The directive and opcode lists come from pkg/features's generated
+// zdiscovered.go, compiled in: the answer is this build's, wherever
+// the binary runs from. It used to read ./pkg/config/parser.go and
+// ./pkg/control/protocol.go relative to the working directory, so an
+// installed copy answered from the curated table alone and said "No"
+// to real directives.
 type options struct {
 	name        string
 	listMode    string // "" | "directives" | "opcodes" | "options" | "all"
@@ -71,33 +71,9 @@ func main() {
 	}
 }
 
-// loadRegistry attempts source auto-discovery from a few likely
-// locations. When source isn't reachable (installed binary), returns
-// a provenance-only registry — the manual annotation table still
-// covers every real feature; the discovery pass only adds
-// placeholder "TODO" rows and reports drift.
+// loadRegistry returns the registry built from the compiled-in lists.
 func loadRegistry() (*features.Registry, features.ReconcileReport) {
-	for _, base := range []string{".", "./..", "../..", "../../.."} {
-		parser := base + "/" + features.DiscoverParserFile
-		proto := base + "/" + features.DiscoverProtocolFile
-		if _, err := os.Stat(parser); err != nil {
-			continue
-		}
-		if _, err := os.Stat(proto); err != nil {
-			continue
-		}
-		opcodes, oerr := features.DiscoverOpcodes(proto)
-		if oerr != nil {
-			continue
-		}
-		directives, derr := features.DiscoverDirectives(parser)
-		if derr != nil {
-			continue
-		}
-		return features.Load(opcodes, directives)
-	}
-	// Fallback: annotation-table-only (no discovery pass).
-	return features.Load(nil, nil)
+	return features.LoadBuiltin()
 }
 
 func parseArgs(args []string) (options, error) {

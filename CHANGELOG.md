@@ -969,6 +969,14 @@ requires.
 
 ### Fixed
 
+- **An installed slinit-supports said "No" to real directives.** It
+  discovered directive and opcode names from `./pkg/config/parser.go`
+  relative to its working directory and fell back to the curated table
+  without it, so `cd / && slinit-supports capabilities` exited 1 and
+  `--list-all` printed 198 lines instead of 387. The lists are now
+  generated into `pkg/features/zdiscovered.go` by `tools/featuresgen`
+  (`go generate ./pkg/features`) and compiled in; a test fails when the
+  committed file is stale.
 - **slinit-supervise-daemon `--stop` orphaned the daemon and returned
   0**: the `--retry` given to `--stop` never reached the supervisor and
   the wait gave up early, SIGKILLed the supervisor and left the daemon

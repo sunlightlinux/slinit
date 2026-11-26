@@ -16,11 +16,12 @@ slinit-supports - query whether slinit supports a given directive, opcode, or op
 
 **slinit-supports** answers two questions about the slinit build it
 belongs to: "does this feature exist?" and "which upstream did it come
-from?". The answers are auto-discovered from source at compile time
-— the tool cannot go stale versus the binary that ships alongside
-it. Provenance annotations (dinit / systemd / runit /
-s6-linux-init / OpenRC / upstart / slinit) are hand-curated in a
-lookup table also compiled in.
+from?". The directive and opcode names are generated from the parser
+and control-protocol source and compiled into the binary, so the
+answers are the same wherever the tool runs from and cannot go stale
+versus the slinit it ships with. Provenance annotations (dinit /
+systemd / runit / s6-linux-init / OpenRC / upstart / slinit) are
+hand-curated in a lookup table also compiled in.
 
 Three feature spaces are covered:
 
