@@ -1865,7 +1865,7 @@ func (c *Connection) handleAddDep(payload []byte) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	if depType > 5 {
+	if depType > uint8(service.DepPreparedBy) {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
@@ -1905,7 +1905,7 @@ func (c *Connection) handleRmDep(payload []byte, v7 bool) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	if depType > 5 {
+	if depType > uint8(service.DepPreparedBy) {
 		return c.writePacket(RplyBadReq, nil)
 	}
 

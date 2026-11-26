@@ -160,6 +160,11 @@ verified with `git tag -v`.
   SIGKILL cannot end (stuck in uninterruptible sleep) now holds the
   shutdown for that grace (3s by default, `--shutdown-grace`) once more.
 
+- **`slinitctl add-dep`/`rm-dep` with `prepared-by` work.** slinitctl
+  accepted the kind and slinitctl(8) documents it, but the daemon took
+  only the kinds up to `after` and refused every prepared-by request, so
+  the command always failed with "reply 52".
+
 - **`add-dep` no longer leaves a running service on a hard dependency
   that is down.** A `depends-on` edge from a service that is up to one
   that is not STARTED was installed, and the target asked to start; one
