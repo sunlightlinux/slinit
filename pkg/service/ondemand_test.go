@@ -211,3 +211,44 @@ func TestOnDemandWatchdogCoversLaunchedProcess(t *testing.T) {
 		t.Errorf("state after watchdog = %v, want STARTED (listening)", st)
 	}
 }
+
+// A client left in the backlog of a service whose process exits without
+// accepting it re-arms the watcher on a socket that is still readable:
+// PID 1 launched the process again at once, without end. One connect
+// from any user who may reach the socket — and a process that fails
+// before it accepts, a missing binary, a bad config — kept PID 1 forking
+// and logging in a tight loop, holding queueMu for every turn. systemd
+// bounds this with the socket's trigger limit (TriggerLimitBurst=20 in
+// TriggerLimitIntervalSec=2s) and fails the socket when it is hit.
+func TestOnDemandTriggerLimitStopsLaunchLoop(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "od.sock")
+	count := filepath.Join(t.TempDir(), "launches")
+	set, _ := newTestSet()
+	svc := newOnDemand(t, set, "od-loop", sock,
+		[]string{"/bin/sh", "-c", "echo x >> " + count + "; exit 1"})
+	defer func() {
+		set.StopService(svc)
+		waitState(t, svc, StateStopped, 5*time.Second)
+	}()
+
+	set.StartService(svc)
+	if got := waitState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		t.Fatalf("state = %v, want STARTED", got)
+	}
+	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	time.Sleep(1500 * time.Millisecond)
+	b, _ := os.ReadFile(count)
+	launches := len(b) / 2
+	if launches > onDemandTriggerBurst {
+		t.Fatalf("one client launched the process %d times in 1.5s (limit %d)",
+			launches, onDemandTriggerBurst)
+	}
+	if st := waitState(t, svc, StateStopped, 3*time.Second); st != StateStopped {
+		t.Errorf("state after trigger limit = %v, want STOPPED", st)
+	}
+}

@@ -26,6 +26,18 @@ verified with `git tag -v`.
 
 ### Security
 
+- **One connect could keep PID 1 forking without end
+  (`socket-activation = on-demand`)**: a client the launched process
+  never accepted stayed in the backlog, so the socket was readable again
+  the moment the watcher re-armed, and a process that failed before
+  accepting (missing binary, bad config) was relaunched about 1300
+  times a second, each launch taking the service set's lock and logging.
+  Launches are now held to systemd's socket trigger limit, 20 in 2
+  seconds; past it the service is stopped as failed. *Compat:* an
+  on-demand service launched more than 20 times in 2 seconds (a process
+  that exits after each client, under a burst of clients) is now
+  stopped as failed, as a systemd socket with `Accept=no` is.
+
 - **Inhibitor locks could exhaust `slinit-logind`'s descriptors**: the
   cap is systemd's 8192, which systemd pairs with logind's
   `LimitNOFILE=524288`; under the kernel's default 4096 one user taking

@@ -247,6 +247,9 @@ type ProcessService struct {
 	demandWake     *os.File   // write end of the watcher's wake pipe; closing it disarms
 	demandGen      uint64     // bumped on every arm/disarm; a stale watcher's activation is a no-op
 
+	// Recent on-demand launches, for the trigger limit (ondemand.go).
+	demandTriggers []time.Time
+
 	// Readiness notification
 	readyNotifyFD  int       // fd number child writes to (-1 if none)
 	readyNotifyVar string    // env var name ("" if none)
@@ -1882,6 +1885,7 @@ func (s *ProcessService) bringUpCheckedLocked() bool {
 	// which is all a dependent needs, so the service is STARTED now and
 	// the process waits for the first client (see ondemand.go).
 	if s.socketOnDemand && s.socketFD != nil {
+		s.demandTriggers = nil
 		if err := s.armOnDemand(); err != nil {
 			s.services.logger.Error("Service '%s': socket activation: %v", s.serviceName, err)
 			return false
