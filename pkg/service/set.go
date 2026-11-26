@@ -324,10 +324,16 @@ func (ss *ServiceSet) LoadService(name string) (Service, error) {
 // GetLoader returns the service loader.
 func (ss *ServiceSet) GetLoader() ServiceLoader { return ss.loader }
 
-// ReplaceService atomically replaces an old service with a new one in the set.
-func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) {
+// ReplaceService atomically replaces an old service with a new one in the
+// set. It does nothing, and reports false, if oldSvc is no longer what
+// the set holds under its name: replacing it then would bring back a
+// name that was unloaded, or overwrite a newer object.
+func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) bool {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
+	if ss.records[oldSvc.Name()] != oldSvc {
+		return false
+	}
 	// Remove old alias
 	if alias := oldSvc.Record().Provides(); alias != "" {
 		delete(ss.aliases, alias)
@@ -337,6 +343,7 @@ func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) {
 	if alias := newSvc.Record().Provides(); alias != "" {
 		ss.aliases[alias] = newSvc
 	}
+	return true
 }
 
 // AddService adds a service to the set. If the service has a provides

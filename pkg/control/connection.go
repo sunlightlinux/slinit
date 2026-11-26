@@ -1534,12 +1534,22 @@ func (c *Connection) handleReloadService(payload []byte) error {
 	// This does hold the lock across the description's file I/O. dinit is
 	// single-threaded and reloads on its main loop, so that is the same
 	// property it has, not a regression.
+	//
+	// The handle may name an object no longer in the set: unloaded, or
+	// replaced by another client's type-changing reload whose handle
+	// swap has not reached this connection yet. Reloading it put the
+	// name back, or replaced the newer object, so it is refused.
 	var newSvc service.Service
 	var reloadErr error
+	gone := false
 	c.server.services.WithGraphLock(func() {
+		if c.server.services.FindService(svc.Name(), true) != svc {
+			gone = true
+			return
+		}
 		newSvc, reloadErr = loader.ReloadService(svc)
 	})
-	if reloadErr != nil {
+	if gone || reloadErr != nil {
 		return c.writePacket(RplyNAK, nil)
 	}
 
@@ -1647,11 +1657,22 @@ func (c *Connection) handleReloadAll() error {
 		// dep diff has to be atomic, but holding the lock across a
 		// rescan of every description would stall the state machine for
 		// the length of the scan.
+		//
+		// The list is a snapshot: a service unloaded or replaced since
+		// is skipped, not reloaded back into the set.
 		var newSvc service.Service
 		var reloadErr error
+		gone := false
 		c.server.services.WithGraphLock(func() {
+			if c.server.services.FindService(svc.Name(), true) != svc {
+				gone = true
+				return
+			}
 			newSvc, reloadErr = loader.ReloadService(svc)
 		})
+		if gone {
+			continue
+		}
 		if reloadErr != nil {
 			failed++
 			continue

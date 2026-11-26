@@ -140,3 +140,29 @@ func TestUnloadClearsAlias(t *testing.T) {
 		t.Error("alias should not be found after unload")
 	}
 }
+
+// ReplaceService must not act for an object the set no longer holds: it
+// used to set records[name] unconditionally, so a reload of a service
+// unloaded meanwhile brought the name back with an object outside every
+// dependency link, and one of a service replaced meanwhile overwrote the
+// newer object.
+func TestReplaceServiceIgnoresStaleOld(t *testing.T) {
+	set, _ := newTestSet()
+
+	gone := NewInternalService(set, "gone")
+	set.AddService(gone)
+	set.UnloadService(gone)
+	set.ReplaceService(gone, NewInternalService(set, "gone"))
+	if set.FindService("gone", true) != nil {
+		t.Error("replacing an unloaded service put its name back in the set")
+	}
+
+	old := NewInternalService(set, "svc")
+	set.AddService(old)
+	newer := NewInternalService(set, "svc")
+	set.ReplaceService(old, newer)
+	set.ReplaceService(old, NewInternalService(set, "svc"))
+	if set.FindService("svc", true) != newer {
+		t.Error("replacing a stale object overwrote the newer one")
+	}
+}
