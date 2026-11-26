@@ -943,6 +943,18 @@ requires.
 
 ### Fixed
 
+- **slinit-journal-migrate left a partial journal behind and exited 0
+  on a lost fsync.** A line longer than 513 KiB aborted the run part
+  way (bufio.Scanner's ErrTooLong) with the events before it already
+  written, so the re-run wrote them twice; such a line is now skipped
+  and counted. The output is written to a hidden temporary file and
+  renamed into place only once complete and fsynced, so a failed run
+  leaves nothing. The final Close (header + fsync) error used to be
+  only printed; it now fails the run. An existing `YYYY-MM-DD.journal`
+  in `--to` is refused instead of appended to (it was either an
+  earlier migration or live slinit-journald's file). Shutdown tails
+  (`shutdown-*.jsonl`) are migrated after their day's file instead of
+  after every day file.
 - **slinit-start-stop-daemon `--exec` never matched through a symlinked
   directory** (merged /usr: `/usr/sbin -> bin`): `--start` launched a
   duplicate each time and `--stop` left the daemon running and returned

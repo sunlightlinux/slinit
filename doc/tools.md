@@ -236,11 +236,14 @@ slinit-journald --vacuum-files=100 --vacuum-size=4294967296 --vacuum-age=720h  #
 ### slinit-journal-migrate
 
 One-time upgrade path from the JSONL format to the binary format. It
-reads every `.jsonl` and `.jsonl.gz` file under `--from`, in filename
-order, and appends the events to a single `YYYY-MM-DD.journal` file
-under `--to`. Unparseable lines are skipped and counted. The source
-directory is left untouched. The output is not FSS-sealed, and running
-the tool twice on the same day appends the events again.
+reads every `.jsonl` and `.jsonl.gz` file under `--from`, oldest first
+(shutdown tails after their day's file), and writes the events to a new
+`YYYY-MM-DD.journal` file under `--to`. Unparseable and over-long lines
+are skipped and counted. The run is atomic: a temporary file is renamed
+into place only once it is complete and fsynced, so a failed run leaves
+nothing behind. It refuses to touch an existing `YYYY-MM-DD.journal`
+(an earlier run, or live slinit-journald's file). The source directory
+is left untouched and the output is not FSS-sealed.
 
 ```bash
 # Preview: list the source files that would be read
