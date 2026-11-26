@@ -533,6 +533,9 @@ func TestWriterSizesDataHashTable(t *testing.T) {
 // A create cut short by a full disk left hash tables and no header, a
 // file every later open rejected with "bad magic". It now leaves nothing.
 func TestNewWriterFailedCreateLeavesNoFile(t *testing.T) {
+	if inFreshProcess(t) {
+		return
+	}
 	signal.Ignore(syscall.SIGXFSZ)
 	defer signal.Reset(syscall.SIGXFSZ)
 	var old syscall.Rlimit

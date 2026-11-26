@@ -16,6 +16,9 @@ import (
 // once space is back, and the file readable with every entry whose
 // append succeeded.
 func TestWriterRecoversAfterFullDisk(t *testing.T) {
+	if inFreshProcess(t) {
+		return
+	}
 	signal.Ignore(syscall.SIGXFSZ)
 	defer signal.Reset(syscall.SIGXFSZ)
 	var old syscall.Rlimit
