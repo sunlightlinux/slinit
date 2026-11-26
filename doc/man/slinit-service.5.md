@@ -2337,12 +2337,15 @@ mlockall       = current+future
     keepalives is sent **watchdog-signal** and, once it exits, the
     service listens again the same way. **slinitctl
     status** shows no PID while it is listening. Only stopping the
-    service closes the sockets. A process launched more than 20 times
+    service closes the sockets. A process that fails more than 20 times
     within 2 seconds — one that exits without accepting its client is
     launched again at once, the client still waiting — stops the
     service as failed: systemd's socket trigger limit
-    (*TriggerLimitBurst*=20, *TriggerLimitIntervalSec*=2s). From there
-    **restart** applies as to any failure.
+    (*TriggerLimitBurst*=20, *TriggerLimitIntervalSec*=2s). Unlike
+    systemd, only failed launches count (exec failure, non-zero exit,
+    signal, failed **pre-start-command**); a launch that exits 0 clears
+    the count, so a process serving one client per launch survives a
+    burst of clients. From there **restart** applies as to any failure.
 
     Socket activation applies to **type**=*process* only.
 

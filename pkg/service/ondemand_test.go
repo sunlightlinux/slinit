@@ -252,3 +252,52 @@ func TestOnDemandTriggerLimitStopsLaunchLoop(t *testing.T) {
 		t.Errorf("state after trigger limit = %v, want STOPPED", st)
 	}
 }
+
+// A healthy service that serves one client per launch and exits 0 must
+// survive a burst of clients: the trigger limit is there for a process
+// that fails before it accepts, not for one doing its job. systemd fails
+// the socket here (it counts every launch, with TriggerLimitBurst= to
+// raise it); slinit has no such directive, so only failed launches count.
+func TestOnDemandBurstOfClientsKeepsHealthyService(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "od.sock")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, _ := newTestSet()
+	svc := newOnDemand(t, set, "od-burst", sock,
+		[]string{"/usr/bin/env", acceptOneEnv + "=1", self})
+	defer stopAndWait(t, set, svc)
+
+	set.StartService(svc)
+	if got := waitState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		t.Fatalf("state = %v, want STARTED", got)
+	}
+	const clients = onDemandTriggerBurst + 5
+	served := make(chan bool, clients)
+	for i := 0; i < clients; i++ {
+		go func() {
+			conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+			if err != nil {
+				served <- false
+				return
+			}
+			defer conn.Close()
+			conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+			line, err := bufio.NewReader(conn).ReadString('\n')
+			served <- err == nil && line == "hello\n"
+		}()
+	}
+	n := 0
+	for i := 0; i < clients; i++ {
+		if <-served {
+			n++
+		}
+	}
+	if n != clients {
+		t.Errorf("served %d of %d clients", n, clients)
+	}
+	if st := svc.State(); st != StateStarted {
+		t.Errorf("state after a burst of %d clients = %v, want STARTED", clients, st)
+	}
+}

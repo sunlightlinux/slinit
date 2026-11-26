@@ -247,8 +247,10 @@ type ProcessService struct {
 	demandWake     *os.File   // write end of the watcher's wake pipe; closing it disarms
 	demandGen      uint64     // bumped on every arm/disarm; a stale watcher's activation is a no-op
 
-	// Recent on-demand launches, for the trigger limit (ondemand.go).
-	demandTriggers []time.Time
+	// Recent on-demand launches, for the trigger limit (ondemand.go),
+	// and whether the last launch's process exited cleanly (code 0).
+	demandTriggers  []time.Time
+	demandLastClean bool
 
 	// Readiness notification
 	readyNotifyFD  int       // fd number child writes to (-1 if none)
@@ -3788,6 +3790,7 @@ func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit proces
 		if s.socketOnDemand {
 			// On-demand: the process ending is not the service ending.
 			// Its sockets stay open; the next client launches it again.
+			s.demandLastClean = exit.Exited() && exit.Status.ExitStatus() == 0
 			s.rearmOnDemandLocked()
 			s.services.processQueuesLocked()
 			return

@@ -137,6 +137,12 @@ func (s *ProcessService) onDemandListening() bool {
 // that fails before it accepts was relaunched in a tight loop by PID 1
 // (about 1300 forks a second from a single connect). Like systemd, the
 // service is failed when the limit is hit.
+//
+// Unlike systemd, a launch whose process exited 0 does not count, and
+// clears the count: a service that serves one client per launch and
+// exits must survive a burst of clients, and slinit has no
+// TriggerLimitBurst= to raise the limit for it. Only failed launches
+// (exec failure, non-zero exit, signal, failed pre-start) count.
 const (
 	onDemandTriggerBurst    = 20
 	onDemandTriggerInterval = 2 * time.Second
@@ -164,6 +170,10 @@ func (s *ProcessService) activateOnDemandLocked() {
 	if !s.onDemandListening() || s.pid > 0 {
 		return
 	}
+	if s.demandLastClean {
+		s.demandTriggers = s.demandTriggers[:0]
+	}
+	s.demandLastClean = false
 	if !s.allowOnDemandTrigger(time.Now()) {
 		s.services.logger.Error("Service '%s': socket activated %d times in %v, stopping (trigger limit hit)",
 			s.serviceName, onDemandTriggerBurst, onDemandTriggerInterval)
