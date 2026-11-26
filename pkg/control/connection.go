@@ -1065,6 +1065,16 @@ func (c *Connection) handleShutdown(payload []byte) error {
 	if len(payload) >= 2 {
 		flags = payload[1]
 	}
+	// An immediate shutdown supersedes a scheduled one, as an immediate
+	// ScheduleShutdown does, for every type: left armed, the timer fired
+	// later on the system a soft-reboot or `remain` kept running, and
+	// the scheduled shutdown's /run/nologin, which /run keeps across a
+	// soft-reboot, refused non-root logins there.
+	c.server.scheduledMu.Lock()
+	c.server.clearScheduledLocked()
+	c.server.scheduledDeadline = time.Time{}
+	c.server.scheduledMessage = ""
+	c.server.scheduledMu.Unlock()
 	if c.server.ShutdownFunc != nil {
 		c.server.ShutdownFunc(shutType, flags)
 	}

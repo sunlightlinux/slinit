@@ -150,3 +150,44 @@ func TestNologinRemovedBeforeScheduledSoftReboot(t *testing.T) {
 		t.Error("nologin survives into the soft-rebooted system")
 	}
 }
+
+// An immediate shutdown request must cancel a scheduled one. It used to
+// leave the timer armed and, before a soft-reboot, the scheduled
+// shutdown's nologin in /run: the soft-rebooted system refused non-root
+// logins, and the old schedule still fired on it.
+func TestImmediateShutdownClearsScheduled(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	path := filepath.Join(t.TempDir(), "nologin")
+	server.NologinPath = path
+	got := make(chan service.ShutdownType, 1)
+	server.ShutdownFunc = func(st service.ShutdownType, _ uint8) { got <- st }
+
+	server.ScheduleShutdown(service.ShutdownPoweroff, 3*time.Minute, "")
+	defer server.CancelShutdown()
+	if !exists(path) {
+		t.Fatal("no nologin for a shutdown 3 minutes away")
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	if err := WritePacket(conn, CmdShutdown, []byte{uint8(service.ShutdownSoftReboot)}); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := readReply(t, conn); r != RplyACK {
+		t.Fatalf("shutdown: rply=%d, want ACK", r)
+	}
+	if st := <-got; st != service.ShutdownSoftReboot {
+		t.Fatalf("ShutdownFunc got %v", st)
+	}
+	if exists(path) {
+		t.Error("nologin left behind by the superseded scheduled shutdown")
+	}
+	server.scheduledMu.Lock()
+	armed := server.scheduledTimer != nil
+	deadline := server.scheduledDeadline
+	server.scheduledMu.Unlock()
+	if armed || !deadline.IsZero() {
+		t.Errorf("scheduled shutdown still armed (timer %v, deadline %v)", armed, deadline)
+	}
+}
