@@ -33,6 +33,16 @@ requires.
 
 ### Security
 
+- **slinit-supervise-daemon used an inherited environment variable as
+  its supervisor switch**: the daemon and everything it started carried
+  `SLINIT_SSD_SUPERVISOR=1`, so a `slinit-supervise-daemon --stop` run
+  from such a shell turned into a supervisor, deleted the real pidfiles
+  and left the service untracked. A private argument only honoured with
+  `--start` replaces it, and the variable is scrubbed.
+- **slinit-supervise-daemon `--signal` signalled whatever pid the
+  `.daemon` pidfile named**, even with no supervisor running, and a
+  reused pid made `--start` refuse. The daemon must now be the running
+  supervisor's child, signalled through a pidfd.
 - **slinit-mount bind mounts ignored `ro`, `nosuid`, `nodev` and
   `noexec`**: the kernel drops those flags on a bind, so
   `options = bind,ro,noexec` gave a writable, executable mount. A second
@@ -959,6 +969,15 @@ requires.
 
 ### Fixed
 
+- **slinit-supervise-daemon `--stop` orphaned the daemon and returned
+  0**: the `--retry` given to `--stop` never reached the supervisor and
+  the wait gave up early, SIGKILLed the supervisor and left the daemon
+  running under PID 1 with stale pidfiles. The schedule is handed over
+  (`PIDFILE.retry`), the wait covers it, a hung supervisor is killed
+  together with its verified daemon, and the exit is 4 if the daemon
+  survives. `--retry` also accepts `forever` and `-SIG`, a `--user`
+  daemon keeps its supplementary groups, and the respawn delay resets
+  after a run of `--respawn-period`.
 - **slinit-journal-migrate left a partial journal behind and exited 0
   on a lost fsync.** A line longer than 513 KiB aborted the run part
   way (bufio.Scanner's ErrTooLong) with the events before it already
