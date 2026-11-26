@@ -2938,6 +2938,19 @@ func (sr *ServiceRecord) settleInactive() {
 		sr.startExplicit = false
 		sr.Release(false)
 	} else if sr.requiredBy == 0 {
+		// Nothing requires it, so it must not hold its dependencies
+		// either. It can: a start pin puts off the release that the
+		// count reaching 0 propagates, and Unpin makes up for it only
+		// on a STARTED service, so one unpinned while STARTING (the
+		// shutdown unpins everything) stopped once started and kept
+		// its dependencies up for good.
+		for _, dep := range sr.dependsOn {
+			if dep.HoldingAcq {
+				sr.propRelease = true
+				sr.services.AddPropQueue(sr.self)
+				break
+			}
+		}
 		sr.services.ServiceInactive(sr.self)
 	}
 }

@@ -240,6 +240,17 @@ verified with `git tag -v`.
   shutdown waited for it. The stop now stops such dependents, as dinit's
   does, and their release settles the service.
 
+- **A service pinned while starting no longer keeps its dependencies
+  up after a shutdown.** `start --pin` on a service still waiting for a
+  dependency (or still starting) put off the release of its
+  dependencies, and the shutdown's unpin made up for it only for a
+  service already STARTED. Once it started it saw it was no longer
+  wanted and stopped, still holding its dependencies, so they stayed
+  STARTED, with no stop logged, and the shutdown waited out its
+  emergency timeout (seen with a scripted service in the -race stress
+  run). A service that stops with nothing requiring it now lets go of
+  its dependencies.
+
 - **`slinitctl add-dep`/`rm-dep` with `prepared-by` work.** slinitctl
   accepted the kind and slinitctl(8) documents it, but the daemon took
   only the kinds up to `after` and refused every prepared-by request, so
