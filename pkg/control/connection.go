@@ -1022,8 +1022,13 @@ func (c *Connection) handleListServices() error {
 // one write each, which made a list of 1000 services cost 1000 system
 // calls.
 func (c *Connection) writeServiceList(encode func(service.Service) []byte) error {
-	var buf []byte
-	for _, info := range c.encodeAllLocked(encode) {
+	infos := c.encodeAllLocked(encode)
+	size := 3 // RplyListDone
+	for _, info := range infos {
+		size += 3 + len(info)
+	}
+	buf := make([]byte, 0, size)
+	for _, info := range infos {
 		if len(info) > MaxPayloadSize {
 			// A name too long to frame: send what precedes it, then
 			// fail as writePacket always has (closing the connection).

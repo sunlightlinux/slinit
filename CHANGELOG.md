@@ -77,6 +77,10 @@ verified with `git tag -v`.
   size is now read once per open file: an append to a file holding 50k
   entries went from 5.42 to 4.57 µs, and ingesting 100k events from
   2.80 to 2.56 s of journald CPU.
+- **`slinitctl list` grew its reply buffer one service at a time**,
+  copying it on each doubling. It is now sized before the first service
+  is framed: a list of 4000 services allocates 950 KiB instead of
+  1467 KiB per request.
 
 ## [4.0.3] — 2026-11-26
 
