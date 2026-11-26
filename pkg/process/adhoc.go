@@ -171,6 +171,12 @@ func waitAdhoc(cmd *exec.Cmd) error {
 	routed := DefaultExitRouter.Register(pid)
 	defer DefaultExitRouter.Unregister(pid)
 
+	// cmd.Wait() blocks in waitid, holding an OS thread until the child
+	// exits: for an output logger, for as long as its service runs, and
+	// a thread is a task the kernel may refuse the runtime. Wait for the
+	// exit in the netpoller first.
+	early, haveEarly := parkUntilExit(pid, routed)
+
 	type result struct {
 		err   error
 		known bool // err (or its absence) reflects a real wait status
@@ -212,6 +218,9 @@ func waitAdhoc(cmd *exec.Cmd) error {
 	// cmd.Wait() lost the child. The real status went to the reaper,
 	// which routes it here — already in the router's pending table, or
 	// arriving within microseconds.
+	if haveEarly {
+		routed = routedStatus(early)
+	}
 	select {
 	case status := <-routed:
 		if status.Signaled() || status.ExitStatus() != 0 {
@@ -227,4 +236,12 @@ func waitAdhoc(cmd *exec.Cmd) error {
 			pid, waitStatusGrace, res.err)
 		return res.err
 	}
+}
+
+// routedStatus is a channel holding status, standing in for the router's
+// channel once parkUntilExit has taken the status from it.
+func routedStatus(status syscall.WaitStatus) <-chan syscall.WaitStatus {
+	ch := make(chan syscall.WaitStatus, 1)
+	ch <- status
+	return ch
 }

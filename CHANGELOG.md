@@ -200,6 +200,16 @@ verified with `git tag -v`.
   reserve, 0 of 40 and 0 of 20. slinit starts with about 35 threads
   instead of 18 (12 CPUs).
 
+- **Output loggers and ad-hoc commands no longer hold an OS thread
+  while they run.** Waiting for an `output-logger`/`error-logger`
+  process, a hook, a health check or a cron job blocked a thread in
+  `waitid` until it exited: 500 services with an output logger meant
+  514 threads, and under `RLIMIT_NPROC` or `pids.max` slinit aborted
+  with `pthread_create failed` as soon as the next one was refused
+  (1000 logged services with the limit 800 tasks away: 20 of 20 runs
+  died). The wait now parks in the netpoller on the child's pidfd and
+  only then collects it (0 of 20). Kernels before 5.3 keep the old wait.
+
 - **`/etc/hostname` is read the way systemd reads it.** As PID 1, slinit
   passed the whole file to `sethostname`, so a comment line above the
   name became part of the hostname, and `host.example.com.` kept its
