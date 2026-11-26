@@ -39,6 +39,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/internal/atomicfile"
 )
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -129,7 +131,7 @@ Flags:
 			fmt.Fprintf(os.Stderr, "would write %s (%d bytes)\n", name, len(body))
 		case outputDir != "":
 			path := filepath.Join(outputDir, name)
-			if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+			if err := atomicfile.Write(path, []byte(body), 0o644, true); err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-sysvinit-convert: %v\n", err)
 				os.Exit(1)
 			}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -88,5 +89,30 @@ func TestInhibitorsAreCapped(t *testing.T) {
 	fakeBus(t, map[dbus.Sender]uint32{":1.u": 1000})
 	if _, err := m.Inhibit(":1.u", "idle", "w", "y", "block"); err == nil || err.Name != "org.freedesktop.DBus.Error.LimitsExceeded" {
 		t.Errorf("Inhibit past the cap: got %v, want LimitsExceeded", err)
+	}
+}
+
+// Inhibit's strings are bounded: a lock lasts as long as its holder
+// wants, and anyone may take a delay lock.
+func TestInhibitRefusesLongStrings(t *testing.T) {
+	w := newPowerWorld(t, 2)
+	rootc := w.caller(":1.root", 0, 1, "")
+	long := strings.Repeat("x", inhibitStringMax+1)
+	for _, args := range [][4]string{
+		{"sleep", long, "why", "delay"},
+		{"sleep", "who", long, "delay"},
+		{long, "who", "why", "delay"},
+		{"sleep", "who", "why", long},
+	} {
+		_, err := w.m.Inhibit(rootc, args[0], args[1], args[2], args[3])
+		if err == nil || err.Name != "org.freedesktop.DBus.Error.InvalidArgs" {
+			t.Errorf("Inhibit with a %d-byte argument: %v, want InvalidArgs", len(long), err)
+		}
+	}
+	if n := len(w.m.inhibitors.list()); n != 0 {
+		t.Errorf("%d locks taken", n)
+	}
+	if _, err := w.m.Inhibit(rootc, "sleep", strings.Repeat("x", inhibitStringMax), "why", "delay"); err != nil {
+		t.Errorf("Inhibit at the bound: %v", err)
 	}
 }

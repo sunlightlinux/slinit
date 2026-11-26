@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -79,8 +80,8 @@ type ProcessService struct {
 	envDir             string // directory with one file per env var
 	// envGenerator: path to an executable that emits `KEY=VALUE\n` lines
 	// on stdout at service-start time. Merged after env-file and env-dir
-	// so it wins conflicts. Failure aborts the start (systemd
-	// EnvironmentGenerator semantics; non-zero exit = fail).
+	// so it wins conflicts. A failure is logged and its output ignored;
+	// the start goes on.
 	envGenerator string
 	chroot       string // chroot before exec
 	lockFile     string // exclusive flock path
@@ -88,6 +89,35 @@ type ProcessService struct {
 	closeStdin   bool   // close fd 0
 	closeStdout  bool   // close fd 1
 	closeStderr  bool   // close fd 2
+
+	// startEnv is the environment computed for the current start —
+	// env-file, env-dir, setenv variables and the env-generator's
+	// output. The main process gets it, and, when an env-generator is
+	// configured, so do the hooks and every ready-check poll of that
+	// start: buildEnv ran the generator again for each of them. startEnvFresh marks an environment
+	// computed ahead of the fork (for pre-start-command) that the fork
+	// has not used yet. envMu guards both: the post-start-command and
+	// ready-check goroutines read startEnv.
+	envMu         sync.Mutex
+	startEnv      []string
+	startEnvFresh bool
+
+	// The post-start-command run of the current start: postStartCancel
+	// ends it, postStartDone closes when it has. postStartMu guards both.
+	postStartMu     sync.Mutex
+	postStartCancel context.CancelFunc
+	postStartDone   chan struct{}
+
+	// stateHook is the hook a transition is waiting on — pre-start
+	// (with the start's environment), pre-stop-hook, a stop's
+	// control-command or finish-command — run off queueMu (statehook.go).
+	// Set and cleared under queueMu; atomic so the shutdown teardown can
+	// cancel it without the lock.
+	stateHook atomic.Pointer[stateHook]
+	// pendingExit is a main-process exit that arrived while a stop's
+	// pre-stop-hook or control-command was running. It is handled once
+	// that hook has finished, as it was when the hook held the lock.
+	pendingExit *process.ChildExit
 
 	// Credentials
 	runAsUID          uint32
@@ -110,19 +140,21 @@ type ProcessService struct {
 	// PID() for why the bare int read it replaced was a data race.
 	pidPublished atomic.Int64
 
-	// hookTimeout bounds every synchronous hook: pre-start-command,
-	// post-start-command, finish-command, pre-stop-hook and
-	// control-command-*. Zero means defaultFinishTimeout.
+	// hookTimeout bounds every hook: pre-start-command,
+	// post-start-command, finish-command, pre-stop-hook,
+	// control-command-* and the env-generator. Zero means
+	// defaultFinishTimeout.
 	//
 	// It is a per-service knob and not a constant because five seconds
 	// is too short for a hook that legitimately waits on something —
 	// a mount appearing, a socket accepting — and such a hook was
 	// killed and, for pre-start-command, failed the start outright.
-	// It stays a bounded wait rather than becoming optional because
-	// these hooks run inside the scheduling lock: measured, a service
-	// whose pre-start-command sleeps holds up an unrelated service's
-	// start for the remainder of this timeout. The budget is
-	// system-wide, which is why slinit-service(5) says so.
+	// It stays a bounded wait rather than becoming optional because the
+	// service's own transition waits for the hook. (Until the hooks
+	// moved off the scheduling lock, statehook.go, it was also how long
+	// one service's hook could hold up every other service: measured, a
+	// service whose pre-start-command slept held up an unrelated
+	// service's start for the remainder of this timeout.)
 	hookTimeout time.Duration
 
 	// start-delay: wait before each attempt's fork/exec. See
@@ -396,8 +428,8 @@ func (s *ProcessService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
 // SetFinishCommand sets the finish command (runs after process exits).
 func (s *ProcessService) SetFinishCommand(cmd []string) { s.finishCommand = cmd }
 
-// SetPreStartCommand records a command to run synchronously before the
-// main process is forked. A non-zero exit fails the start (systemd's
+// SetPreStartCommand records a command to run before the main process
+// is forked, which waits for it. A non-zero exit fails the start (systemd's
 // ExecStartPre= semantics).
 func (s *ProcessService) SetPreStartCommand(cmd []string) { s.preStartCommand = cmd }
 
@@ -842,6 +874,9 @@ func (s *ProcessService) rotatorConfig(path string, maxSize int64, maxFiles int,
 		ReadBufferSize: s.logReadBufferSize,
 		ServiceName:    s.serviceName,
 		Logger:         s.services.logger,
+
+		// log-processor: the service's run-as, working-dir and environment.
+		PrepareProcessor: s.prepareHookCmd,
 	}
 }
 
@@ -992,7 +1027,7 @@ func (s *ProcessService) watchdogLoop(pipe *os.File, timeout time.Duration,
 			s.services.logger.Error("Service '%s': watchdog timeout (%v) — restarting",
 				s.serviceName, timeout)
 			s.services.NoteWatchdogMiss()
-			s.fireWatchdogStop()
+			s.fireWatchdogStop(stop)
 			return
 		default:
 			// EOF or other read error. The service either died (in
@@ -1003,7 +1038,7 @@ func (s *ProcessService) watchdogLoop(pipe *os.File, timeout time.Duration,
 			s.services.logger.Error("Service '%s': watchdog pipe lost (%v) — restarting",
 				s.serviceName, err)
 			s.services.NoteWatchdogMiss()
-			s.fireWatchdogStop()
+			s.fireWatchdogStop(stop)
 			return
 		}
 	}
@@ -1061,9 +1096,17 @@ func isDeadlineExceeded(err error) bool {
 // pass the result as withRestart so doStop preserves desired and skips
 // the Release path. Once SIGTERM kills the child, handleChildExit →
 // Stopped() sees desired==Started and calls initiateStart().
-func (s *ProcessService) fireWatchdogStop() {
+//
+// stop identifies the watcher that fired. One cancelled while this
+// waited for queueMu — its child exited, or the service was stopped and
+// maybe started again — has nothing left to stop.
+func (s *ProcessService) fireWatchdogStop(stop chan struct{}) {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
+
+	if s.watchdogStop != stop {
+		return
+	}
 
 	sig := s.Record().WatchdogSignal()
 	if sig == 0 {
@@ -1091,7 +1134,7 @@ func (s *ProcessService) fireWatchdogStop() {
 	s.pendingStopSignal = sig
 
 	withRestart := false
-	switch s.autoRestart {
+	switch s.autoRestartThisRun() {
 	case RestartAlways, RestartOnFailure, RestartOnSuccess:
 		withRestart = s.CheckRestart()
 	}
@@ -1123,7 +1166,7 @@ func (s *ProcessService) fireHealthCheckStop(pid int) {
 	s.forceStop = true
 
 	withRestart := false
-	switch s.autoRestart {
+	switch s.autoRestartThisRun() {
 	case RestartAlways, RestartOnFailure, RestartOnSuccess:
 		withRestart = s.CheckRestart()
 	}
@@ -1610,7 +1653,7 @@ func (s *ProcessService) waitCgroupThenDispatch(cgPath string, state ServiceStat
 // killCgroupTree sends a signal to all processes in the service's cgroup.
 // Used when kill-all-on-stop is set to ensure the entire process tree is terminated.
 func (s *ProcessService) killCgroupTree(sig syscall.Signal) {
-	cgPath := s.EffectiveCgroupPath()
+	cgPath := s.OwnCgroupPath()
 	if cgPath == "" {
 		return
 	}
@@ -1655,6 +1698,17 @@ func (s *ProcessService) BringUp() bool {
 	// Evaluate systemd-style start preconditions. assert-* failure aborts
 	// the start; condition-* failure short-circuits to STARTED with no
 	// process so dependents see a satisfied dep.
+	//
+	// An environment kept for a fork that never came (an earlier start
+	// that failed before it) is not this start's. An exec-condition runs
+	// with the start's environment, so with an env-generator that is
+	// computed now, once, and the pre-start-command and the fork reuse
+	// it: the generator ran once for the condition and again for the
+	// start.
+	s.discardStartEnv()
+	if s.envGenerator != "" && s.hasExecCondition() {
+		s.prepareStartEnv()
+	}
 	switch outcome, reason := s.CheckPredicates(); outcome {
 	case PredFailed:
 		s.services.logger.Error("Service '%s': %s", s.serviceName, reason)
@@ -1689,22 +1743,80 @@ func (s *ProcessService) BringUp() bool {
 		}
 		s.services.logger.Info("Service '%s': listening, process starts on the first client",
 			s.serviceName)
+		// The first client may come much later: the launch then
+		// computes its environment.
+		s.discardStartEnv()
 		s.Started()
 		return true
 	}
 
-	// systemd-style ExecStartPre=: synchronous, non-zero exit fails
-	// the start. Runs after sandbox prep / required paths but before
-	// the main fork, so a failed pre-hook never leaves a half-started
-	// process behind.
-	if len(s.preStartCommand) > 0 {
-		if err := s.runHookCommand(s.preStartCommand, "pre-start-command"); err != nil {
+	// systemd-style ExecStartPre=: the fork waits for it, and a
+	// non-zero exit fails the start. Runs after sandbox prep / required
+	// paths but before the main fork, so a failed pre-hook never leaves
+	// a half-started process behind.
+	//
+	// It runs off the lock, as a state hook (statehook.go), with the
+	// service STARTING; preStartDoneLocked carries the start on. So
+	// does the env-generator: the environment of this start is computed
+	// there too, so the pre-start-command sees what the main process
+	// will get and startProcess uses it rather than running the
+	// generator under the lock. An exec-condition may have computed it
+	// already.
+	if len(s.preStartCommand) > 0 || s.envGenerator != "" {
+		argv := s.preStartCommand
+		cred := s.hookCredential(s.privHooks.PreStart)
+		s.startStateHookLocked(hookPreStart,
+			func(ctx context.Context) func() error {
+				return func() error {
+					s.ensureStartEnvCtx(ctx)
+					if len(argv) == 0 || ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return s.runHookCommandCtx(ctx, argv, "pre-start-command", cred)
+				}
+			},
+			s.preStartDoneLocked)
+		return true
+	}
+	return s.launchLocked()
+}
+
+// preStartDoneLocked carries a start on once its pre-start hook
+// (statehook.go) has run. Caller holds queueMu.
+func (s *ProcessService) preStartDoneLocked(err error, cancelled bool) {
+	switch s.state.Load() {
+	case StateStarting:
+		switch {
+		case err == nil && !cancelled:
+			if s.launchLocked() {
+				return
+			}
+		case err != nil && !cancelled:
 			s.services.logger.Error("Service '%s': pre-start-command failed: %v",
 				s.serviceName, err)
-			return false
+		default:
+			// Cancelled with no stop asked for: the shutdown's
+			// final kill.
+			s.services.logger.Error("Service '%s': pre-start-command ended: %v",
+				s.serviceName, err)
 		}
+		s.discardStartEnv()
+		s.state.Store(StateStopping)
+		s.failedToStart(false, true)
+	case StateStopping:
+		// A stop came while the hook ran, and ended it: the start ends
+		// here, and the stop, which waited for the hook, goes on.
+		s.discardStartEnv()
+		s.services.AddTransitionQueue(s)
+	default:
+		s.discardStartEnv()
 	}
+}
 
+// launchLocked is the rest of a start once its pre-start-command has
+// run: start-when-idle and start-delay, the fork, the post-start-command.
+// False means the fork failed. Caller holds queueMu.
+func (s *ProcessService) launchLocked() bool {
 	// launchLater is the launch from a timer's callback, where a failure
 	// can no longer be BringUp's return value.
 	launchLater := func() {
@@ -1749,31 +1861,81 @@ func (s *ProcessService) BringUp() bool {
 // asynchronous, exit code only logged. Runs in a goroutine so a slow
 // hook doesn't block the scheduling loop. Called after a successful
 // startProcess on both the immediate and the start-delay path.
+//
+// The run belongs to this start. A previous start's run still going is
+// ended (its process group killed) and waited for first, and BringDown
+// ends it too. Before, nothing ended it short of hook-timeout: it ran on
+// after the service had stopped, and a quick stop and start had two
+// runs overlapping.
 func (s *ProcessService) launchPostStartCommand() {
 	if len(s.postStartCommand) == 0 {
 		return
 	}
+	s.cancelPostStart(true)
+	// Read here, under the caller's lock, not in the goroutine: a
+	// reload may replace the command while this run is under way.
+	argv := s.postStartCommand
+	cred := s.hookCredential(s.privHooks.PostStart)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.postStartMu.Lock()
+	s.postStartCancel, s.postStartDone = cancel, done
+	s.postStartMu.Unlock()
 	go func() {
-		if err := s.runHookCommand(s.postStartCommand, "post-start-command"); err != nil {
+		defer close(done)
+		defer cancel()
+		err := s.runHookCommandCtx(ctx, argv, "post-start-command", cred)
+		switch {
+		case err == nil:
+		case ctx.Err() != nil:
+			s.services.logger.Info("Service '%s': post-start-command ended: the service is stopping or restarting",
+				s.serviceName)
+		default:
 			s.services.logger.Error("Service '%s': post-start-command failed: %v",
 				s.serviceName, err)
 		}
 	}()
 }
 
+// cancelPostStart ends a post-start-command still running, killing its
+// process group, and with wait set waits until it has gone.
+func (s *ProcessService) cancelPostStart(wait bool) {
+	s.postStartMu.Lock()
+	cancel, done := s.postStartCancel, s.postStartDone
+	s.postStartCancel, s.postStartDone = nil, nil
+	s.postStartMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if wait && done != nil {
+		<-done
+	}
+}
+
 // runHookCommand executes a one-shot hook (pre-start-command,
 // post-start-command) using the same working-dir / env / timeout as
 // finish-command. Synchronous; returns the exec.Cmd error.
-func (s *ProcessService) runHookCommand(cmd []string, label string) error {
+//
+// cred is hookCredential's: the service's run-as user and groups, as
+// systemd runs ExecStartPre= and ExecStartPost= as User=, or nil for
+// root (a "+" command, or no run-as). Until 4.0.3 both hooks always ran
+// as root.
+func (s *ProcessService) runHookCommand(cmd []string, label string, cred *syscall.Credential) error {
+	return s.runHookCommandCtx(context.Background(), cmd, label, cred)
+}
+
+// runHookCommandCtx is runHookCommand ended early by parent.
+func (s *ProcessService) runHookCommandCtx(parent context.Context, cmd []string, label string, cred *syscall.Credential) error {
 	if len(cmd) == 0 {
 		return nil
 	}
 	timeout := s.effectiveHookTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+	c := newHookCmd(ctx, cmd)
+	c.SysProcAttr.Credential = cred // newHookCmd made SysProcAttr
 	c.Dir = s.workingDir
-	c.Env = s.buildEnv()
+	c.Env = s.hookCmdEnv()
 	s.services.logger.Info("Service '%s': running %s", s.serviceName, label)
 	return annotateHookTimeout(process.RunAdhoc(c), ctx, timeout)
 }
@@ -1787,7 +1949,7 @@ func (s *ProcessService) effectiveHookTimeout() time.Duration {
 	return defaultFinishTimeout
 }
 
-// SetHookTimeout sets the bound for the synchronous hooks. Values <= 0
+// SetHookTimeout sets the bound for the hooks. Values <= 0
 // select the default.
 func (s *ProcessService) SetHookTimeout(d time.Duration) { s.hookTimeout = d }
 
@@ -1807,9 +1969,11 @@ func annotateHookTimeout(err error, ctx context.Context, timeout time.Duration) 
 }
 
 // BringDown stops the service process.
-// If a pre-stop-hook is configured, it runs first (synchronously with timeout).
-// Then if a stop-command is configured, it is executed. If it fails to
-// start, we fall back to sending the termination signal directly.
+// If a pre-stop-hook is configured, it runs first, off the lock and bounded
+// by hook-timeout; the service stays STOPPING and the hook's completion
+// goes on with the rest (issueStopLocked). Then if a stop-command is
+// configured, it is executed. If it fails to start, we fall back to
+// sending the termination signal directly.
 func (s *ProcessService) BringDown() {
 	// A start-delay still counting down has nothing left to launch, nor
 	// has a start-when-idle wait, nor a smooth recovery waiting out
@@ -1819,6 +1983,8 @@ func (s *ProcessService) BringDown() {
 	s.cancelSmoothRecovery()
 	// Nor does a socket watcher still waiting for its first client.
 	s.disarmOnDemand()
+	// A post-start-command still running ends with the service.
+	s.cancelPostStart(false)
 	// Stop health checker and cron runner if active
 	s.stopHealthChecker()
 	s.stopCronRunner()
@@ -1826,6 +1992,19 @@ func (s *ProcessService) BringDown() {
 
 	// Close readiness pipe if still open (no longer waiting for readiness)
 	s.closeReadyPipe()
+
+	// A state hook is running off the lock (statehook.go). Its
+	// completion carries the stop on: a pre-stop-hook or
+	// control-command goes on to the stop signal, a finish-command to
+	// the exit's dispatch, which finds the service STOPPING. A pre-start
+	// has nothing left to do once the start is called off, so it is
+	// ended now.
+	if h := s.stateHook.Load(); h != nil {
+		if h.kind.endsWithStop() {
+			h.cancel()
+		}
+		return
+	}
 
 	if s.pid <= 0 {
 		// Process already dead
@@ -1838,15 +2017,40 @@ func (s *ProcessService) BringDown() {
 		return
 	}
 
-	// Run pre-stop-hook before any stop action
+	// Run pre-stop-hook before any stop action. It runs off the lock;
+	// its completion issues the stop (issueStopLocked), or, if the
+	// process has exited meanwhile, handles that exit.
 	if len(s.preStopHook) > 0 {
-		s.execPreStopHook()
+		s.startStateHookLocked(hookPreStop, s.preparePreStopHook, func(error, bool) {
+			if exit, ok := s.takePendingExit(); ok {
+				s.afterExitLocked(exit)
+				return
+			}
+			if s.state.Load() != StateStopping || s.pid <= 0 {
+				// Nothing else moves a service out of STOPPING
+				// while the hook runs; should it, let the
+				// transition look again.
+				if s.state.Load() == StateStopping {
+					s.services.AddTransitionQueue(s)
+				}
+				return
+			}
+			s.issueStopLocked()
+		})
+		return
 	}
+	s.issueStopLocked()
+}
 
+// issueStopLocked is the stop proper, once any pre-stop-hook has run:
+// the stop-command, or the stop signal (or the control-command that
+// stands in for it), then the stop-timeout. Caller holds queueMu.
+func (s *ProcessService) issueStopLocked() {
 	// Try stop-command first (like dinit's process_service::bring_down)
 	if len(s.stopCommand) > 0 {
 		if s.execStopCommand() {
 			s.stopIssued = true
+			s.resumeForStop()
 			if s.stopTimeout > 0 {
 				s.armTimer(s.stopTimeout, timerStopTimeout)
 			}
@@ -1877,17 +2081,45 @@ func (s *ProcessService) BringDown() {
 
 	sigName := signalName(sig)
 	if cmd, ok := s.controlCommands[sigName]; ok && len(cmd) > 0 {
-		// Run custom control command instead of raw signal
-		s.execControlCommand(sigName, cmd)
-	} else {
-		s.services.logger.Info("Service '%s': sending %s to process %d",
-			s.serviceName, signalName(sig), s.pid)
-
-		err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
-		if err != nil {
-			s.logStopSignalFailure(err)
-		}
+		// Run custom control command instead of raw signal, off the
+		// lock. What follows the signal follows the command's
+		// completion, as it followed the command before.
+		s.startStateHookLocked(hookStopControl,
+			func(ctx context.Context) func() error {
+				return s.prepareControlCommandCtx(ctx, sigName, cmd)
+			},
+			func(error, bool) {
+				s.stopSignalSentLocked(sig)
+				if exit, ok := s.takePendingExit(); ok {
+					s.afterExitLocked(exit)
+					return
+				}
+				if s.stopTimeout > 0 {
+					s.armTimer(s.stopTimeout, timerStopTimeout)
+				}
+			})
+		return
 	}
+
+	s.services.logger.Info("Service '%s': sending %s to process %d",
+		s.serviceName, signalName(sig), s.pid)
+
+	err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+	if err != nil {
+		s.logStopSignalFailure(err)
+	}
+	s.stopSignalSentLocked(sig)
+
+	// Arm stop timeout for SIGKILL escalation
+	if s.stopTimeout > 0 {
+		s.armTimer(s.stopTimeout, timerStopTimeout)
+	}
+}
+
+// stopSignalSentLocked is what follows the stop signal, or the
+// control-command sent in its place. Caller holds queueMu.
+func (s *ProcessService) stopSignalSentLocked(sig syscall.Signal) {
+	s.resumeForStop()
 
 	s.stopIssued = true
 
@@ -1898,10 +2130,23 @@ func (s *ProcessService) BringDown() {
 	if s.Flags.KillAllOnStop || s.Record().KillMode() == KillModeControlGroup {
 		s.killCgroupTree(sig)
 	}
+}
 
-	// Arm stop timeout for SIGKILL escalation
-	if s.stopTimeout > 0 {
-		s.armTimer(s.stopTimeout, timerStopTimeout)
+// resumeForStop sends SIGCONT to a paused service during its stop. A
+// SIGSTOPped process keeps the stop signal pending until it is continued,
+// so only the stop-timeout's SIGKILL would end it, and with stop-timeout
+// = 0 nothing would; a stop-command cannot get an answer from it either.
+// systemd continues every process it sends a stop signal to for the same
+// reason (kill_and_sigcont). The pending signal is delivered as the
+// process wakes. Called with queueMu held.
+func (s *ProcessService) resumeForStop() {
+	if !s.paused {
+		return
+	}
+	s.paused = false
+	if err := process.SignalProcess(s.pid, syscall.SIGCONT, s.Flags.SignalProcessOnly); err != nil &&
+		!errors.Is(err, syscall.ESRCH) {
+		s.services.logger.Error("Service '%s': SIGCONT on stop failed: %v", s.serviceName, err)
 	}
 }
 
@@ -1930,12 +2175,15 @@ func (s *ProcessService) execStopCommand() bool {
 	params := process.ExecParams{
 		Command:           s.stopCommand,
 		WorkingDir:        s.workingDir,
-		Env:               s.buildEnv(),
+		Env:               s.hookEnv(),
 		RunAsUID:          s.effectiveRunAsUID(),
 		RunAsGID:          s.effectiveRunAsGID(),
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
+	if s.privHooks.Stop {
+		params.FullyPrivileged()
+	}
 	// Use the credentials the main command was started with; the
 	// service's stop removes them.
 	params.ReuseCredentials = true
@@ -2041,7 +2289,7 @@ func (s *ProcessService) execStopCommand() bool {
 
 // CanInterruptStart returns true if the starting process can be interrupted.
 func (s *ProcessService) CanInterruptStart() bool {
-	if s.waitingForDeps || s.waitingToLaunch() {
+	if s.waitingForDeps || s.waitingToLaunch() || s.stateHookRunning() {
 		return true
 	}
 	// Can interrupt if process is running (we'll send SIGINT)
@@ -2066,6 +2314,16 @@ func (s *ProcessService) InterruptStart() bool {
 	if s.waitingToLaunch() {
 		s.cancelStartDelay()
 		s.cancelIdleWait()
+		return true
+	}
+	// A state hook is running: a pre-start-command, ended here (its
+	// process group killed), or the finish-command of a process that
+	// died while starting, left to finish. There is no process; the
+	// service goes STOPPING and the hook's completion finishes the stop.
+	if h := s.stateHook.Load(); h != nil {
+		if h.kind.endsWithStop() {
+			h.cancel()
+		}
 		return true
 	}
 
@@ -2127,8 +2385,128 @@ func (s *ProcessService) CheckRestart() bool {
 	return true
 }
 
+// prepareStartEnv computes the environment for a start that is about to
+// run its pre-start-command, and keeps it for the fork.
+func (s *ProcessService) prepareStartEnv() {
+	s.prepareStartEnvCtx(context.Background())
+}
+
+// prepareStartEnvCtx is prepareStartEnv with an env-generator run that
+// ctx can end early.
+func (s *ProcessService) prepareStartEnvCtx(ctx context.Context) {
+	env := s.buildEnvCtx(ctx)
+	s.envMu.Lock()
+	s.startEnv, s.startEnvFresh = env, true
+	s.envMu.Unlock()
+}
+
+// launchEnv returns the environment for startProcess's fork: the one
+// prepareStartEnv computed for this start if the fork has not used it
+// yet, otherwise a new one (a restart, a smooth recovery). Either way it
+// becomes the environment the hooks of this run see.
+func (s *ProcessService) launchEnv() []string {
+	s.envMu.Lock()
+	if s.startEnvFresh {
+		s.startEnvFresh = false
+		env := s.startEnv
+		s.envMu.Unlock()
+		return env
+	}
+	s.envMu.Unlock()
+	env := s.buildEnv()
+	s.envMu.Lock()
+	s.startEnv = env
+	s.envMu.Unlock()
+	return env
+}
+
+// ensureStartEnv is prepareStartEnv unless this start has computed its
+// environment already (for an exec-condition) and the fork has not used
+// it yet.
+func (s *ProcessService) ensureStartEnv() {
+	s.ensureStartEnvCtx(context.Background())
+}
+
+// ensureStartEnvCtx is ensureStartEnv with an env-generator run that
+// ctx can end early.
+func (s *ProcessService) ensureStartEnvCtx(ctx context.Context) {
+	s.envMu.Lock()
+	fresh := s.startEnvFresh
+	s.envMu.Unlock()
+	if !fresh {
+		s.prepareStartEnvCtx(ctx)
+	}
+}
+
+// hasExecCondition reports whether an exec-condition is among the
+// service's predicates.
+func (s *ProcessService) hasExecCondition() bool {
+	for _, p := range s.predicates {
+		if p.Kind == PredExecCondition {
+			return true
+		}
+	}
+	return false
+}
+
+// discardStartEnv drops the environment prepareStartEnv kept for a fork
+// that is not going to happen (pre-start-command failed), so a later
+// start does not take it for its own.
+func (s *ProcessService) discardStartEnv() {
+	s.envMu.Lock()
+	s.startEnvFresh = false
+	s.envMu.Unlock()
+}
+
+// hookEnv returns the environment for a command run on behalf of the
+// current start: post-start-command, ready-check-command,
+// finish-command, pre-stop-hook, stop-command, control-command-*.
+//
+// With an env-generator it is the start's environment, so the generator
+// runs once per start — the man page's "at start time" — rather than
+// once per hook and per ready-check poll, under the scheduling lock for
+// most of them. Only a service never started computes one here.
+//
+// Without one it is computed afresh, as it always was: nothing costly
+// runs, and a variable set with slinitctl setenv reaches the next hook
+// of the running instance. Freezing it for every service took that
+// away.
+func (s *ProcessService) hookEnv() []string {
+	if s.envGenerator == "" {
+		return s.buildEnv()
+	}
+	s.envMu.Lock()
+	env := s.startEnv
+	s.envMu.Unlock()
+	if env != nil {
+		return env
+	}
+	env = s.buildEnv()
+	s.envMu.Lock()
+	if s.startEnv == nil {
+		s.startEnv = env
+	}
+	s.envMu.Unlock()
+	return env
+}
+
+// hookCmdEnv is hookEnv as a command's whole environment: slinit's own
+// variables (filtered as the main process's are) and then the service's.
+// Setting cmd.Env to hookEnv alone dropped PATH, HOME and the rest of
+// what a hook inherited when Env was nil, as soon as the service had a
+// variable of its own.
+func (s *ProcessService) hookCmdEnv() []string {
+	return s.Record().withInheritedEnv(s.hookEnv())
+}
+
 // buildEnv merges env-file, env-dir, and runtime extraEnv into a single slice.
 func (s *ProcessService) buildEnv() []string {
+	return s.buildEnvCtx(context.Background())
+}
+
+// buildEnvCtx is buildEnv with an env-generator run that ctx can end
+// early.
+func (s *ProcessService) buildEnvCtx(ctx context.Context) []string {
 	env := s.Record().BuildEnvWithFile(s.envFile)
 
 	// Merge env-dir variables (runit-style: one file per variable)
@@ -2175,7 +2553,7 @@ func (s *ProcessService) buildEnv() []string {
 	// keeping this a soft failure prevents a misconfigured generator
 	// from turning into a system-wide boot outage.
 	if s.envGenerator != "" {
-		genEnv, err := runEnvGenerator(s.envGenerator)
+		genEnv, err := s.runEnvGenerator(ctx)
 		if err != nil {
 			s.services.logger.Error("Service '%s': env-generator '%s' failed: %v",
 				s.serviceName, s.envGenerator, err)
@@ -2199,16 +2577,43 @@ func (s *ProcessService) buildEnv() []string {
 	return env
 }
 
-// runEnvGenerator invokes the executable and parses its stdout as
-// KEY=VALUE lines. Blank lines and lines beginning with '#' are
-// skipped so the generator can be a hand-written shell script with
+// envGeneratorMaxOutput caps what PID 1 keeps of an env-generator's
+// stdout. Output beyond it fails the generator rather than being cut at
+// an arbitrary byte, which could leave half a value in the environment.
+const envGeneratorMaxOutput = 64 << 10
+
+// runEnvGenerator invokes the service's env-generator and parses its
+// stdout as KEY=VALUE lines. Blank lines and lines beginning with '#'
+// are skipped so the generator can be a hand-written shell script with
 // comments. Non-zero exit yields an error.
-func runEnvGenerator(path string) (map[string]string, error) {
-	cmd := exec.Command(path)
-	out, err := process.OutputAdhoc(cmd)
-	if err != nil {
+//
+// It is bounded like the other hooks: hook-timeout (or parent ending),
+// then SIGKILL to its process group. Before, a generator that hung
+// froze every start and stop in the system for as long as it hung — it
+// ran under the scheduling lock, as it still does for an exec-condition
+// (BringUp) — and its output was read into an unbounded buffer inside
+// PID 1. It runs as the service's run-as user, as the service's other
+// commands do.
+func (s *ProcessService) runEnvGenerator(parent context.Context) (map[string]string, error) {
+	timeout := s.effectiveHookTimeout()
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	cmd := newHookCmd(ctx, []string{s.envGenerator})
+	s.applyRunAs(cmd)
+	out := &cappedBuffer{max: envGeneratorMaxOutput}
+	cmd.Stdout = out
+	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
 		return nil, err
 	}
+	if out.overflow {
+		return nil, fmt.Errorf("output exceeds %d bytes", envGeneratorMaxOutput)
+	}
+	return parseEnvGeneratorOutput(out.buf.Bytes()), nil
+}
+
+// parseEnvGeneratorOutput turns KEY=VALUE lines into a map, skipping
+// blank lines, comments and lines without a name before the '='.
+func parseEnvGeneratorOutput(out []byte) map[string]string {
 	kv := make(map[string]string)
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
@@ -2221,7 +2626,27 @@ func runEnvGenerator(path string) (map[string]string, error) {
 		}
 		kv[line[:i]] = line[i+1:]
 	}
-	return kv, nil
+	return kv
+}
+
+// cappedBuffer keeps the first max bytes written to it and notes that
+// more arrived. It goes on accepting (and dropping) the rest, so the
+// writer is never blocked on a full pipe.
+type cappedBuffer struct {
+	buf      bytes.Buffer
+	max      int
+	overflow bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); room < len(p) {
+		c.overflow = true
+		if room > 0 {
+			c.buf.Write(p[:room])
+		}
+		return len(p), nil
+	}
+	return c.buf.Write(p)
 }
 
 // startProcess forks and execs the service process.
@@ -2530,7 +2955,7 @@ func (s *ProcessService) startProcess() error {
 		Command:           s.command,
 		Argv0:             s.argv0,
 		WorkingDir:        s.workingDir,
-		Env:               s.buildEnv(),
+		Env:               s.launchEnv(),
 		TermSignal:        s.termSignal,
 		OnConsole:         s.Flags.RunsOnConsole || s.Flags.StartsOnConsole,
 		UnmaskSigint:      s.Flags.UnmaskIntr,
@@ -2674,6 +3099,7 @@ func (s *ProcessService) startProcess() error {
 	s.pid = pid
 	s.pidPublished.Store(int64(pid))
 	s.procHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
+	s.paused = false
 
 	// Create utmp entry if inittab-id or inittab-line is configured
 	if s.HasUtmp() {
@@ -2699,7 +3125,7 @@ func (s *ProcessService) startProcess() error {
 	} else if len(s.readyCheckCommand) > 0 {
 		// Ready-check-command: poll external command until it succeeds
 		s.readyCh = make(chan bool, 1)
-		go s.watchReadyCheck(s.readyCh, s.doneCh)
+		go s.watchReadyCheck(s.readyCh, s.doneCh, s.startTimeout)
 		go s.monitorProcess(exitCh)
 
 		if s.startTimeout > 0 {
@@ -2784,6 +3210,7 @@ func (s *ProcessService) watchReadyPipe(pipe *os.File, ch chan bool) {
 // readiness notification, or for timers to fire.
 func (s *ProcessService) monitorProcess(exitCh <-chan process.ChildExit) {
 	for {
+		timer := s.getTimer()
 		select {
 		case exit, ok := <-exitCh:
 			if !ok {
@@ -2798,8 +3225,8 @@ func (s *ProcessService) monitorProcess(exitCh <-chan process.ChildExit) {
 			}
 			s.handleReadyNotification(ready)
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			// Timer was armed from outside; re-enter select to pick up new timer channel
@@ -2986,6 +3413,8 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	s.pid = 0
 	s.pidPublished.Store(0)
 	s.procHandle.Clear()
+	// The pause belonged to the process that just exited.
+	s.paused = false
 	// Cancelled unconditionally. Keeping the stop-timeout armed here
 	// would be pointless: processTimer is only ever read by
 	// monitorProcess, which returns with the process, so once the main
@@ -3007,11 +3436,41 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 		}
 	}
 
-	// Run finish-command if configured (before restart decision)
-	if len(s.finishCommand) > 0 && exit.ExecErr == nil {
-		s.execFinishCommand(exit)
+	// A pre-stop-hook or a stop's control-command is still running: the
+	// exit is handled when it has finished, so the finish-command still
+	// follows the pre-stop-hook and the stop is not declared over under
+	// a hook that is still at work.
+	if s.stateHookRunning() {
+		e := exit
+		s.pendingExit = &e
+		return
 	}
+	s.afterExitLocked(exit)
+}
 
+// afterExitLocked runs the finish-command for a main-process exit, if
+// one is configured, and then hands the exit to the state machine
+// (dispatchExitLocked). The finish-command runs off the lock and the
+// service stays where it is meanwhile; a stop that arrives in the
+// meantime waits for it (BringDown), and the exit is dispatched against
+// the state the service is in once it is done. So it still runs before
+// the restart decision, and before a restart, as systemd's
+// ExecStopPost= does. Caller holds queueMu.
+func (s *ProcessService) afterExitLocked(exit process.ChildExit) {
+	if len(s.finishCommand) > 0 && exit.ExecErr == nil {
+		s.startStateHookLocked(hookFinish,
+			func(ctx context.Context) func() error {
+				return s.prepareFinishCommand(ctx, exit)
+			},
+			func(error, bool) { s.dispatchExitLocked(exit) })
+		return
+	}
+	s.dispatchExitLocked(exit)
+}
+
+// dispatchExitLocked is the state-machine half of a main-process exit,
+// after its finish-command. Caller holds queueMu.
+func (s *ProcessService) dispatchExitLocked(exit process.ChildExit) {
 	if exit.ExecErr != nil {
 		// Process failed during exec/setup
 		s.services.logger.Error("Service '%s': exec failed: %v",
@@ -3038,7 +3497,7 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	// the immediate-failure path — a start-time failure is not
 	// "waiting for a healthy workload to finish".
 	if s.exitType == ExitTypeCgroup && state != StateStarting {
-		if cgPath := s.EffectiveCgroupPath(); cgPath != "" {
+		if cgPath := s.OwnCgroupPath(); cgPath != "" {
 			if populated, _ := readCgroupPopulated(cgPath); populated {
 				s.services.logger.Info(
 					"Service '%s': main pid exited, waiting for cgroup drain (exit-type=cgroup)",
@@ -3086,6 +3545,20 @@ func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit proces
 			s.services.logger.Info(
 				"Service '%s': main process gone, waiting for stop-command (pid %d)",
 				s.serviceName, s.stopPID)
+			s.services.processQueuesLocked()
+			return
+		}
+		// Still waiting for a hard dependent to stop: going STOPPED
+		// now would put this service down underneath it. Restart now
+		// if that is where the stop was heading — the dependents need
+		// not be waited for — and otherwise wait; BringDown, finding
+		// no process, finishes the stop once they are down. dinit's
+		// process_service::handle_exit_status does the same.
+		if s.waitingForDeps {
+			if s.desired.Load() == StateStarted && !s.pinnedStopped && !s.restartLimitExhausted {
+				s.stopReason = ReasonTerminated
+				s.Stopped()
+			}
 			s.services.processQueuesLocked()
 			return
 		}
@@ -3147,10 +3620,17 @@ func (s *ProcessService) handleTerminationLocked(reason StoppedReason) {
 	s.doStop(false)
 	s.services.processQueuesLocked()
 
-	// If after processing queues we're still stopping and desired is STARTED,
-	// the restart will be handled by the state machine
-	if s.state.Load() == StateStopping && s.desired.Load() == StateStarted && !s.IsStartPinned() {
-		s.initiateStart()
+	// Still STOPPING: waiting for a hard dependent to stop. A restart
+	// need not wait for it — dinit's handle_unexpected_termination calls
+	// stopped() here, which "will restart us". Going through Stopped()
+	// rather than initiateStart() clears forceStop (else the relaunch is
+	// stopped again at once), counts the restart and applies
+	// restart-delay. Only when Stopped() will restart: otherwise it
+	// would go STOPPED under a running dependent, and BringDown finishes
+	// the stop once the dependents are down.
+	if s.state.Load() == StateStopping && s.waitingForDeps &&
+		s.desired.Load() == StateStarted && !s.pinnedStopped && !s.restartLimitExhausted {
+		s.Stopped()
 		s.services.processQueuesLocked()
 	}
 }
@@ -3173,14 +3653,7 @@ func (s *ProcessService) doSmoothRecovery() {
 
 	if elapsed >= effectiveDelay {
 		// Can restart immediately
-		if err := s.startProcess(); err != nil {
-			s.services.logger.Error("Service '%s': smooth recovery failed: %v",
-				s.serviceName, err)
-			s.doingSmoothRecov = false
-			s.handleRecoveryFailureLocked()
-		} else {
-			s.doingSmoothRecov = false
-		}
+		s.smoothRelaunchLocked()
 	} else {
 		// Need to delay restart
 		delay := effectiveDelay - elapsed
@@ -3207,14 +3680,53 @@ func (s *ProcessService) fireSmoothRecoveryLocked(t *time.Timer) {
 		s.doingSmoothRecov = false
 		return
 	}
+	s.smoothRelaunchLocked()
+	s.services.processQueuesLocked()
+}
+
+// smoothRelaunchLocked launches the process again for a smooth recovery.
+// With an env-generator, the new run's environment is computed first,
+// off the lock, as for a start (BringUp): startProcess would otherwise
+// run the generator under it. The service stays STARTED meanwhile; a
+// stop ends the wait, killing the generator. Caller holds queueMu.
+func (s *ProcessService) smoothRelaunchLocked() {
+	if s.envGenerator == "" {
+		s.smoothRelaunchNowLocked()
+		return
+	}
+	s.startStateHookLocked(hookEnvGen,
+		func(ctx context.Context) func() error {
+			return func() error {
+				s.prepareStartEnvCtx(ctx)
+				return ctx.Err()
+			}
+		},
+		func(_ error, cancelled bool) {
+			switch {
+			case s.state.Load() == StateStopping:
+				// Stopped meanwhile; the stop waited for us.
+				s.discardStartEnv()
+				s.doingSmoothRecov = false
+				s.services.AddTransitionQueue(s)
+			case cancelled || !s.doingSmoothRecov || s.state.Load() != StateStarted || s.pid > 0:
+				s.discardStartEnv()
+				s.doingSmoothRecov = false
+			default:
+				s.smoothRelaunchNowLocked()
+			}
+		})
+}
+
+// smoothRelaunchNowLocked is the fork of a smooth recovery. Caller holds
+// queueMu.
+func (s *ProcessService) smoothRelaunchNowLocked() {
+	err := s.startProcess()
 	s.doingSmoothRecov = false
-	if err := s.startProcess(); err != nil {
+	if err != nil {
 		s.services.logger.Error("Service '%s': smooth recovery failed: %v",
 			s.serviceName, err)
 		s.handleRecoveryFailureLocked()
-		return
 	}
-	s.services.processQueuesLocked()
 }
 
 // cancelSmoothRecovery disarms a smooth-recovery relaunch still waiting
@@ -3229,9 +3741,16 @@ func (s *ProcessService) cancelSmoothRecovery() {
 
 // handleTimerExpired processes a timer expiration.
 // Runs in the monitorProcess goroutine; acquires queueMu.
-func (s *ProcessService) handleTimerExpired() {
+func (s *ProcessService) handleTimerExpired(timer *time.Timer) {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
+
+	// A tick received just before a stop or restart re-armed the timer
+	// belongs to the timer it replaced: acting on it would give the new
+	// purpose its deadline early (a stop escalated to SIGKILL at once).
+	if timer != s.processTimer {
+		return
+	}
 
 	purpose := s.timerPurpose
 	s.timerPurpose = timerNone
@@ -3380,13 +3899,20 @@ func (s *ProcessService) cancelTimer() {
 	s.timerPurpose = timerNone
 }
 
-func (s *ProcessService) getTimerChan() <-chan time.Time {
+// getTimer returns the armed timer, or nil. The monitor hands it to
+// handleTimerExpired with its tick.
+func (s *ProcessService) getTimer() *time.Timer {
 	s.services.queueMu.RLock()
 	defer s.services.queueMu.RUnlock()
-	if s.processTimer != nil {
-		return s.processTimer.C
+	return s.processTimer
+}
+
+// timerC is t's channel, or nil, which never delivers, for no timer.
+func timerC(t *time.Timer) <-chan time.Time {
+	if t == nil {
+		return nil
 	}
-	return nil
+	return t.C
 }
 
 // applyRunAs gives an auxiliary command (finish-command, pre-stop-hook,
@@ -3411,8 +3937,18 @@ func (s *ProcessService) applyRunAs(cmd *exec.Cmd) {
 
 // execFinishCommand runs the finish-command after a process exits.
 // It passes the exit code and signal number as arguments.
-// Runs synchronously with a timeout so it doesn't block forever.
+// Runs synchronously with a timeout so it doesn't block forever; the
+// exit handler runs it off the lock instead (prepareFinishCommand).
 func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
+	_ = s.prepareFinishCommand(context.Background(), exit)()
+}
+
+// prepareFinishCommand builds the finish-command for exit and returns
+// the function that runs it, bounded by hook-timeout and ended early by
+// parent; failures are logged, and the error is returned for the
+// caller's information only. Everything is read from the service here,
+// so a caller holding queueMu can let it go before the run.
+func (s *ProcessService) prepareFinishCommand(parent context.Context, exit process.ChildExit) func() error {
 	exitCode := "-1"
 	waitStatus := "0"
 	if exit.Exited() {
@@ -3427,25 +3963,32 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	args = append(args, exitCode, waitStatus)
 
 	timeout := s.effectiveHookTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(parent, timeout)
 
-	cmd := exec.CommandContext(ctx, s.finishCommand[0], args...)
+	cmd := newHookCmd(ctx, append([]string{s.finishCommand[0]}, args...))
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
-	s.applyRunAs(cmd)
+	cmd.Env = s.hookCmdEnv()
+	if !s.privHooks.Finish {
+		s.applyRunAs(cmd)
+	}
 
-	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
-	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil && !isECHILDErr(err) {
-		// RunAdhoc registers the child with the exit router, so the
-		// PID-1 reaper claiming the zombie first no longer turns a
-		// clean run into "waitid: no child processes". The ECHILD
-		// check stays as a fallback for the case where the router has
-		// no status either: the finish-command still ran, and a
-		// spurious failure line on every shutdown of a runit-style
-		// service is the worse outcome.
-		s.services.logger.Error("Service '%s': finish-command failed: %v",
-			s.serviceName, err)
+	return func() error {
+		defer cancel()
+		s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
+		err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout)
+		if err != nil && !isECHILDErr(err) {
+			// RunAdhoc registers the child with the exit router, so the
+			// PID-1 reaper claiming the zombie first no longer turns a
+			// clean run into "waitid: no child processes". The ECHILD
+			// check stays as a fallback for the case where the router has
+			// no status either: the finish-command still ran, and a
+			// spurious failure line on every shutdown of a runit-style
+			// service is the worse outcome.
+			s.services.logger.Error("Service '%s': finish-command failed: %v",
+				s.serviceName, err)
+			return err
+		}
+		return nil
 	}
 }
 
@@ -3458,17 +4001,43 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 //
 // ch and done are passed in rather than read from s, for the reason given
 // at watchReadyPipe.
-func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
+//
+// startTimeout is the start-timeout armed with the watch (read by the
+// caller, which holds the lock a reload changes it under). An attempt
+// may run until the start would time out; zero leaves only the end of
+// the watch to end it.
+func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}, startTimeout time.Duration) {
 	interval := s.readyCheckInterval
 	if interval <= 0 {
 		interval = defaultReadyCheckInterval
 	}
 
+	// A check under way ends with the watch: when the start times out,
+	// the process exits or the service is stopped, done closes and the
+	// check's process group is killed. Before, a check that hung kept
+	// running after the service had failed or stopped, and each restart
+	// added another. The deadline is the start-timeout's own, so an
+	// attempt is never cut short of it: hook-timeout bounded each attempt
+	// for a while, and a check that legitimately takes longer than five
+	// seconds (pg_isready -t 10) never passed.
+	ctx, cancel := context.WithCancel(context.Background())
+	if startTimeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), startTimeout)
+	}
+	defer cancel()
+	go func() {
+		select {
+		case <-done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	// Immediate first check. The doneCh race is handled by the loop
 	// below — if we return here on success, all good; if the command
 	// fails, fall through to the polling loop which will also serve
 	// any pending doneCh signal.
-	if s.runReadyCheckOnce() {
+	if s.runReadyCheck(ctx) {
 		ch <- true
 		return
 	}
@@ -3482,7 +4051,7 @@ func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
 			ch <- false
 			return
 		case <-ticker.C:
-			if s.runReadyCheckOnce() {
+			if s.runReadyCheck(ctx) {
 				ch <- true
 				return
 			}
@@ -3490,38 +4059,73 @@ func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
 	}
 }
 
+// readyCheckAttemptTimeout bounds one ready-check attempt. Atomic, so a
+// test can change it while a watch from an earlier test still runs.
+var readyCheckAttemptTimeout atomicDuration
+
+func init() { readyCheckAttemptTimeout.Store(30 * time.Second) }
+
 // runReadyCheckOnce executes the configured ready-check-command exactly
-// once and reports whether it exited 0. Kept as a tiny helper so the
-// immediate-first-check and the polling loop share one code path.
+// once and reports whether it exited 0.
 func (s *ProcessService) runReadyCheckOnce() bool {
-	cmd := exec.Command(s.readyCheckCommand[0], s.readyCheckCommand[1:]...)
+	return s.runReadyCheck(context.Background())
+}
+
+// runReadyCheck runs one ready-check attempt, ended by ctx (the end of
+// the watch or the start-timeout's deadline) with its process group
+// killed, and by readyCheckAttemptTimeout. The immediate first check and
+// the polling loop share it. hook-timeout does not bound it: a slow check
+// is still a check.
+func (s *ProcessService) runReadyCheck(ctx context.Context) bool {
+	// Each attempt also has a bound of its own, well above hook-timeout,
+	// so one attempt that hangs (a stalled connect) is retried instead of
+	// holding the whole watch: with no start-timeout it would otherwise
+	// never end, and with one it would use it all up.
+	ctx, cancel := context.WithTimeout(ctx, readyCheckAttemptTimeout.Load())
+	defer cancel()
+	cmd := newHookCmd(ctx, s.readyCheckCommand)
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
+	cmd.Env = s.hookCmdEnv()
 	s.applyRunAs(cmd)
 	return process.RunAdhoc(cmd) == nil
 }
 
-// execPreStopHook runs the pre-stop-hook before sending stop signal.
-// Runs synchronously with a timeout. The hook receives the service PID
-// as first argument (like runit's control scripts).
+// execPreStopHook runs the pre-stop-hook synchronously, with a timeout.
+// The hook receives the service PID as its last argument (like runit's
+// control scripts). BringDown runs it off the lock instead
+// (preparePreStopHook).
 func (s *ProcessService) execPreStopHook() {
+	_ = s.preparePreStopHook(context.Background())()
+}
+
+// preparePreStopHook builds the pre-stop-hook, with the service's pid
+// as its last argument, and returns the function that runs it, bounded
+// by hook-timeout and ended early by parent. As prepareControlCommand,
+// it reads everything from the service here, so the run needs no lock.
+func (s *ProcessService) preparePreStopHook(parent context.Context) func() error {
 	args := make([]string, len(s.preStopHook)-1, len(s.preStopHook))
 	copy(args, s.preStopHook[1:])
 	args = append(args, strconv.Itoa(s.pid))
 
 	timeout := s.effectiveHookTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(parent, timeout)
 
-	cmd := exec.CommandContext(ctx, s.preStopHook[0], args...)
+	cmd := newHookCmd(ctx, append([]string{s.preStopHook[0]}, args...))
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
-	s.applyRunAs(cmd)
+	cmd.Env = s.hookCmdEnv()
+	if !s.privHooks.PreStop {
+		s.applyRunAs(cmd)
+	}
 
-	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
-	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
-		s.services.logger.Error("Service '%s': pre-stop-hook failed: %v",
-			s.serviceName, err)
+	return func() error {
+		defer cancel()
+		s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
+		err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout)
+		if err != nil {
+			s.services.logger.Error("Service '%s': pre-stop-hook failed: %v",
+				s.serviceName, err)
+		}
+		return err
 	}
 }
 
@@ -3529,23 +4133,46 @@ func (s *ProcessService) execPreStopHook() {
 // The command receives the service PID as an appended argument.
 // Runs synchronously with a timeout.
 func (s *ProcessService) execControlCommand(sigName string, command []string) {
+	s.prepareControlCommand(sigName, command)()
+}
+
+// prepareControlCommand builds the control command for a signal and returns
+// a function that runs it; the caller must call it. Everything the command
+// needs from the service, the pid above all, is read here, so a caller
+// holding queueMu can let the lock go before running the command, which
+// may take up to the hook timeout.
+func (s *ProcessService) prepareControlCommand(sigName string, command []string) func() {
+	run := s.prepareControlCommandCtx(context.Background(), sigName, command)
+	return func() { _ = run() }
+}
+
+// prepareControlCommandCtx is prepareControlCommand with a run that
+// parent can end early, and that returns the command's error (already
+// logged).
+func (s *ProcessService) prepareControlCommandCtx(parent context.Context, sigName string, command []string) func() error {
 	args := make([]string, len(command)-1, len(command))
 	copy(args, command[1:])
 	args = append(args, strconv.Itoa(s.pid))
 
 	timeout := s.effectiveHookTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(parent, timeout)
 
-	cmd := exec.CommandContext(ctx, command[0], args...)
+	cmd := newHookCmd(ctx, append([]string{command[0]}, args...))
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
-	s.applyRunAs(cmd)
+	cmd.Env = s.hookCmdEnv()
+	if !s.privHooks.Control[sigName] {
+		s.applyRunAs(cmd)
+	}
 
-	s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
-	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
-		s.services.logger.Error("Service '%s': control-command-%s failed: %v",
-			s.serviceName, sigName, err)
+	return func() error {
+		defer cancel()
+		s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
+		err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout)
+		if err != nil {
+			s.services.logger.Error("Service '%s': control-command-%s failed: %v",
+				s.serviceName, sigName, err)
+		}
+		return err
 	}
 }
 
@@ -3577,58 +4204,65 @@ func signalName(sig syscall.Signal) string {
 	}
 }
 
-// SendSignalWithControl sends a signal to the service, using control-command if configured.
-// Returns true if signal was sent (or control command ran).
-func (s *ProcessService) SendSignalWithControl(sig syscall.Signal) bool {
+// signalWithControl sends sig to the service's process, or, when a
+// control-command-<SIG> is configured, returns that command for the caller
+// to run. Called with queueMu held (ServiceSet.SignalService): the pid is
+// read and signalled under the lock that clears it on exit, and the
+// command, which can run for the hook timeout, is run after the lock is
+// let go. hasPID is false when there is no process.
+func (s *ProcessService) signalWithControl(sig syscall.Signal) (run func(), hasPID bool, err error) {
 	if s.pid <= 0 {
-		return false
+		return nil, false, nil
 	}
 	sigName := signalName(sig)
 	if cmd, ok := s.controlCommands[sigName]; ok && len(cmd) > 0 {
-		s.execControlCommand(sigName, cmd)
-		return true
+		return s.prepareControlCommand(sigName, cmd), true, nil
 	}
-	err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
-	return err == nil
+	return nil, true, process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
 }
 
-// Pause suspends the service process with SIGSTOP (or control-command-STOP).
-func (s *ProcessService) Pause() bool {
+// pause suspends the service process with SIGSTOP, or returns
+// control-command-STOP for the caller to run. Called with queueMu held
+// (ServiceSet.PauseService), with the same split as signalWithControl.
+func (s *ProcessService) pause() (run func(), ok bool) {
 	if s.pid <= 0 || s.paused {
-		return false
+		return nil, false
 	}
 	if cmd, ok := s.controlCommands["STOP"]; ok && len(cmd) > 0 {
-		s.execControlCommand("STOP", cmd)
+		run = s.prepareControlCommand("STOP", cmd)
 	} else {
 		if err := process.SignalProcess(s.pid, syscall.SIGSTOP, s.Flags.SignalProcessOnly); err != nil {
 			s.services.logger.Error("Service '%s': SIGSTOP failed: %v", s.serviceName, err)
-			return false
+			return nil, false
 		}
 	}
 	s.paused = true
 	s.services.logger.Info("Service '%s': paused", s.serviceName)
-	return true
+	return run, true
 }
 
-// Continue resumes a paused service process with SIGCONT (or control-command-CONT).
-func (s *ProcessService) Continue() bool {
+// resume resumes a paused service process with SIGCONT, or returns
+// control-command-CONT for the caller to run. Called with queueMu held
+// (ServiceSet.ContinueService).
+func (s *ProcessService) resume() (run func(), ok bool) {
 	if s.pid <= 0 || !s.paused {
-		return false
+		return nil, false
 	}
 	if cmd, ok := s.controlCommands["CONT"]; ok && len(cmd) > 0 {
-		s.execControlCommand("CONT", cmd)
+		run = s.prepareControlCommand("CONT", cmd)
 	} else {
 		if err := process.SignalProcess(s.pid, syscall.SIGCONT, s.Flags.SignalProcessOnly); err != nil {
 			s.services.logger.Error("Service '%s': SIGCONT failed: %v", s.serviceName, err)
-			return false
+			return nil, false
 		}
 	}
 	s.paused = false
 	s.services.logger.Info("Service '%s': continued", s.serviceName)
-	return true
+	return run, true
 }
 
-// IsPaused returns whether the service is currently paused.
+// IsPaused returns whether the service is currently paused. Called with
+// queueMu held.
 func (s *ProcessService) IsPaused() bool { return s.paused }
 
 // stopLoggerCommands kills any running output/error logger processes and

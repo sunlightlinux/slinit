@@ -9,11 +9,17 @@
 # "(since X.Y.Z)" marker in doc/man/slinit-service.5.md instead --
 # that is what TestNewDirectivesCarrySinceMarker checks, and adding
 # the name here to silence it defeats the only reason the file exists.
+#
+# exec-condition and assert-exec-condition (v1.10.55) were added late:
+# they predate the requirement, but discovery only learned to see them
+# (they are matched before applySetting's switch) after this file was
+# written.
 after
 alert-file
 alert-level
 apparmor-load
 apparmor-switch
+assert-exec-condition
 author
 before
 bind-paths
@@ -76,6 +82,7 @@ env-dir
 env-file
 env-generator
 error-logger
+exec-condition
 exec-search-path
 exit-type
 extra-command

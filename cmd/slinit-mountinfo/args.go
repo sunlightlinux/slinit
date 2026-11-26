@@ -160,9 +160,12 @@ func parseArgs(args []string) (options, error) {
 			return opts, errHelp
 		case "-V", "--version":
 			return opts, errVersion
-		case "-q", "--quiet", "-v", "--verbose":
-			// Kept for compat; quiet is EINFO_QUIET-driven, verbose has
-			// no per-entry diagnostics to gate.
+		case "-q", "--quiet":
+			// OpenRC's -q sets EINFO_QUIET: no output, exit status
+			// still says whether anything matched.
+			opts.quiet = true
+		case "-v", "--verbose":
+			// No per-entry diagnostics to gate.
 		default:
 			return opts, fmt.Errorf("unknown flag: %s", name)
 		}
@@ -193,15 +196,19 @@ Regex filters (each POSIX extended, --skip- variants exclude):
   -p, --point-regex REGEX        keep matching mountpoints
   -P, --skip-point-regex REGEX   drop matching mountpoints
 
-Netdev filters (consult /etc/fstab for _netdev flag):
-  -e, --netdev                   only entries flagged _netdev in fstab
-  -E, --nonetdev                 only entries known to fstab without _netdev
+Netdev filters (consult /etc/fstab for _netdev flag, as OpenRC):
+  -e, --netdev                   drop mounts fstab lists without _netdev
+  -E, --nonetdev                 drop mounts fstab lists with _netdev
+                                 mounts absent from fstab go to the regexen,
+                                 unless MOUNTPOINTs are given (then dropped)
 
 Test seams (non-standard):
       --proc-mounts PATH         alternative mount table
       --fstab PATH               alternative fstab (for netdev lookup)
 
 Common:
+  -q, --quiet                    print nothing; exit status still reports a match
+                                 (EINFO_QUIET in the environment does the same)
   -h, --help                     this help
   -V, --version                  version string
 

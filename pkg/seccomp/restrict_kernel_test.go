@@ -62,6 +62,42 @@ func init() {
 				"import threading; t=threading.Thread(target=lambda: None); t.start(); t.join()"}, os.Environ())
 			fail("exec python: did not exec")
 		}
+	case "namespaces-mount":
+		// Run as root of a user and mount namespace of its own, where
+		// each of these calls makes a mount namespace unless refused.
+		dir := os.Getenv("SLINIT_TEST_DIR")
+		if err := unix.Mount("tmpfs", dir, "tmpfs", 0, ""); err != nil {
+			if err == unix.EPERM || err == unix.EACCES {
+				fmt.Fprintf(os.Stderr, "set-up mount: %v\n", err)
+				os.Exit(restrictChildSkip)
+			}
+			fail("set-up mount: %v", err)
+		}
+		install(CompileRestrictNamespaces())
+		_, _, e := unix.Syscall(unix.SYS_UNSHARE, 0x00100000 /* UNSHARE_EMPTY_MNTNS */, 0, 0)
+		want("unshare(UNSHARE_EMPTY_MNTNS)", e, unix.EPERM)
+		for _, flags := range []uint{unix.OPEN_TREE_CLONE, 0x2 /* OPEN_TREE_NAMESPACE */} {
+			fd, err := unix.OpenTree(unix.AT_FDCWD, dir, flags)
+			if err == nil {
+				unix.Close(fd)
+			}
+			want(fmt.Sprintf("open_tree(%#x)", flags), errnoOf(err), unix.EPERM)
+			attr := unix.MountAttr{}
+			atFDCWD := unix.AT_FDCWD
+			path, _ := unix.BytePtrFromString(dir)
+			_, _, e = unix.Syscall6(unix.SYS_OPEN_TREE_ATTR, uintptr(atFDCWD),
+				uintptr(unsafe.Pointer(path)), uintptr(flags), uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0)
+			want(fmt.Sprintf("open_tree_attr(%#x)", flags), e, unix.EPERM)
+		}
+		// fsmount is refused before its fd is looked at.
+		_, err := unix.Fsmount(-1, 0, 0)
+		want("fsmount", errnoOf(err), unix.EPERM)
+		// A plain open_tree only refers to an existing mount.
+		fd, err := unix.OpenTree(unix.AT_FDCWD, dir, unix.OPEN_TREE_CLOEXEC)
+		if err != nil {
+			fail("open_tree(OPEN_TREE_CLOEXEC): %v", err)
+		}
+		unix.Close(fd)
 	case "address-families":
 		install(CompileRestrictAddressFamilies([]int{unix.AF_UNIX}))
 		_, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
@@ -166,6 +202,18 @@ func TestRestrictNamespacesOnKernel(t *testing.T) {
 	if py, err := exec.LookPath("python3"); err == nil {
 		runRestrictChild(t, "namespaces", "SLINIT_TEST_PYTHON="+py)
 	}
+}
+
+// restrict-namespaces must refuse every way to a new mount namespace, not
+// only CLONE_NEWNS: unshare(UNSHARE_EMPTY_MNTNS), open_tree and
+// open_tree_attr with OPEN_TREE_CLONE or OPEN_TREE_NAMESPACE, and fsmount
+// went through.
+func TestRestrictNamespacesMountOnKernel(t *testing.T) {
+	runRestrictChildAttr(t, "namespaces-mount", &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+	}, "SLINIT_TEST_DIR="+t.TempDir())
 }
 
 func TestRestrictAddressFamiliesOnKernel(t *testing.T) {

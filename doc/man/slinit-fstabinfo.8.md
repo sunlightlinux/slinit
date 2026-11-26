@@ -35,6 +35,11 @@ every selected entry. Selection follows OpenRC exactly:
 Each selected name is then looked up in fstab; when a mountpoint
 appears more than once, the first entry is used.
 
+Octal escapes in the spec and mountpoint fields (**\\040** for a
+space, **\\011** tab, **\\012** newline, **\\134** backslash) are
+decoded on read and printed decoded, as OpenRC's **getmntent**(3)
+does.
+
 # OUTPUT MODES
 
 **-b**, **--blockdevice**
@@ -93,9 +98,14 @@ appears more than once, the first entry is used.
 :   Read from *PATH* instead of **/etc/fstab**. Non-standard, useful
     for tests.
 
-**-q**, **--quiet**, **-v**, **--verbose**
-:   Accepted for OpenRC compatibility and ignored; use **EINFO_QUIET**
-    to suppress output.
+**-q**, **--quiet**
+:   Print nothing. Selection, **--mount** / **--remount** and the exit
+    status are unchanged, so **-q** turns the tool into a test
+    (**slinit-fstabinfo -q /data && …**). This is the *only* way to
+    silence it; see ENVIRONMENT.
+
+**-v**, **--verbose**
+:   Accepted for OpenRC compatibility and ignored.
 
 **-h**, **--help**
 :   Print usage.
@@ -105,10 +115,12 @@ appears more than once, the first entry is used.
 
 # ENVIRONMENT
 
-**EINFO_QUIET** — when set to a truthy value (**yes**, **1**,
-**true**, **on**) all printing is suppressed. Actions
-(**--mount** / **--remount**) still run and their exit codes still
-propagate. This is the OpenRC convention.
+**EINFO_QUIET** — *ignored* when inherited. As in OpenRC's
+**fstabinfo.c** ("only quiet when explicitly told to be"), the
+variable is removed from the environment at start-up and set again
+only by **-q**. A boot that exports **EINFO_QUIET=yes** for quiet
+console output must not make **$(fstabinfo --passno =2)** expand to
+nothing, which would leave **fsck** with no filesystems to check.
 
 # EXIT STATUS
 
@@ -116,7 +128,8 @@ propagate. This is the OpenRC convention.
   fstab, and every **mount**(8) succeeded
 - **1**: nothing was selected, a selected mountpoint is not in fstab
   (the others are still printed), or the fstab file is missing,
-  unparseable or empty
+  unreadable or empty. A malformed line is skipped, as util-linux
+  skips it, rather than failing the whole file
 - with **--mount** / **--remount**: the sum of the **mount**(8) exit
   statuses, unless a mountpoint was missing from fstab, which sets
   the status back to 1 (as in OpenRC)

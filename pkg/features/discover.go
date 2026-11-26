@@ -89,6 +89,18 @@ func DiscoverDirectives(path string) ([]string, error) {
 	// otherwise pollute the discovered list with non-directives
 	// like arch names, log levels, and enum values.
 	ast.Inspect(f, func(n ast.Node) bool {
+		// A few directives are handled before the dispatcher, by a
+		// plain comparison (`if setting == "exec-condition" || ...`).
+		if be, ok := n.(*ast.BinaryExpr); ok && be.Op == token.EQL {
+			if id, ok := be.X.(*ast.Ident); ok && id.Name == "setting" {
+				if bl, ok := be.Y.(*ast.BasicLit); ok && bl.Kind == token.STRING {
+					if lit := unquoteString(bl.Value); isDirectiveName(lit) {
+						seen[lit] = struct{}{}
+					}
+				}
+			}
+			return true
+		}
 		sw, ok := n.(*ast.SwitchStmt)
 		if !ok {
 			return true

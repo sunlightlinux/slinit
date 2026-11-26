@@ -3,6 +3,7 @@ package process
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -61,5 +62,31 @@ func TestEnsureServiceDirsMultiple(t *testing.T) {
 		if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
 			t.Errorf("expected dir %s (err=%v)", p, err)
 		}
+	}
+}
+
+// A missing parent of a service directory is created 0755; only the
+// leaf takes the configured mode. Given the leaf's 0700, a root-owned
+// "myapp" kept a run-as service out of its own "myapp/data".
+func TestEnsureServiceDirsParentsTraversable(t *testing.T) {
+	old := syscall.Umask(0o022)
+	defer syscall.Umask(old)
+	base := t.TempDir()
+	leaf := filepath.Join(base, "myapp", "data")
+	if err := ensureServiceDirs([]ServiceDir{{Path: leaf, Mode: 0o700}}, 0, 0); err != nil {
+		t.Fatalf("ensureServiceDirs: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(base, "myapp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o755 {
+		t.Errorf("parent mode = %o, want 0755", fi.Mode().Perm())
+	}
+	if fi, err = os.Stat(leaf); err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		t.Errorf("leaf mode = %o, want 0700", fi.Mode().Perm())
 	}
 }

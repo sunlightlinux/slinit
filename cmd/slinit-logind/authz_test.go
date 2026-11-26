@@ -258,3 +258,31 @@ func TestCanSignatureUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A non-root ReleaseSession is allowed for the caller's own session,
+// found by its pid. A pid reused by another user's process could land in
+// a session that is not theirs; the session must also be the caller's
+// user's own.
+func TestReleaseSessionChecksTheUser(t *testing.T) {
+	m := usersBus(t)
+	var c1 SessionRecord
+	if !readJSON(sessionFile("c1"), &c1) {
+		t.Fatal("no c1")
+	}
+	orig := callerOwnSession
+	t.Cleanup(func() { callerOwnSession = orig })
+	callerOwnSession = func(*manager, dbus.Sender) (SessionRecord, bool) { return c1, true }
+
+	if err := m.ReleaseSession(bob, "c1"); !denied(err) {
+		t.Fatalf("bob, whose pid resolves into alice's c1: %v, want AccessDenied", err)
+	}
+	if !fileExists(sessionFile("c1")) {
+		t.Fatal("c1 was released for bob")
+	}
+	if err := m.ReleaseSession(alice, "c1"); err != nil {
+		t.Fatalf("alice releasing her own c1: %v", err)
+	}
+	if fileExists(sessionFile("c1")) {
+		t.Error("c1 still there after alice released it")
+	}
+}

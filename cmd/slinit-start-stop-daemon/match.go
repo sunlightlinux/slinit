@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // MatchCriteria narrows the /proc scan when locating running processes.
@@ -19,6 +21,43 @@ type MatchCriteria struct {
 	UID         int    // -1 = don't match
 	PidFile     string
 	Interpreted bool // --interpreted: match cmdline[1] when exe is an interpreter
+
+	// execInfo is stat(Exec), taken once per scan by prepare(). Nil
+	// when Exec is empty or does not exist (an upgrade removed it):
+	// matching then falls back to comparing path strings.
+	execInfo os.FileInfo
+	// execResolved is Exec with its directory resolved, set instead of
+	// execInfo when Exec is itself a symlink; matched by name.
+	execResolved string
+	prepared     bool
+}
+
+// prepare stats Exec once so a /proc scan does not re-stat it for
+// every process.
+func (m MatchCriteria) prepare() MatchCriteria {
+	if m.prepared {
+		return m
+	}
+	m.prepared = true
+	if m.Exec == "" {
+		return m
+	}
+	if li, err := os.Lstat(m.Exec); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		// --exec is itself a symlink: on busybox systems an applet
+		// such as /usr/sbin/crond -> /bin/busybox. Its inode is the
+		// multi-call binary every applet runs, so an inode match
+		// would take ash, getty and syslogd for crond. Resolve the
+		// directory only (which still covers merged /usr) and
+		// compare names, as OpenRC does.
+		if dir, err := filepath.EvalSymlinks(filepath.Dir(m.Exec)); err == nil {
+			m.execResolved = filepath.Join(dir, filepath.Base(m.Exec))
+		}
+		return m
+	}
+	if fi, err := os.Stat(m.Exec); err == nil {
+		m.execInfo = fi
+	}
+	return m
 }
 
 // FindMatchingPIDs walks /proc looking for processes that satisfy every
@@ -32,6 +71,7 @@ type MatchCriteria struct {
 // PID 1 would otherwise have it signalled (SIGTERM is a reboot under
 // slinit), and a --name scan could catch the script calling us.
 func FindMatchingPIDs(m MatchCriteria) ([]int, error) {
+	m = m.prepare()
 	self, parent := os.Getpid(), os.Getppid()
 	if m.PidFile != "" {
 		pid, err := readTrustedPIDFile(m.PidFile, m.Exec == "" && m.Name == "" && m.UID < 0)
@@ -80,32 +120,35 @@ func processMatches(pid int, m MatchCriteria) bool {
 	if err != nil {
 		return false
 	}
-	exePath, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+	m = m.prepare()
+	exeLink := "/proc/" + strconv.Itoa(pid) + "/exe"
+	exePath, _ := os.Readlink(exeLink)
 	// A daemon whose binary an upgrade replaced reads "<path> (deleted)";
 	// it is still the daemon to stop, as OpenRC and Debian match it.
 	exePath = strings.TrimSuffix(exePath, " (deleted)")
 	if m.Exec != "" {
-		want := m.Exec
-		got := exePath
-		if m.Interpreted && isInterpreter(got) {
+		if m.Interpreted && isInterpreter(exePath) {
 			// Interpreter dispatch: match script path from argv[1] when
 			// the exe is a shell/python/perl/etc. wrapper.
-			got = readInterpretedTarget(pid)
-		}
-		if got != want {
+			if !sameExecutable(m, readInterpretedTarget(pid), "") {
+				return false
+			}
+		} else if !sameExecutable(m, exePath, exeLink) {
 			return false
 		}
 	}
 	if m.Name != "" {
 		nameSrc := commOf(pid)
+		want := commName(m.Name)
 		if m.Interpreted && isInterpreter(exePath) {
 			// Script's argv[1] basename is what an operator thinks of as
 			// the "process name" for an interpreted daemon.
 			if scriptPath := readInterpretedTarget(pid); scriptPath != "" {
 				nameSrc = filepath.Base(scriptPath)
+				want = m.Name // not a comm: never truncated
 			}
 		}
-		if nameSrc != m.Name {
+		if nameSrc != want {
 			return false
 		}
 	}
@@ -115,6 +158,69 @@ func processMatches(pid int, m MatchCriteria) bool {
 		}
 	}
 	return true
+}
+
+// sameExecutable reports whether got (a path the kernel or argv names
+// for the process) is the file --exec names. Like Debian's
+// start-stop-daemon it compares device and inode, not spelling: the
+// kernel reports the path it resolved, so on a merged-/usr system
+// (/usr/sbin -> bin) a daemon started as /usr/sbin/foo reads back as
+// /usr/bin/foo and a string compare never matched it -- --start
+// launched duplicates and --stop reported "no matching process".
+//
+// statPath is what to stat for the process side (/proc/PID/exe, which
+// follows to the running image even when its name was unlinked);
+// empty means stat got itself. The string compare stays as the
+// fallback for a binary an upgrade replaced: the running image is the
+// old, deleted inode, which no stat of --exec can reach.
+func sameExecutable(m MatchCriteria, got, statPath string) bool {
+	if got == "" && statPath == "" {
+		return false
+	}
+	if got == m.Exec || (m.execResolved != "" && got == m.execResolved) {
+		return true
+	}
+	if m.execInfo == nil {
+		return false
+	}
+	if statPath == "" {
+		if !filepath.IsAbs(got) {
+			return false
+		}
+		statPath = got
+	}
+	fi, err := os.Stat(statPath)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(m.execInfo, fi)
+}
+
+// commLen is the longest task name the kernel keeps (TASK_COMM_LEN
+// 16, NUL included); /proc/PID/comm holds the first 15 bytes.
+const commLen = 15
+
+// commName is what /proc/PID/comm reads for a process named name. A
+// --name longer than that never equalled any comm, so --start
+// launched duplicates and --stop found nothing; it now matches on the
+// first 15 bytes, as the kernel stored them.
+func commName(name string) string {
+	if len(name) > commLen {
+		return name[:commLen]
+	}
+	return name
+}
+
+// nameLengthWarning is the warning for a --name the kernel truncates;
+// "" when it fits. dpkg's start-stop-daemon warns the same way (but
+// still compares the whole name, so it never matches).
+func nameLengthWarning(name string) string {
+	if len(name) <= commLen {
+		return ""
+	}
+	return fmt.Sprintf("warning: --name %q is longer than the %d characters the kernel keeps "+
+		"as a process name; matching on %q (use --exec to match exactly)",
+		name, commLen, commName(name))
 }
 
 func commOf(pid int) string {
@@ -167,7 +273,7 @@ func readTrustedPIDFile(path string, pidfileOnly bool) (int, error) {
 	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
 		return 0, err
 	}
-	if why := pidfileInsecure(&st, os.Getuid(), os.Getgid(), pidfileOnly); why != "" {
+	if why := process.PIDFileInsecure(&st, os.Getuid(), os.Getgid(), pidfileOnly); why != "" {
 		return 0, fmt.Errorf("%s pidfile %s is insecure", why, path)
 	}
 	data, err := io.ReadAll(f)
@@ -175,23 +281,6 @@ func readTrustedPIDFile(path string, pidfileOnly bool) (int, error) {
 		return 0, err
 	}
 	return parsePID(data), nil
-}
-
-// pidfileInsecure says why a pidfile cannot be trusted to name the
-// process to signal, or "" if it can. Whoever can write it picks the
-// pid: refused when world-writable, and — with nothing else matched —
-// when someone other than root or us owns it or, through a group
-// write bit, can write it.
-func pidfileInsecure(st *syscall.Stat_t, uid, gid int, pidfileOnly bool) string {
-	if st.Mode&0o002 != 0 {
-		return "matching on world-writable"
-	}
-	if pidfileOnly &&
-		((st.Uid != uint32(uid) && st.Uid != 0) ||
-			(st.Gid != uint32(gid) && st.Gid != 0 && st.Mode&0o020 != 0)) {
-		return "matching only on non-root"
-	}
-	return ""
 }
 
 // readPIDFile parses the first integer from a pidfile. Returns 0 with

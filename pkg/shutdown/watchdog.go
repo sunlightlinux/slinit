@@ -1,7 +1,9 @@
 package shutdown
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"syscall"
 	"time"
 	"unsafe"
@@ -41,7 +43,18 @@ var (
 	// production these resolve to syscall.Open + unix.Syscall(IOCTL).
 	watchdogOpenFunc  = defaultWatchdogOpen
 	watchdogIoctlFunc = defaultWatchdogIoctl
+
+	// heldWatchdog is the runtime watchdog cmd/slinit handed over,
+	// still armed, for the final shutdown of a reboot. Holding it here
+	// keeps the *os.File reachable, so no finalizer closes it, and
+	// gives armWatchdogAndWait the device when it is that same one,
+	// which cannot be opened twice.
+	heldWatchdog *os.File
 )
+
+// HoldWatchdog keeps the handed-over watchdog device for the rest of
+// the shutdown. See heldWatchdog.
+func HoldWatchdog(f *os.File) { heldWatchdog = f }
 
 // SetWatchdogReboot toggles WDT-driven reboot for the ShutdownReboot
 // path. Callers: cmd/slinit main (kernel cmdline slinit.reboot-
@@ -89,6 +102,10 @@ func SetWatchdogRebootTimeout(d time.Duration) {
 // contracts and keeps the WDT armed for every driver.
 func armWatchdogAndWait(logger *logging.Logger) error {
 	fd, err := watchdogOpenFunc(watchdogDevice)
+	if errors.Is(err, syscall.EBUSY) && heldWatchdog != nil {
+		// Our own runtime watchdog, handed over armed: arm it short.
+		fd, err = int(heldWatchdog.Fd()), nil
+	}
 	if err != nil {
 		return fmt.Errorf("watchdog: open %s: %w", watchdogDevice, err)
 	}

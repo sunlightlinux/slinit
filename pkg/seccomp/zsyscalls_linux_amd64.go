@@ -75,6 +75,8 @@ var syscallNumbers = map[string]int{
 	"fcntl":                   unix.SYS_FCNTL,
 	"fdatasync":               unix.SYS_FDATASYNC,
 	"fgetxattr":               unix.SYS_FGETXATTR,
+	"file_getattr":            468,
+	"file_setattr":            469,
 	"finit_module":            unix.SYS_FINIT_MODULE,
 	"flistxattr":              unix.SYS_FLISTXATTR,
 	"flock":                   unix.SYS_FLOCK,

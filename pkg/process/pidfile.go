@@ -37,12 +37,21 @@ const (
 // user could pre-create the path as a symlink to /proc/1/status etc. and
 // trick slinit into reading the wrong PID — which then drives signal
 // targets and "process alive?" decisions.
+//
+// O_NONBLOCK plus the regular-file check: this runs under the service
+// set's lock, and opening a FIFO left at the path would block PID 1
+// until someone opened the other end.
 func ReadPIDFile(path string) (int, PIDResult, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return 0, PIDResultFailed, fmt.Errorf("reading PID file: %w", err)
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil {
+		return 0, PIDResultFailed, fmt.Errorf("reading PID file: %w", err)
+	} else if !fi.Mode().IsRegular() {
+		return 0, PIDResultFailed, fmt.Errorf("reading PID file %s: not a regular file (%s)", path, fi.Mode().Type())
+	}
 	// Cap the read so a hostile/junk file can't drive an unbounded
 	// allocation. A real PID file is < 64 bytes; 4 KiB is generous.
 	data, err := io.ReadAll(io.LimitReader(f, 4096))
@@ -93,4 +102,23 @@ func ReadPIDFile(path string) (int, PIDResult, error) {
 	}
 
 	return pid, PIDResultFailed, fmt.Errorf("checking process %d: %w", pid, err)
+}
+
+// PIDFileInsecure says why a pidfile cannot be trusted to name the
+// process to signal, or "" if it can. Whoever can write it picks the
+// pid: refused when world-writable, and — with nothing else matched —
+// when someone other than root or us owns it or, through a group
+// write bit, can write it. The checks are Debian start-stop-daemon's
+// (dpkg 1.19.3); st must come from an Fstat of the open file, so the
+// file checked is the file read.
+func PIDFileInsecure(st *syscall.Stat_t, uid, gid int, pidfileOnly bool) string {
+	if st.Mode&0o002 != 0 {
+		return "matching on world-writable"
+	}
+	if pidfileOnly &&
+		((st.Uid != uint32(uid) && st.Uid != 0) ||
+			(st.Gid != uint32(gid) && st.Gid != 0 && st.Mode&0o020 != 0)) {
+		return "matching only on non-root"
+	}
+	return ""
 }

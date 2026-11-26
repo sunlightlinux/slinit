@@ -84,7 +84,30 @@ ignored, and an unrecognised key is an error. Recognised keys:
 :   Filesystem type (required).
 
 **options**
-:   Mount options (passed verbatim to **mount**(2)).
+:   Comma-separated mount options, split as **mount**(8) splits them.
+    The generic ones become **mount**(2) flags: **ro**/**rw**,
+    **nosuid**/**suid**, **nodev**/**dev**, **noexec**/**exec**,
+    **sync**/**async**, **dirsync**, **mand**/**nomand**,
+    **noatime**/**atime**, **relatime**/**norelatime**,
+    **strictatime**/**nostrictatime**, **nodiratime**/**diratime**,
+    **lazytime**/**nolazytime**, **nosymfollow**/**symfollow**,
+    **silent**/**loud**, **bind**, **rbind** and **remount**; of two
+    that contradict each other the later wins, and **noatime**,
+    **relatime** and **strictatime** exclude one another. **defaults**
+    and the fstab-only options (**auto**, **noauto**, **nofail**,
+    **\_netdev**, **user**, **nouser**, **users**, **owner**,
+    **group**, **comment=**, **helper=**, **uhelper=** and any
+    **x-** or **X-** option) are dropped; as for **mount**(8) run by
+    root, **user** and its kin imply nothing. Everything else is passed
+    to the filesystem as its data string.
+
+    A **bind** or **rbind** mount takes its per-mount flags (**ro**,
+    **nosuid**, **nodev**, **noexec**, the access-time options,
+    **nosymfollow**) through a second, remount call, as **mount**(8)
+    does; flags the options do not name keep the source mount's value.
+    If that remount fails the bind is unmounted and the request fails,
+    rather than leaving a mount weaker than asked for. On an **rbind**
+    the flags apply to the top mount only.
 
 **timeout**
 :   Idle timeout in whole seconds. **0**, the default, means "never

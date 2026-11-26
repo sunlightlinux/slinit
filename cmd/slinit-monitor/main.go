@@ -303,16 +303,7 @@ func eventToText(evt uint8, cfg config) string {
 }
 
 func executeCommand(cmdTemplate, name, status, value string) {
-	// Perform substitutions
-	cmd := cmdTemplate
-	cmd = strings.ReplaceAll(cmd, "%%", "\x00") // preserve %%
-	cmd = strings.ReplaceAll(cmd, "%n", name)
-	cmd = strings.ReplaceAll(cmd, "%s", status)
-	cmd = strings.ReplaceAll(cmd, "%v", value)
-	cmd = strings.ReplaceAll(cmd, "\x00", "%") // restore %%
-
-	// Split command
-	parts := splitCommand(cmd)
+	parts := commandArgv(cmdTemplate, name, status, value)
 	if len(parts) == 0 {
 		return
 	}
@@ -323,6 +314,51 @@ func executeCommand(cmdTemplate, name, status, value string) {
 	if err := c.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-monitor: command failed: %v\n", err)
 	}
+}
+
+// commandArgv splits the command template into arguments first and only
+// then substitutes %n, %s and %v inside each argument, like dinit-monitor.
+// A substituted value therefore always stays within the single argument it
+// was referenced from (spaces and quotes in it are not re-parsed), and
+// substituted text is never itself scanned for further specifiers.
+func commandArgv(cmdTemplate, name, status, value string) []string {
+	parts := splitCommand(cmdTemplate)
+	for i, p := range parts {
+		parts[i] = substituteArg(p, name, status, value)
+	}
+	return parts
+}
+
+// substituteArg expands the % specifiers of one argument in a single
+// left-to-right pass: %n → name, %s → status, %v → value, %% → %.
+// An unknown specifier, or a trailing lone %, is kept as written.
+func substituteArg(arg, name, status, value string) string {
+	if !strings.Contains(arg, "%") {
+		return arg
+	}
+	var b strings.Builder
+	for i := 0; i < len(arg); i++ {
+		ch := arg[i]
+		if ch != '%' || i+1 >= len(arg) {
+			b.WriteByte(ch)
+			continue
+		}
+		i++
+		switch arg[i] {
+		case 'n':
+			b.WriteString(name)
+		case 's':
+			b.WriteString(status)
+		case 'v':
+			b.WriteString(value)
+		case '%':
+			b.WriteByte('%')
+		default:
+			b.WriteByte('%')
+			b.WriteByte(arg[i])
+		}
+	}
+	return b.String()
 }
 
 // splitCommand splits a command string on whitespace, respecting quoted strings.

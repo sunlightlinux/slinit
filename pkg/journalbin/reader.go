@@ -23,7 +23,22 @@ type Reader struct {
 	f        *os.File
 	header   *Header
 	fileSize uint64
+
+	// During Iter, every DATA payload of at least sharedPayloadMin
+	// bytes is read once and shared by the events of every entry that
+	// names it; sharedLeft is how many more such bytes may be read.
+	shared     map[uint64]string
+	sharedLeft uint64
 }
+
+// sharedPayloadMin is the smallest DATA payload Iter shares between
+// entries. Any number of entries may name one DATA object, and each
+// used to get its own copy: 2000 tiny entries naming one 64 KiB payload
+// made a 225 KB file hand back 124 MiB, all of it kept by
+// slinit-journalctl --file. A smaller payload costs at most
+// sharedPayloadMin/16 times the 16-byte item that names it, so it is
+// copied, keeping Iter's memory off payloads no entry repeats.
+const sharedPayloadMin = 256
 
 // OpenReader opens path read-only and validates the header. Returns
 // an error if the file is missing, unreadable, has bad magic, or
@@ -196,6 +211,9 @@ func (r *Reader) Iter(fn func(*journal.Event) bool) error {
 	// systemd's sd_journal_next does with a static-file view.
 	fileSize := r.fileSize
 
+	r.shared, r.sharedLeft = map[uint64]string{}, fileSize
+	defer func() { r.shared = nil }()
+
 	off := uint64(HeaderSize)
 	for off < fileSize {
 		hdrBuf := make([]byte, ObjectHeaderSize)
@@ -255,7 +273,7 @@ func (r *Reader) Iter(fn func(*journal.Event) bool) error {
 // offset and re-parses the KEY=value payload back into
 // journal.Event fields.
 func (r *Reader) readEntryAt(off, size uint64) (*journal.Event, error) {
-	if size < ObjectHeaderSize+8+8+8+16+8 {
+	if size < minEntryObjectSize {
 		return nil, fmt.Errorf("journalbin: entry at %d size %d too small for fixed part", off, size)
 	}
 	body := make([]byte, size)
@@ -305,7 +323,7 @@ func (r *Reader) readEntryAt(off, size uint64) (*journal.Event, error) {
 			continue
 		}
 		applied[dataOff] = struct{}{}
-		payload, err := r.readDataPayloadAt(dataOff)
+		payload, err := r.dataPayload(dataOff)
 		if err != nil {
 			return nil, err
 		}
@@ -327,6 +345,32 @@ func (r *Reader) readEntryAt(off, size uint64) (*journal.Event, error) {
 	}
 	evt.Fields["_SEQNUM"] = strconv.FormatUint(seqnum, 10)
 	return evt, nil
+}
+
+// dataPayload returns the payload of the DATA object at off, shared
+// with every other entry naming it while Iter runs. The shared payloads
+// are distinct objects, which a writer never overlaps, so they may not
+// add up to more than the file: DATA headers planted every 16 bytes
+// inside one large payload would otherwise each be read whole.
+func (r *Reader) dataPayload(off uint64) (string, error) {
+	if s, ok := r.shared[off]; ok {
+		return s, nil
+	}
+	payload, err := r.readDataPayloadAt(off)
+	if err != nil {
+		return "", err
+	}
+	s := string(payload)
+	if r.shared == nil || len(s) < sharedPayloadMin {
+		return s, nil
+	}
+	if uint64(len(s)) > r.sharedLeft {
+		return "", fmt.Errorf("journalbin: DATA at %d: payloads read exceed the file size: %w",
+			off, ErrObjectBounds)
+	}
+	r.sharedLeft -= uint64(len(s))
+	r.shared[off] = s
+	return s, nil
 }
 
 // readDataPayloadAt fetches a DATA object at `off` and returns its
@@ -372,27 +416,21 @@ func (r *Reader) readDataPayloadAt(off uint64) ([]byte, error) {
 	return payload, nil
 }
 
-// applyKV takes a "KEY=value" byte slice from a DATA payload and
+// applyKV takes a "KEY=value" string from a DATA payload and
 // writes it back into the correct journal.Event field. Unknown keys
-// land in evt.Fields.
-func applyKV(evt *journal.Event, kv []byte) {
-	eq := -1
-	for i, b := range kv {
-		if b == '=' {
-			eq = i
-			break
-		}
-	}
+// land in evt.Fields. The fields share kv's memory.
+func applyKV(evt *journal.Event, kv string) {
+	eq := strings.IndexByte(kv, '=')
 	if eq < 0 {
 		// Malformed — surface as freeform.
 		if evt.Fields == nil {
 			evt.Fields = map[string]string{}
 		}
-		evt.Fields[string(kv)] = ""
+		evt.Fields[kv] = ""
 		return
 	}
-	key := string(kv[:eq])
-	value := string(kv[eq+1:])
+	key := kv[:eq]
+	value := kv[eq+1:]
 	switch key {
 	case "MESSAGE":
 		evt.Msg = value

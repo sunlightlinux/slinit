@@ -102,14 +102,25 @@ else
     echo "OK: missing mountpoint yields non-zero exit"
 fi
 
-# EINFO_QUIET suppresses output but keeps the exit code.
-out=$(EINFO_QUIET=yes slinit-fstabinfo --file "$FSTAB" --blockdevice /home 2>&1)
+# -q suppresses output but keeps the exit code.
+out=$(slinit-fstabinfo -q --file "$FSTAB" --blockdevice /home 2>&1)
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -z "$out" ]; then
-    echo "OK: EINFO_QUIET suppresses stdout"
+    echo "OK: -q suppresses stdout"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: EINFO_QUIET leaked: $out"
+    echo "FAIL: -q leaked: $out"
+fi
+
+# An inherited EINFO_QUIET is ignored, as OpenRC's fstabinfo unsets it:
+# in a quiet boot \$(fstabinfo ...) must still answer.
+out=$(EINFO_QUIET=yes slinit-fstabinfo --file "$FSTAB" --blockdevice /home 2>&1)
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ -n "$out" ]; then
+    echo "OK: inherited EINFO_QUIET ignored ($out)"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: inherited EINFO_QUIET silenced fstabinfo"
 fi
 
 rm -f "$FSTAB"

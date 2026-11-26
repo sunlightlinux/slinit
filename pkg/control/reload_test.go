@@ -317,3 +317,45 @@ func TestReloadAllPartialFailure(t *testing.T) {
 		t.Errorf("expected 1 ok / 1 failed, got ok=%d failed=%d", ok, failed)
 	}
 }
+
+// A reload through a handle whose service has been unloaded meanwhile (an
+// unload that won the race against this client's find, or a reload-all
+// working from its snapshot) must not put the name back. With a type
+// change, the reload used to ReplaceService the detached object, and the
+// set held the name again, as a record no dependent was linked to.
+func TestReloadDoesNotResurrectUnloaded(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svcDir := t.TempDir()
+	loader := config.NewDirLoader(server.services, []string{svcDir})
+	server.services.SetLoader(loader)
+	path := filepath.Join(svcDir, "gone-svc")
+	if err := os.WriteFile(path, []byte("type = internal\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loader.LoadService("gone-svc"); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	handle := findHandle(t, conn, "gone-svc")
+
+	// The unload that won the race: past the gate, the handle still out.
+	svc := server.services.FindService("gone-svc", false)
+	server.services.UnloadService(svc)
+
+	if err := os.WriteFile(path, []byte("type = process\ncommand = /bin/true\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WritePacket(conn, CmdReloadService, EncodeHandle(handle)); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := readReply(t, conn); r != RplyNAK {
+		t.Errorf("reload of an unloaded service: rply=%d, want NAK", r)
+	}
+	if got := server.services.FindService("gone-svc", true); got != nil {
+		t.Errorf("reload brought the unloaded service back as %T", got)
+	}
+}

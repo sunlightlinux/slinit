@@ -271,6 +271,71 @@ func (g *guardedSink) CurrentDir() string {
 	return g.currentDir
 }
 
+// sinkFactory builds the sink for a journal directory from the flags,
+// at startup and at each flush / relinquish swap.
+type sinkFactory struct {
+	volatileDir string
+	vacuum      journald.VacuumOptions
+	fileOpts    journald.FileSinkOptions
+	compress    bool               // jsonl only
+	fssKey      *journalbin.FSSKey // binary only
+	tagEvery    int                // binary only
+}
+
+// vacuumHook prunes dir, the directory the sink was actually opened in;
+// the volatile one gets caps scaled to its filesystem, as systemd's
+// RuntimeMaxUse= and RuntimeKeepFree= are.
+func (f sinkFactory) vacuumHook(dir string) func(string, string) {
+	opts := f.vacuum
+	if dir == f.volatileDir {
+		opts = journald.RuntimeVacuumOptions(dir, opts)
+	}
+	return journald.VacuumingHook(dir, opts)
+}
+
+// jsonl opens a FileSink at target, or at the volatile dir when target
+// is unwritable. The third return is nil on a degraded open; the
+// caller compares the returned dir with target to tell.
+func (f sinkFactory) jsonl(target string) (journald.Sink, string, error) {
+	fs, actualDir, degraded := journald.OpenWithFallback(target, f.volatileDir, func(dir string) (*journald.FileSink, error) {
+		var hooks []func(string, string)
+		if f.compress {
+			hooks = append(hooks, journald.CompressingRotationHook())
+		}
+		hooks = append(hooks, f.vacuumHook(dir))
+		opts := f.fileOpts
+		opts.RotatedHook = journald.ChainHooks(hooks...)
+		return journald.NewFileSinkWithOptions(dir, opts)
+	})
+	if fs == nil {
+		return nil, "", degraded
+	}
+	return fs, actualDir, nil
+}
+
+// binary opens a BinarySink at target, or at the volatile dir when
+// target is unwritable, as jsonl does: a read-only or full /var at
+// start-up must not stop the journal.
+func (f sinkFactory) binary(target string) (journald.Sink, string, error) {
+	bs, actualDir, degraded := journald.OpenWithFallback(target, f.volatileDir, func(dir string) (*journald.BinarySink, error) {
+		return journald.NewBinarySink(journald.BinarySinkOptions{
+			Dir:         dir,
+			FsyncEvery:  f.fileOpts.FsyncEvery,
+			MaxSize:     f.fileOpts.MaxSize,
+			MaxAge:      f.fileOpts.MaxAge,
+			FSSKey:      f.fssKey,
+			TagEvery:    f.tagEvery,
+			BootID:      journal.BootID(),
+			MachineID:   journal.MachineID(),
+			RotatedHook: f.vacuumHook(dir),
+		})
+	})
+	if bs == nil {
+		return nil, "", degraded
+	}
+	return bs, actualDir, nil
+}
+
 // version is stamped at build time via `-X main.version=vX.Y.Z`.
 var version = "dev"
 
@@ -354,27 +419,18 @@ Flags:
 				MaxAge:       *vacuumAge,
 				Suffixes:     []string{".jsonl", ".jsonl.gz"},
 			}
-			// factory closure: called at initial open and at each
-			// SIGRTMIN swap to build a sink for the requested dir.
-			// The hook chain uses the target dir so vacuum after a
-			// swap prunes files under the NEW location, not the old.
-			jsonlFactory := func(target string) (journald.Sink, string, error) {
-				var hooks []func(string, string)
-				if *compress {
-					hooks = append(hooks, journald.CompressingRotationHook())
-				}
-				hooks = append(hooks, journald.VacuumingHook(target, vacOpts))
-				fs, actualDir, degraded := journald.OpenFileSinkWithFallback(target, *volatileDir, journald.FileSinkOptions{
-					FsyncEvery:  *fsyncEvery,
-					MaxSize:     *maxSize,
-					MaxAge:      *maxAge,
-					RotatedHook: journald.ChainHooks(hooks...),
-				})
-				if fs == nil {
-					return nil, "", degraded
-				}
-				return fs, actualDir, nil
-			}
+			// factory: called at initial open and at each flush /
+			// relinquish swap to build a sink for the requested dir.
+			jsonlFactory := sinkFactory{
+				volatileDir: *volatileDir,
+				vacuum:      vacOpts,
+				fileOpts: journald.FileSinkOptions{
+					FsyncEvery: *fsyncEvery,
+					MaxSize:    *maxSize,
+					MaxAge:     *maxAge,
+				},
+				compress: *compress,
+			}.jsonl
 			fs, actualDir, err := jsonlFactory(*dir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-journald: %v\n", err)
@@ -422,27 +478,26 @@ Flags:
 				MaxAge:       *vacuumAge,
 				Suffixes:     []string{".journal"},
 			}
-			binaryFactory := func(target string) (journald.Sink, string, error) {
-				bs, err := journald.NewBinarySink(journald.BinarySinkOptions{
-					Dir:         target,
-					FsyncEvery:  *fsyncEvery,
-					MaxSize:     *maxSize,
-					MaxAge:      *maxAge,
-					FSSKey:      fssKey,
-					TagEvery:    *fssTagEvery,
-					BootID:      journal.BootID(),
-					MachineID:   journal.MachineID(),
-					RotatedHook: journald.VacuumingHook(target, binVacOpts),
-				})
-				if err != nil {
-					return nil, "", err
-				}
-				return bs, target, nil
-			}
+			binaryFactory := sinkFactory{
+				volatileDir: *volatileDir,
+				vacuum:      binVacOpts,
+				fileOpts: journald.FileSinkOptions{
+					FsyncEvery: *fsyncEvery,
+					MaxSize:    *maxSize,
+					MaxAge:     *maxAge,
+				},
+				fssKey:   fssKey,
+				tagEvery: *fssTagEvery,
+			}.binary
 			bs, actualDir, err := binaryFactory(*dir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-journald: binary sink: %v\n", err)
 				os.Exit(1)
+			}
+			if actualDir != *dir {
+				fmt.Fprintf(os.Stderr,
+					"slinit-journald: WARN primary %s unwritable, degraded to volatile %s (tmpfs)\n",
+					*dir, actualDir)
 			}
 			guarded = &guardedSink{
 				inner:       bs,
@@ -594,31 +649,25 @@ Flags:
 // Unrecognised commands are logged and ignored. The socket is
 // removed on daemon exit via the caller's defer.
 func runAdminSocket(path string, g *guardedSink) {
-	// Best-effort unlink any leftover from a previous run.
-	_ = os.Remove(path)
-	addr, err := net.ResolveUnixAddr("unixgram", path)
+	conn, err := listenAdminSocket(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "slinit-journald: admin socket resolve %s: %v\n", path, err)
-		return
-	}
-	conn, err := net.ListenUnixgram("unixgram", addr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "slinit-journald: admin socket bind %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "slinit-journald: %v\n", err)
 		return
 	}
 	defer conn.Close()
-	// Loosen perms so a non-root operator running `slinit-journalctl
-	// --flush` can send commands. Datagram content is trusted by
-	// design — same trust boundary as SIGUSR1/2 via kill().
-	_ = os.Chmod(path, 0o666)
 	fmt.Fprintf(os.Stderr, "slinit-journald: admin socket listening on %s\n", path)
 
 	buf := make([]byte, 128)
+	oob := make([]byte, syscall.CmsgSpace(syscall.SizeofUcred))
 	for {
-		n, _, err := conn.ReadFrom(buf)
+		n, uid, err := readAdminDatagram(conn, buf, oob)
 		if err != nil {
 			// Socket closed on shutdown — exit quietly.
 			return
+		}
+		if !adminSenderAllowed(uid) {
+			fmt.Fprintf(os.Stderr, "slinit-journald: admin: refused command from uid %d\n", uid)
+			continue
 		}
 		cmd := strings.TrimSpace(string(buf[:n]))
 		switch cmd {
@@ -638,6 +687,69 @@ func runAdminSocket(path string, g *guardedSink) {
 			fmt.Fprintf(os.Stderr, "slinit-journald: admin: unknown command %q\n", cmd)
 		}
 	}
+}
+
+// listenAdminSocket binds the admin socket readable and writable by its
+// owner only, with SO_PASSCRED on so every command carries its sender's
+// credentials. Both flush and relinquish-var move the journal between
+// /var and tmpfs, so only root may send them: these are the commands
+// journalctl --flush and --relinquish-var send, and systemd-journald
+// takes them from root alone.
+func listenAdminSocket(path string) (*net.UnixConn, error) {
+	// Best-effort unlink any leftover from a previous run.
+	_ = os.Remove(path)
+	addr, err := net.ResolveUnixAddr("unixgram", path)
+	if err != nil {
+		return nil, fmt.Errorf("admin socket resolve %s: %w", path, err)
+	}
+	conn, err := net.ListenUnixgram("unixgram", addr)
+	if err != nil {
+		return nil, fmt.Errorf("admin socket bind %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("admin socket chmod %s: %w", path, err)
+	}
+	rc, err := conn.SyscallConn()
+	if err == nil {
+		cerr := rc.Control(func(fd uintptr) {
+			err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PASSCRED, 1)
+		})
+		if cerr != nil {
+			err = cerr
+		}
+	}
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("admin socket SO_PASSCRED %s: %w", path, err)
+	}
+	return conn, nil
+}
+
+// readAdminDatagram reads one command and the uid the kernel stamped on
+// it. A datagram without credentials is an error, never a pass.
+func readAdminDatagram(conn *net.UnixConn, buf, oob []byte) (int, uint32, error) {
+	for {
+		n, oobn, _, _, err := conn.ReadMsgUnix(buf, oob)
+		if err != nil {
+			return 0, 0, err
+		}
+		msgs, err := syscall.ParseSocketControlMessage(oob[:oobn])
+		if err == nil {
+			for i := range msgs {
+				if cred, err := syscall.ParseUnixCredentials(&msgs[i]); err == nil {
+					return n, cred.Uid, nil
+				}
+			}
+		}
+		fmt.Fprintln(os.Stderr, "slinit-journald: admin: dropped a command without credentials")
+	}
+}
+
+// adminSenderAllowed: root, or the uid journald itself runs as (which
+// already owns the journal files).
+func adminSenderAllowed(uid uint32) bool {
+	return uid == 0 || uid == uint32(os.Geteuid())
 }
 
 func replayBacklog(sockPath string, sink journald.Sink) (int, error) {

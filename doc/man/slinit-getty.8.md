@@ -24,8 +24,14 @@ supporting the classic getty argument shape (any existing
 
 1. **setsid**(2) — leave the calling session so the tty becomes
    an unclaimed controlling terminal.
-2. Open *TTY* as *O_RDWR|O_NOCTTY* and **dup2**(2) it as fd
-   0/1/2.
+2. Open *TTY* as *O_RDWR|O_NOCTTY* and reclaim it from the previous
+   session, as **agetty**(8) does: **fchown**(2) to root and the *tty*
+   group, **fchmod**(2) to 0620 (0600 when there is no *tty* group),
+   then **vhangup**(2), which revokes every descriptor a leftover
+   process of the last user still holds, and open it again. *SIGHUP*
+   is ignored around the hangup so it does not end slinit-getty itself.
+   Failures (not root, read-only */dev*) are reported on stderr and the
+   prompt still appears. Then **dup2**(2) it as fd 0/1/2.
 3. **ioctl**(2) *TIOCSCTTY* to claim it as the process's
    controlling terminal (`force=1` to steal from a prior owner
    like slinit's own **setctty**).
@@ -95,11 +101,17 @@ verbatim so operator-authored ANSI sequences survive.
 # LOGIN BINARY FALLBACK
 
 If none of */bin/login*, */sbin/login*, */usr/bin/login* exist
-or are executable, slinit-getty logs an error and drops to a
-rescue shell — */sbin/sulogin* → */bin/sulogin* → */bin/sh*.
-Matches finit's fallback chain (`_PATH_LOGIN → _PATH_SULOGIN →
-_PATH_BSHELL`). An operator without a proper login binary still
-gets an interactive prompt instead of a boot-time hang.
+or are executable, or the **execve** of the one found fails (for
+example *ETXTBSY* while a package upgrade replaces it, or *ENOMEM*),
+slinit-getty logs why and runs **sulogin**(8) — */sbin/sulogin* →
+*/bin/sulogin* → */usr/sbin/sulogin* — which asks for the root
+password. With no sulogin either it exits with status 1, so its
+supervisor respawns it.
+
+finit's chain ends in */bin/sh* (`_PATH_LOGIN → _PATH_SULOGIN →
+_PATH_BSHELL`), and so did slinit-getty's before this release: a
+login that failed to exec gave whoever was at the terminal a root
+shell without a password. There is no option to bring that back.
 
 # EXAMPLES
 
@@ -107,6 +119,7 @@ Serial console on ttyS0 at 115200 baud, as the service description
 */etc/slinit.d/tty-serial*:
 
     type = process
+    new-session = yes
     command = /sbin/slinit-getty ttyS0 115200 vt100
     restart = yes
     restart-limit-count = 0
@@ -115,21 +128,28 @@ Virtual terminal on tty1, as */etc/slinit.d/tty-vt1* (no baud rate
 needed on a VT):
 
     type = process
+    new-session = yes
     command = /sbin/slinit-getty tty1
     restart = yes
     restart-limit-count = 0
 
+**new-session = yes** matters: slinit otherwise starts a service as a
+process-group leader, which cannot create a session, so the tty cannot
+become the controlling terminal of slinit-getty and of the login it
+runs (no job control, no Ctrl-C to the shell's foreground job).
+slinit-getty warns when it finds itself in that situation.
+
 # EXIT STATUS
 
 **0**
-:   **execve** of the login binary or rescue shell succeeded
+:   **execve** of the login binary or of sulogin succeeded
     (this process was replaced — exit status is that of the
     successor).
 
 **1**
 :   No *TTY* argument, the terminal could not be opened or
     duplicated, reading the username failed (for example end of file),
-    or neither a login binary nor a rescue shell could be executed.
+    or neither a login binary nor sulogin could be executed.
 
 **2**
 :   Unknown option.

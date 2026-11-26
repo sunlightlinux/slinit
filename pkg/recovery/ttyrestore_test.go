@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -92,5 +93,28 @@ func TestDebuggerStopRestoresWhenAlone(t *testing.T) {
 	d.Stop()
 	if got := lflag(t, s); got != before {
 		t.Errorf("lflag = %#x after Stop, want %#x", got, before)
+	}
+}
+
+// Stop runs under the scheduling lock on every default boot (the console
+// service detaches the debugger from BringUp). Closing the tty does not
+// wake a poll(2) already parked on it, so Stop used to wait for the
+// reader's next 200ms poll tick before it could return.
+func TestDebuggerStopIsPrompt(t *testing.T) {
+	_, path := openPty(t)
+	for i := 0; i < 3; i++ {
+		d := NewDebugger(DebuggerOptions{
+			ConsolePath: path,
+			StatusFn:    func() StatusSnapshot { return StatusSnapshot{} },
+		})
+		if err := d.Start(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(30 * time.Millisecond) // let the reader park in poll
+		start := time.Now()
+		d.Stop()
+		if took := time.Since(start); took > 20*time.Millisecond {
+			t.Errorf("Stop took %v, want under 20ms", took)
+		}
 	}
 }

@@ -26,13 +26,15 @@ result=$(cat /var/tmp/sandbox-ext-rw/probe-result 2>/dev/null)
 
 # Pull out each field. Using `expr` keeps the test POSIX-portable.
 opt=$(echo "$result" | sed -n 's/.*opt=\([^ ]*\).*/\1/p')
-home=$(echo "$result" | sed -n 's/.*home=\([^ ]*\).*/\1/p')
+home=$(echo "$result" | sed -n 's/.* home=\([^ ]*\).*/\1/p')
+hempty=$(echo "$result" | sed -n 's/.*hempty=\([^ ]*\).*/\1/p')
 scratch=$(echo "$result" | sed -n 's/.*scratch=\([^ ]*\).*/\1/p')
 
 [ -f /opt/sandbox-ext-marker ] && host_opt=present || host_opt=absent
 assert_eq "$host_opt" "present" "the /opt marker exists on the host (the probe has something to hide)"
 assert_eq "$opt" "hidden" "inaccessible-paths hides /opt content"
-assert_eq "$home" "writable" "protect-home=tmpfs gives writable empty /home"
+assert_eq "$home" "blocked" "protect-home=tmpfs gives a read-only /home (as systemd does)"
+assert_eq "$hempty" "yes" "protect-home=tmpfs hides the host's /home contents"
 assert_eq "$scratch" "writable" "temporary-filesystem mounts writable tmpfs"
 
 # The home probe must NOT leak to the host.

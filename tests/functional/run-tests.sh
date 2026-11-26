@@ -53,6 +53,49 @@ check_prereqs() {
     fi
 }
 
+# harness_skip NAME REASON — a case the host cannot boot as asked (no
+# OVMF, no lts kernel). Reported like a guest-side skip_case, reason
+# included, and never as a pass.
+harness_skip() {
+    log_skip "$1"
+    echo "    SKIP: $2"
+    SKIPPED=$((SKIPPED + 1))
+}
+
+# find_ovmf — set OVMF_CODE and OVMF_VARS to a raw, non-secure-boot,
+# non-SMM OVMF pair. SLINIT_OVMF_CODE/SLINIT_OVMF_VARS override; then
+# the paths distributions install to (openSUSE, Debian/Ubuntu, Fedora,
+# Arch, Gentoo). Secure-boot and SMM builds are left out on purpose:
+# they need -machine q35,smm=on and a different boot than the rest of
+# the suite.
+find_ovmf() {
+    if [ -n "${SLINIT_OVMF_CODE:-}" ] && [ -n "${SLINIT_OVMF_VARS:-}" ]; then
+        OVMF_CODE="${SLINIT_OVMF_CODE}"
+        OVMF_VARS="${SLINIT_OVMF_VARS}"
+        [ -r "${OVMF_CODE}" ] && [ -r "${OVMF_VARS}" ]
+        return
+    fi
+    local pair
+    for pair in \
+        /usr/share/qemu/ovmf-x86_64-4m-code.bin:/usr/share/qemu/ovmf-x86_64-4m-vars.bin \
+        /usr/share/qemu/ovmf-x86_64-code.bin:/usr/share/qemu/ovmf-x86_64-vars.bin \
+        /usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd \
+        /usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd \
+        /usr/share/edk2/ovmf/OVMF_CODE.fd:/usr/share/edk2/ovmf/OVMF_VARS.fd \
+        /usr/share/edk2/x64/OVMF_CODE.4m.fd:/usr/share/edk2/x64/OVMF_VARS.4m.fd \
+        /usr/share/edk2/x64/OVMF_CODE.fd:/usr/share/edk2/x64/OVMF_VARS.fd \
+        /usr/share/edk2-ovmf/x64/OVMF_CODE.fd:/usr/share/edk2-ovmf/x64/OVMF_VARS.fd \
+        /usr/share/edk2-ovmf/OVMF_CODE.fd:/usr/share/edk2-ovmf/OVMF_VARS.fd
+    do
+        if [ -r "${pair%%:*}" ] && [ -r "${pair#*:}" ]; then
+            OVMF_CODE="${pair%%:*}"
+            OVMF_VARS="${pair#*:}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Build the base VM image (once).
 #
 # Staleness check: rebuild if anything under cmd/ or pkg/ is newer than
@@ -210,9 +253,72 @@ SVC
         rm -f "${overlay_dir}/etc/slinit.d/kernel-args"
     fi
 
+    # A different kernel, by flavour: `lts` for 126, which needs
+    # CONFIG_NUMA, and linux-virt is built without it. build-vm.sh fetches
+    # vmlinuz-lts (pinned) next to vmlinuz-virt; when it could not, the
+    # case is reported SKIP here with the reason, not booted on the wrong
+    # kernel to skip less legibly inside.
+    #
+    # Only virt has virtio built in — lts makes it modules, and the image
+    # carries none for it — so any other kernel gets the result channel
+    # on a second UART (ttyS1) instead of virtio-serial, and is told so on
+    # its command line; guest-runner.sh reads it from /proc/cmdline.
+    local kernel_flavor="virt"
+    if [ -f "${services_dir}/kernel" ]; then
+        kernel_flavor=$(grep -v '^#' "${services_dir}/kernel" | tr -d ' \t\n')
+        rm -f "${overlay_dir}/etc/slinit.d/kernel"
+    fi
+    local kernel_image="${OUTPUT_DIR}/vmlinuz-${kernel_flavor}"
+    if [ ! -f "${kernel_image}" ]; then
+        harness_skip "${test_name}" "kernel '${kernel_flavor}' not built (build-vm.sh could not fetch vmlinuz-${kernel_flavor})"
+        return 0
+    fi
+    local result_args="-device virtio-serial -device virtserialport,chardev=testresult,name=test.0"
+    if [ "${kernel_flavor}" != "virt" ]; then
+        result_args="-device isa-serial,chardev=testresult,index=1"
+        extra_kernel_args="${extra_kernel_args} slinit_test.result=/dev/ttyS1"
+    fi
+
+    # Firmware: SeaBIOS unless the case asks for `efi`, which boots OVMF
+    # (still with -kernel: OVMF hands the kernel over through fw_cfg and
+    # the EFI stub). Not the default, though not for speed: measured on
+    # 01-boot-starts, OVMF was 2.4 s faster per case under KVM (6.6 s
+    # against 9.0 s; SeaBIOS is slow to load the 39 MB initrd) and 1.7 s
+    # slower under TCG, which is what CI runs (15.8 s against 14.0 s).
+    # Switching every case's firmware is a change of platform for 277
+    # cases written against SeaBIOS, and one case needs it. The variable
+    # store is a per-run copy; the system's file is only ever read.
+    local firmware_args=""
+    if [ -f "${services_dir}/firmware" ]; then
+        local firmware
+        firmware=$(grep -v '^#' "${services_dir}/firmware" | tr -d ' \t\n')
+        rm -f "${overlay_dir}/etc/slinit.d/firmware"
+        case "${firmware}" in
+            bios|"") ;;
+            efi)
+                if ! find_ovmf; then
+                    harness_skip "${test_name}" "no OVMF firmware found (install edk2-ovmf/ovmf, or set SLINIT_OVMF_CODE and SLINIT_OVMF_VARS)"
+                    return 0
+                fi
+                cp "${OVMF_VARS}" "${test_dir}/efivars.fd"
+                chmod u+w "${test_dir}/efivars.fd"
+                firmware_args="-drive if=pflash,format=raw,unit=0,readonly=on,file=${OVMF_CODE} -drive if=pflash,format=raw,unit=1,file=${test_dir}/efivars.fd"
+                ;;
+            *)
+                log_fail "${test_name} (unknown firmware '${firmware}' in ${test_name}.d/firmware)"
+                FAILED=$((FAILED + 1))
+                return 1
+                ;;
+        esac
+    fi
+
     # Create the overlay cpio and concatenate with base
     local overlay_cpio="${test_dir}/overlay.cpio.gz"
-    (cd "${overlay_dir}" && find . | cpio -o -H newc 2>/dev/null | gzip) > "${overlay_cpio}"
+    # -R 0:0 as for the base image: the overlay's "." entry otherwise
+    # makes the guest's / owned by the uid that built it, which a real
+    # system never has, and slinit-tmpfiles' safe path resolution
+    # rightly refuses to step from a user's / into root's /tmp.
+    (cd "${overlay_dir}" && find . | cpio -o -H newc -R 0:0 2>/dev/null | gzip) > "${overlay_cpio}"
 
     # Concatenate base + overlay (cpio archives are appendable)
     cat "${OUTPUT_DIR}/initramfs-base.cpio.gz" "${overlay_cpio}" > "${test_dir}/initramfs.cpio.gz"
@@ -234,20 +340,26 @@ SVC
         kvm_args="-enable-kvm -cpu host"
     fi
 
-    # Launch QEMU in background
+    # Launch QEMU in background.
+    #
+    # -m 384, not 256: the initramfs is unpacked into RAM next to the
+    # compressed copy, and at 256 MB the base image had about 3 MB of
+    # headroom. Adding slinit-mount (3.4 MB) tipped it over: "Initramfs
+    # unpacking failed: write error", the case's overlay never landed and
+    # every case failed with "service 'boot' not found".
     qemu-system-x86_64 \
         ${kvm_args} \
-        -kernel "${OUTPUT_DIR}/vmlinuz-virt" \
+        -kernel "${kernel_image}" \
         -initrd "${test_dir}/initramfs.cpio.gz" \
         -append "console=ttyS0 rdinit=/sbin/init loglevel=3 quiet ${extra_kernel_args}" \
-        -m 256 \
+        -m 384 \
+        ${firmware_args} \
         ${extra_qemu_args} \
         -nographic \
         -no-reboot \
         -serial file:"${console_log}" \
-        -device virtio-serial \
         -chardev socket,id=testresult,path="${chardev_path}",server=on,wait=off \
-        -device virtserialport,chardev=testresult,name=test.0 \
+        ${result_args} \
         &>"${test_dir}/qemu-stderr.log" &
     local qemu_pid=$!
 
@@ -317,7 +429,9 @@ SVC
     fi
 
     local result_line
-    result_line=$(grep "^TEST_RESULT:" "${result_file}" | tail -1)
+    # tr: a UART result channel (non-virt kernels) is a tty; the guest
+    # sets it raw, and a stray CR must still not turn PASS into FAIL.
+    result_line=$(grep "^TEST_RESULT:" "${result_file}" | tail -1 | tr -d '\r')
 
     if [ "${VERBOSE:-0}" = "1" ]; then
         echo "    --- test output ---"

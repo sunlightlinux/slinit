@@ -1300,30 +1300,9 @@ func main() {
 		}
 	}
 
-	// Enable init.d fallback (auto-detect SysV init scripts)
-	var initDDirs []string
-	for _, d := range config.DefaultInitDDirs {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			initDDirs = append(initDDirs, d)
-		}
-	}
-	if len(initDDirs) > 0 {
-		loader.SetInitDDirs(initDDirs)
-	}
-
-	// Enable systemd .service fallback. Searched last, after native
-	// descriptions and init.d scripts, and only for a name something
-	// already asked for — a unit directory is never enumerated, so
-	// nothing is pulled into the boot graph just by being installed.
-	var systemdDirs []string
-	for _, d := range config.DefaultSystemdDirs {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			systemdDirs = append(systemdDirs, d)
-		}
-	}
-	if len(systemdDirs) > 0 {
-		loader.SetSystemdDirs(systemdDirs)
-	}
+	// init.d and systemd .service fallbacks (slinit-check sets up the
+	// same, so it judges a configuration as this loader will).
+	loader.EnableDefaultFallbackDirs()
 
 	serviceSet.SetLoader(loader)
 
@@ -1340,13 +1319,20 @@ func main() {
 		go pathWatcher.Run()
 		defer pathWatcher.Close()
 
+		// The rearm listener each loaded record carries, so the unloaded
+		// hook can take it off again: a reload reports the record
+		// unloaded and then loaded, and a second listener would re-arm
+		// the watch twice per stop.
+		var pathRearmsMu sync.Mutex
+		pathRearms := make(map[service.Service]*pathRearmListener)
+
 		serviceSet.OnServiceLoaded = func(svc service.Service) {
 			path, trig := svc.Record().StartOnPath()
 			if path == "" || trig == 0 {
 				return
 			}
 			kind := pathwatch.Trigger(trig)
-			s := svc
+			name := svc.Name()
 			if err := pathWatcher.Add(path, kind, func() {
 				// The whole body goes on a goroutine, not just the
 				// start. pathwatch calls fire() -> fn() synchronously,
@@ -1356,31 +1342,62 @@ func main() {
 				//     OnServiceLoaded hook, for a trigger whose
 				//     condition already holds (a non-empty directory on
 				//     every boot). The load now holds the graph lock.
-				//   * Rearm(), from pathRearmListener.ServiceEvent,
-				//     which the state machine calls under the same lock
-				//     in the process-exit handler. StartService takes
-				//     that lock, so a direct call self-deadlocks the
-				//     moment the trigger path still exists when the
-				//     service stops.
+				//   * Rearm(), from pathRearmListener.ServiceEvent's
+				//     goroutine. It ran under the state machine's lock
+				//     once, and a direct StartService self-deadlocked
+				//     the moment the trigger path still existed when
+				//     the service stopped; nothing should rely on
+				//     where Rearm runs.
 				//   * dispatch(), on the inotify read loop. Anything
 				//     slow here stops events being read at all, so a
 				//     later trigger is simply never seen.
 				go func() {
+					// By name: a reload that changes the type replaces
+					// the record this watch was added for.
+					s := serviceSet.FindService(name, false)
+					if s == nil {
+						return
+					}
 					logger.Info("Service '%s': path activation fired (%s on %s)",
-						s.Name(), kind, path)
+						name, kind, path)
 					serviceSet.StartService(s)
 				}()
 			}); err != nil {
-				logger.Warn("Service '%s': %s disabled: %v", s.Name(), kind, err)
+				logger.Warn("Service '%s': %s disabled: %v", name, kind, err)
 				return
 			}
-			s.Record().AddListener(&pathRearmListener{
-				watcher: pathWatcher, path: path, logger: logger,
-			})
+			l := &pathRearmListener{watcher: pathWatcher, path: path, logger: logger}
+			svc.Record().AddListener(l)
+			pathRearmsMu.Lock()
+			pathRearms[svc] = l
+			pathRearmsMu.Unlock()
 		}
 		serviceSet.OnServiceUnloaded = func(svc service.Service) {
 			if path, _ := svc.Record().StartOnPath(); path != "" {
 				pathWatcher.Remove(path)
+			}
+			pathRearmsMu.Lock()
+			l := pathRearms[svc]
+			delete(pathRearms, svc)
+			pathRearmsMu.Unlock()
+			if l != nil {
+				svc.Record().RemoveListener(l)
+			}
+		}
+		// A type-change reload with the watch unchanged keeps it armed
+		// (the trigger finds the service by name); only the rearm
+		// listener moves to the new record.
+		serviceSet.OnServiceReplaced = func(oldSvc, newSvc service.Service) {
+			pathRearmsMu.Lock()
+			l := pathRearms[oldSvc]
+			delete(pathRearms, oldSvc)
+			if l != nil {
+				pathRearms[newSvc] = l
+			}
+			pathRearmsMu.Unlock()
+			if l != nil {
+				oldSvc.Record().RemoveListener(l)
+				newSvc.Record().AddListener(l)
 			}
 		}
 	}
@@ -1410,20 +1427,26 @@ func main() {
 			if mp == "" {
 				return
 			}
-			s := svc
-			if err := mountWatcher.Add(mp, s.Name(), func() {
+			name := svc.Name()
+			if err := mountWatcher.Add(mp, name, func() {
 				// On a goroutine for the same reason path activation
 				// does it: Add fires synchronously for an already
 				// mounted path, from inside OnServiceLoaded, which the
 				// loader calls holding the dependency-graph lock that
 				// StartService also takes.
 				go func() {
+					// By name, as path activation does: a reload may
+					// have replaced the record.
+					s := serviceSet.FindService(name, false)
+					if s == nil {
+						return
+					}
 					logger.Info("Service '%s': mount activation fired (%s)",
-						s.Name(), mp)
+						name, mp)
 					serviceSet.StartService(s)
 				}()
 			}); err != nil {
-				logger.Warn("Service '%s': start-on-mount disabled: %v", s.Name(), err)
+				logger.Warn("Service '%s': start-on-mount disabled: %v", name, err)
 			}
 		}
 
@@ -1567,16 +1590,9 @@ func main() {
 				}
 				return snap
 			},
-			ForceFailFn: func(name string) error {
-				svc := serviceSet.FindService(name, false)
-				if svc == nil {
-					return fmt.Errorf("service %q not loaded", name)
-				}
-				serviceSet.ForceStopService(svc)
-				return nil
-			},
+			ForceFailFn: debuggerForceFail(serviceSet),
 			RebootFn: func() {
-				closeWatchdog(wd, logger)
+				watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 				shutdown.Execute(service.ShutdownReboot, logger)
 			},
 			PoweroffFn: func() {
@@ -1603,8 +1619,10 @@ func main() {
 			// command). ServiceSet fires this from ProcessService.BringUp
 			// right before the child inherits /dev/console. Stop is
 			// idempotent, so restarts of the tty service (smooth-recovery)
-			// fire it again harmlessly.
-			serviceSet.OnConsoleAcquire = bootDebugger.Stop
+			// fire it again harmlessly. BringUp holds the scheduling
+			// lock, so an open menu is not waited for: StopOrDefer then
+			// detaches once the menu closes (see its doc for the cost).
+			serviceSet.OnConsoleAcquire = bootDebugger.StopOrDefer
 		}
 	}
 
@@ -1632,7 +1650,7 @@ func main() {
 	// system mode — user-mode has no /dev/console concept. Skipped in
 	// rescue mode — no services will be spawned.
 	if isPID1 && systemMode && kOpts.ConfirmSpawn && !rescueMode {
-		serviceSet.OnConfirmSpawn = makeConfirmSpawnPrompt(logger)
+		serviceSet.OnConfirmSpawn = makeConfirmSpawnPrompt(logger, "/dev/console", confirmSpawnTimeout)
 		logger.Notice("confirm-spawn: enabled — will prompt [y/n] before each service start")
 	}
 
@@ -1667,13 +1685,13 @@ func main() {
 			return
 		}
 		if st == service.ShutdownRemain {
-			// Nothing is running to stop, and handlePID1Shutdown would
-			// park PID 1 for good.
+			// Nothing is running to stop, and no event loop to
+			// remain in.
 			logger.Warn("Shutdown (remain) requested with no event loop running; ignored")
 			return
 		}
 		logger.Notice("Carrying out the shutdown (%s) requested over the control socket", st)
-		closeWatchdog(wd, logger)
+		watchdogForShutdown(wd, st, containerMode, logger)
 		switch routeShutdown(st, flags, isPID1, containerMode) {
 		case routeImmediate:
 			shutdown.ExecuteImmediate(st, logger)
@@ -1745,6 +1763,9 @@ func main() {
 				// (services stop in ms) but a hard upper bound
 				// so a wedged service doesn't stall the switch.
 				time.Sleep(3 * time.Second)
+				// A remain keeps the watchdog fed now; the new
+				// init may not, and the exec drops the fd armed.
+				closeWatchdog(wd, logger)
 			})
 		}
 	}
@@ -1888,7 +1909,7 @@ func main() {
 		case recovery.ActionReboot, recovery.ActionTimeout:
 			fallthrough
 		default:
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 		// Unreachable — shutdown.Execute doesn't return on PID 1.
@@ -1961,6 +1982,7 @@ func main() {
 	}
 
 	// Boot loop: runs the event loop, handles boot failures with recovery
+	remaining := false // a shutdown remain has stopped every service
 	for {
 		loop := eventloop.New(serviceSet, logger)
 
@@ -1979,8 +2001,9 @@ func main() {
 			loop.SetPID1Mode(true)
 		}
 		// Rescue/emergency loads no boot services, so the loop must not
-		// read an empty service set as a collapse.
-		loop.SetRescueMode(rescueMode)
+		// read an empty service set as a collapse. Nor, after a remain,
+		// is one.
+		loop.SetRescueMode(rescueMode || remaining)
 
 		// --emergency-timeout override. Zero passes through to the
 		// event loop's built-in default (90s); the setter handles the
@@ -2031,6 +2054,18 @@ func main() {
 		// slinit binary picks this up via --restore-from-snapshot
 		// (appended to argv inside SoftReboot below).
 		loop.OnPreShutdown = func(st service.ShutdownType) {
+			// Snapshot first: the loop stops waiting for this callback
+			// after the emergency timeout, and a snapshot taken after
+			// that would record services half torn down.
+			if st == service.ShutdownSoftReboot {
+				snap := snapshot.Capture(serviceSet)
+				if err := snapshot.Write(snapshot.SoftRebootPath, snap); err != nil {
+					logger.Error("Soft-reboot snapshot write failed: %v", err)
+				} else {
+					logger.Info("Soft-reboot snapshot saved to %s (%d service intents, %d global env vars)",
+						snapshot.SoftRebootPath, len(snap.Services), len(snap.GlobalEnv))
+				}
+			}
 			// finit-parity system-down hook: fires BEFORE the state-
 			// machine teardown, so scripts see the system in a
 			// coherent "still up" state (services running,
@@ -2054,16 +2089,6 @@ func main() {
 			// (fires before the "Shutting down slinit" WARN), so by
 			// now the console tee is already back on.
 			logger.SetShutdownConsole(true)
-			if st != service.ShutdownSoftReboot {
-				return
-			}
-			snap := snapshot.Capture(serviceSet)
-			if err := snapshot.Write(snapshot.SoftRebootPath, snap); err != nil {
-				logger.Error("Soft-reboot snapshot write failed: %v", err)
-				return
-			}
-			logger.Info("Soft-reboot snapshot saved to %s (%d service intents, %d global env vars)",
-				snapshot.SoftRebootPath, len(snap.Services), len(snap.GlobalEnv))
 		}
 
 		// /etc/slinit/shutdown.allow access control: only engage when
@@ -2108,7 +2133,7 @@ func main() {
 				},
 			})
 			if err != nil {
-				logger.Warn("sentinel: disabled (%v)", err)
+				logger.Error("sentinel: disabled (%v)", err)
 			} else {
 				sw.InitialScan()
 				go sw.Run()
@@ -2126,7 +2151,7 @@ func main() {
 		// request. Runs on the first (and only) iteration of the boot
 		// retry loop since rescueMode short-circuits the boot-services
 		// load block above.
-		if rescueMode {
+		if rescueMode && !remaining {
 			if kOpts.Mode == bootmode.Rescue {
 				mountLocalFsBestEffort(logger)
 			}
@@ -2141,7 +2166,9 @@ func main() {
 				// own recover.
 				defer shutdown.CrashRecovery(isPID1, containerMode)
 				runRescueShell(label, logger)
-				loop.InitiateShutdown(service.ShutdownReboot)
+				// Through the gate: after a remain, this loop is
+				// no longer the one running.
+				shutdownGate.Request(service.ShutdownReboot, 0)
 			}()
 		}
 
@@ -2152,13 +2179,13 @@ func main() {
 				// no unmount, and no sync either — whatever is still in
 				// the page cache is gone. The operator asked for it.
 				logger.Warn("Immediate shutdown requested (%s): no sync, unwritten data will be lost", st)
-				closeWatchdog(wd, logger)
+				watchdogForShutdown(wd, st, containerMode, logger)
 				shutdown.ExecuteImmediate(st, logger)
 			case routeForce:
 				// `--fast`: no teardown, no unmount — sync and the
 				// syscall, the same path `reboot -f` takes.
 				logger.Warn("Fast shutdown requested (%s): skipping service teardown", st)
-				closeWatchdog(wd, logger)
+				watchdogForShutdown(wd, st, containerMode, logger)
 				shutdown.ExecuteForce(st, logger)
 			case routeKill:
 				loop.InitiateShutdownKill(st)
@@ -2238,9 +2265,15 @@ func main() {
 			break
 		}
 		if shutdownType != service.ShutdownNone {
-			closeWatchdog(wd, logger)
+			if shutdownType != service.ShutdownRemain {
+				watchdogForShutdown(wd, shutdownType, containerMode, logger)
+			}
 			handlePID1Shutdown(shutdownType, cal, logger)
-			// handlePID1Shutdown does not return
+			// handlePID1Shutdown returns only for a remain: back to an
+			// event loop, as dinit does, with nothing running and the
+			// watchdog still fed.
+			remaining = true
+			continue
 		}
 
 		// Boot failure detected: all services stopped without shutdown
@@ -2254,7 +2287,7 @@ func main() {
 				continue // re-enter boot loop
 			}
 			logger.Error("Failed to start recovery service, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 
@@ -2280,11 +2313,11 @@ func main() {
 			// Not expected: only Take clears the wake. Reboot, as
 			// on a timeout.
 			logger.Error("Collapse menu interrupted with no shutdown held, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapseReboot:
 			logger.Notice("User chose reboot")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapseRecoverySvc:
 			logger.Notice("User chose recovery")
@@ -2293,7 +2326,7 @@ func main() {
 				continue
 			}
 			logger.Error("Failed to start recovery service, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapseRestartBoot:
 			logger.Notice("User chose restart boot sequence")
@@ -2302,7 +2335,7 @@ func main() {
 				continue
 			}
 			logger.Error("Failed to restart boot services, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapsePoweroff:
 			logger.Notice("User chose poweroff")
@@ -2310,13 +2343,32 @@ func main() {
 			shutdown.Execute(service.ShutdownPoweroff, logger)
 		case recovery.CollapseTimeout:
 			logger.Notice("No input within timeout, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 	}
 
 	closeWatchdog(wd, logger)
 	logger.Info("slinit shutdown complete")
+}
+
+// debuggerForceFail is the boot debugger's [f] action. It runs on the
+// menu's goroutine, which holds the debugger's menu lock, and
+// ForceStopService needs the scheduling lock. A service that acquires
+// the console holds the scheduling lock while it detaches the debugger,
+// and that waits for the menu to close: so the stop is handed to its own
+// goroutine. Run inline, [f] deadlocked PID 1 for good, the menu waiting
+// for the scheduling lock and the scheduling lock waiting for the menu.
+// Only the lookup can fail, and that is all the menu reports.
+func debuggerForceFail(set *service.ServiceSet) func(name string) error {
+	return func(name string) error {
+		svc := set.FindService(name, false)
+		if svc == nil {
+			return fmt.Errorf("service %q not loaded", name)
+		}
+		go set.ForceStopService(svc)
+		return nil
+	}
 }
 
 // debuggerStopOnStart wraps recovery.Debugger.Stop into a
@@ -2354,17 +2406,30 @@ type pathRearmListener struct {
 }
 
 func (l *pathRearmListener) ServiceEvent(svc service.Service, event service.ServiceEvent) {
-	if event != service.EventStopped {
-		return
-	}
-	if err := l.watcher.Rearm(l.path); err != nil {
-		l.logger.Warn("Service '%s': path watch re-arm failed: %v", svc.Name(), err)
+	switch event {
+	case service.EventStarted:
+		// A start the watch did not make (the operator's, or a
+		// dependent's) lifts a trigger limit; one it made cannot
+		// follow a refused fire. Lock only, no I/O.
+		l.watcher.ResetLimit(l.path)
+	case service.EventStopped:
+		// Rearm stats, reads and watches the path, and this runs under
+		// the state machine's lock: a path on a hung NFS or FUSE mount
+		// froze every start and stop. Order does not matter: a stale
+		// Rearm at worst fires a start of a running service, a no-op.
+		name := svc.Name()
+		go func() {
+			if err := l.watcher.Rearm(l.path); err != nil {
+				l.logger.Warn("Service '%s': path watch re-arm failed: %v", name, err)
+			}
+		}()
 	}
 }
 
 // handlePID1Shutdown performs the appropriate system action after all services
 // have stopped when running as PID 1. Called only for explicit shutdowns
-// (shutdownType != ShutdownNone). This function does not return.
+// (shutdownType != ShutdownNone). This function does not return, except
+// for ShutdownRemain.
 func handlePID1Shutdown(shutdownType service.ShutdownType, cal *logging.CatchAllLogger, logger *logging.Logger) {
 	switch shutdownType {
 	case service.ShutdownSoftReboot:
@@ -2382,8 +2447,12 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, cal *logging.CatchAll
 		shutdown.Execute(shutdownType, logger)
 
 	case service.ShutdownRemain:
+		// Returns, for main to run an event loop again. Parked here,
+		// PID 1 stopped reaping orphans, its signals went to a channel
+		// nobody read, and a later shutdown request was held for
+		// good: the machine could only be reset.
 		logger.Notice("Shutdown type is REMAIN, staying up with no services")
-		shutdown.InfiniteHold()
+		logger.SetShutdownConsole(false)
 
 	default:
 		logger.Error("Unknown shutdown type: %s, halting", shutdownType)
@@ -2391,24 +2460,34 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, cal *logging.CatchAll
 	}
 }
 
+// confirmSpawnTimeout bounds the wait for an answer. The prompt runs in
+// BringUp with the scheduling lock held, so while it waits nothing else
+// starts or stops and no control command is answered; an unattended
+// console must not hold that for ever. systemd asks from the forked
+// child, outside its manager's loop, so it can wait without a limit;
+// slinit asks from inside its own, so it gives up and proceeds. 30s is
+// systemd's DEFAULT_CONFIRM_USEC, its wait for the terminal itself.
+const confirmSpawnTimeout = 30 * time.Second
+
 // makeConfirmSpawnPrompt returns a hook suitable for
-// ServiceSet.OnConfirmSpawn: opens /dev/console per prompt (avoids
-// holding a fd for the whole boot), writes a [y/n] question, reads one
-// keypress, returns true iff the operator does NOT press n/N. On any
-// error (console unopenable, read fails, etc.) auto-proceeds — the
-// operator asked for interactivity but a broken tty shouldn't wedge
-// the boot forever.
+// ServiceSet.OnConfirmSpawn: opens the console at path per prompt
+// (avoids holding a fd for the whole boot), writes a [y/n] question,
+// waits up to timeout for one keypress, returns true iff the operator
+// does NOT press n/N. No answer in time, or any error
+// (console unopenable, read fails, etc.), auto-proceeds — the operator
+// asked for interactivity but a broken or unattended tty shouldn't
+// wedge the boot forever.
 //
 // Cbreak mode: ICANON off so a single keypress dispatches (no Enter
 // required), ECHO kept on so the operator sees their y/n. TCIFLUSH
 // before the read drops stray input the operator may have accumulated
 // during a slow pre-start-command. Termios is captured + restored per
 // prompt so a failure mid-boot doesn't leave the tty in raw mode.
-func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
+func makeConfirmSpawnPrompt(logger *logging.Logger, path string, timeout time.Duration) func(name string) bool {
 	return func(name string) bool {
-		tty, err := os.OpenFile("/dev/console", os.O_RDWR, 0)
+		tty, err := os.OpenFile(path, os.O_RDWR, 0)
 		if err != nil {
-			logger.Warn("confirm-spawn: open /dev/console: %v; auto-proceeding for %q", err, name)
+			logger.Warn("confirm-spawn: open %s: %v; auto-proceeding for %q", path, err, name)
 			return true
 		}
 		defer tty.Close()
@@ -2432,8 +2511,13 @@ func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
 
 		fmt.Fprintf(tty, "\nconfirm-spawn: start service %q? [Y/n] ", name)
 		buf := make([]byte, 1)
-		n, err := tty.Read(buf)
+		n, err := readByteWithin(fd, buf, timeout)
 		fmt.Fprintln(tty) // cbreak swallows Enter, so print our own line-break
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			logger.Warn("confirm-spawn: no answer for %q within %v, starting it", name, timeout)
+			fmt.Fprintf(tty, "(no answer within %v, defaulting to yes)\n", timeout)
+			return true
+		}
 		if err != nil || n == 0 {
 			fmt.Fprintf(tty, "(no input, defaulting to yes)\n")
 			return true
@@ -2444,6 +2528,33 @@ func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
 			return false
 		}
 		return true
+	}
+}
+
+// readByteWithin reads into buf from fd, waiting at most timeout for
+// input; os.ErrDeadlineExceeded when nothing came. fd is the blocking
+// descriptor os.File.Fd hands out, so the wait is a poll, not a
+// deadline on the file.
+func readByteWithin(fd int, buf []byte, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	for {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return 0, os.ErrDeadlineExceeded
+		}
+		fds[0].Revents = 0
+		n, err := unix.Poll(fds, int(left.Milliseconds())+1)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			continue // re-checks the deadline
+		}
+		return unix.Read(fd, buf)
 	}
 }
 
@@ -3155,6 +3266,35 @@ func closeWatchdog(wd *watchdog.Late, logger *logging.Logger) {
 	}
 	if err := wd.Close(); err != nil {
 		logger.Error("Watchdog close: %v", err)
+	}
+}
+
+// shutdownWatchdogTimeout is how long the hardware watchdog is left
+// armed, and unfed, for the final shutdown of a reboot: systemd's
+// RebootWatchdogSec default.
+const shutdownWatchdogTimeout = 10 * time.Minute
+
+// watchdogForShutdown is closeWatchdog for the final shutdown. A reboot
+// keeps the watchdog armed with shutdownWatchdogTimeout, so a hang in
+// the kill-all, an unmount or the sync resets the machine, which was
+// about to reset anyway, instead of holding it for ever. Every other
+// kind disarms it as before, as systemd does: a halted machine must
+// stay halted, and a kexec'd kernel or a soft-rebooted slinit may not
+// feed it. Nor does a container hand it over: its reboot ends the
+// container, not the machine the device would reset.
+func watchdogForShutdown(wd *watchdog.Late, st service.ShutdownType, containerMode bool, logger *logging.Logger) {
+	if st != service.ShutdownReboot || containerMode {
+		closeWatchdog(wd, logger)
+		return
+	}
+	f, err := wd.Handover(shutdownWatchdogTimeout)
+	if err != nil {
+		logger.Warn("Hardware watchdog disarmed for the shutdown: %v", err)
+		return
+	}
+	if f != nil {
+		shutdown.HoldWatchdog(f)
+		logger.Notice("Hardware watchdog left armed for %v to guard the rest of the shutdown", shutdownWatchdogTimeout)
 	}
 }
 

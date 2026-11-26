@@ -44,7 +44,7 @@ func (sr *ServiceRecord) IsFrozen() (bool, error) {
 }
 
 func (sr *ServiceRecord) freezerFile() string {
-	base := sr.EffectiveCgroupPath()
+	base := sr.OwnCgroupPath()
 	if base == "" {
 		return ""
 	}

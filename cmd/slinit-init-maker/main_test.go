@@ -307,7 +307,7 @@ func TestWriteAllIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".tmp") {
+		if strings.Contains(e.Name(), ".tmp") {
 			t.Errorf("leftover temp file: %s", e.Name())
 		}
 	}
@@ -390,4 +390,74 @@ func pathsOf(files []generatedFile) []string {
 		out[i] = f.path
 	}
 	return out
+}
+
+// TestWriteAllIgnoresPlantedTemp — writeAtomic wrote to a fixed
+// <dst>.tmp with os.WriteFile and renamed it over dst. A symlink
+// planted at boot.tmp sent the generated content to its target and
+// left boot itself a symlink to it. The temp file is now an O_EXCL
+// CreateTemp name, so the planted link is never used.
+func TestWriteAllIgnoresPlantedTemp(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "boot.d")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(base, "victim")
+	if err := os.WriteFile(victim, []byte("precious\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(dir, "boot.tmp")); err != nil {
+		t.Fatal(err)
+	}
+	c := DefaultConfig()
+	c.OutputDir = dir
+	c.GettyCount = 0
+	c.WithMounts = false
+	plan, err := Plan(c)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if _, err := WriteAll(c, plan); err != nil {
+		t.Fatalf("WriteAll: %v", err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "precious\n" {
+		t.Errorf("planted boot.tmp target rewritten: %q", b)
+	}
+	fi, err := os.Lstat(filepath.Join(dir, "boot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.Mode().IsRegular() {
+		t.Errorf("boot is not a regular file: %v", fi.Mode())
+	}
+}
+
+// TestWriteAllRefusesSymlinkDest — a symlink at an output name is
+// refused, --force or not, and its target is untouched. Without
+// --force the old os.Stat check let a dangling one through.
+func TestWriteAllRefusesSymlinkDest(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		base := t.TempDir()
+		dir := filepath.Join(base, "boot.d")
+		os.Mkdir(dir, 0o755)
+		victim := filepath.Join(base, "victim")
+		os.WriteFile(victim, []byte("precious\n"), 0o600)
+		os.Symlink(victim, filepath.Join(dir, "boot"))
+		c := DefaultConfig()
+		c.OutputDir = dir
+		c.GettyCount = 0
+		c.WithMounts = false
+		c.Force = force
+		plan, err := Plan(c)
+		if err != nil {
+			t.Fatalf("Plan: %v", err)
+		}
+		if _, err := WriteAll(c, plan); err == nil {
+			t.Errorf("force=%v: WriteAll over a symlink succeeded", force)
+		}
+		if b, _ := os.ReadFile(victim); string(b) != "precious\n" {
+			t.Errorf("force=%v: symlink target rewritten: %q", force, b)
+		}
+	}
 }

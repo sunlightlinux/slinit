@@ -8,7 +8,6 @@ package fstab
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -51,14 +50,21 @@ func (e Entry) Options() []string {
 // (after whitespace) are ignored; anything else must have 4 to 6
 // whitespace-separated fields. Missing freq/passno default to 0,
 // matching mount(8)'s behaviour.
+//
+// A line that does not parse — the wrong number of fields, or a freq
+// or passno that is not a number — is skipped, as util-linux skips it,
+// rather than failing the whole table: one typo in /etc/fstab must not
+// hide every other mount from the tools reading it. The skip is
+// silent because this package has no warning channel; the error
+// return is for the reader itself failing.
 func Parse(r io.Reader) ([]Entry, error) {
 	var entries []Entry
 	sc := bufio.NewScanner(r)
-	// The default 64KB scanner buffer is fine for a fstab — no line
-	// realistically exceeds a few hundred bytes.
-	lineNo := 0
+	// Parse reads /proc/mounts too (pkg/mounts), where an overlay with
+	// many layers makes a line well past bufio's 64 KiB default, and a
+	// line over the limit ends the scan with an error.
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
-		lineNo++
 		raw := sc.Text()
 		trimmed := strings.TrimLeft(raw, " \t")
 		if trimmed == "" || trimmed[0] == '#' {
@@ -66,8 +72,7 @@ func Parse(r io.Reader) ([]Entry, error) {
 		}
 		fields := strings.Fields(trimmed)
 		if len(fields) < 4 || len(fields) > 6 {
-			return nil, fmt.Errorf("fstab line %d: expected 4-6 fields, got %d",
-				lineNo, len(fields))
+			continue
 		}
 		e := Entry{
 			Spec:    unescape(fields[0]),
@@ -78,14 +83,14 @@ func Parse(r io.Reader) ([]Entry, error) {
 		if len(fields) >= 5 {
 			n, err := strconv.Atoi(fields[4])
 			if err != nil {
-				return nil, fmt.Errorf("fstab line %d: freq: %w", lineNo, err)
+				continue
 			}
 			e.Freq = n
 		}
 		if len(fields) == 6 {
 			n, err := strconv.Atoi(fields[5])
 			if err != nil {
-				return nil, fmt.Errorf("fstab line %d: passno: %w", lineNo, err)
+				continue
 			}
 			e.PassNo = n
 		}

@@ -174,41 +174,39 @@ func TestRunPointRegex(t *testing.T) {
 	}
 }
 
-func TestRunNetdevFilter(t *testing.T) {
+// The netdev test mirrors process_mount() in OpenRC's mountinfo.c: it
+// applies only when the mountpoint is in fstab (netdev != -1) or
+// positional mountpoints were given; otherwise the entry falls through
+// to the node/fstype/options regexen. When it applies, those regexen
+// are skipped.
+func TestRunNetdevFilterMatchesOpenRC(t *testing.T) {
 	proc, fstab := writeFixtures(t)
-	opts := options{
-		procMounts: proc,
-		etcFstab:   fstab,
-		field:      fieldMountPoint,
-		netdev:     netYes,
+	missing := filepath.Join(t.TempDir(), "no-fstab")
+	cases := []struct {
+		name  string
+		fstab string
+		args  []string
+		out   string
+	}{
+		{"netdev: unknown mounts fall through", fstab, []string{"-e"}, "/tmp\n/mnt/nfs\n/run\n/sys\n/proc\n"},
+		{"nonetdev: unknown mounts fall through", fstab, []string{"-E"}, "/tmp\n/home\n/run\n/sys\n/proc\n/\n"},
+		{"netdev + positional: unknown dropped", fstab, []string{"-e", "/tmp", "/mnt/nfs"}, "/mnt/nfs\n"},
+		{"nonetdev + positional: unknown dropped", fstab, []string{"-E", "/tmp", "/home", "/mnt/nfs"}, "/home\n"},
+		{"regex applies only to unknown mounts", fstab, []string{"-e", "-f", "^tmpfs$"}, "/tmp\n/mnt/nfs\n/run\n"},
+		{"known mount skips the regexen", fstab, []string{"-E", "-f", "^tmpfs$", "/home"}, "/home\n"},
+		{"no fstab: everything falls through", missing, []string{"-e", "-f", "^ext4$"}, "/home\n/\n"},
 	}
-	out, _ := captureStdout(t, func() int { return run(opts) })
-	if strings.TrimSpace(out) != "/mnt/nfs" {
-		t.Errorf("netdev → %q, want /mnt/nfs", out)
-	}
-}
-
-func TestRunNonetdevFilter(t *testing.T) {
-	proc, fstab := writeFixtures(t)
-	opts := options{
-		procMounts: proc,
-		etcFstab:   fstab,
-		field:      fieldMountPoint,
-		netdev:     netNo,
-	}
-	out, _ := captureStdout(t, func() int { return run(opts) })
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	// / and /home are in fstab without _netdev; other proc entries
-	// are not in fstab so NetdevUnknown → excluded.
-	seen := map[string]bool{}
-	for _, l := range lines {
-		seen[l] = true
-	}
-	if !seen["/"] || !seen["/home"] {
-		t.Errorf("expected / and /home, got %v", lines)
-	}
-	if seen["/mnt/nfs"] {
-		t.Errorf("nonetdev leaked _netdev entry")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts, err := parseArgs(append([]string{"--proc-mounts", proc, "--fstab", c.fstab}, c.args...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, code := captureStdout(t, func() int { return run(opts) })
+			if out != c.out || code != exitOK {
+				t.Errorf("out=%q code=%d, want %q 0", out, code, c.out)
+			}
+		})
 	}
 }
 
@@ -325,5 +323,65 @@ func TestRunEinfoQuietSuppresses(t *testing.T) {
 	}
 	if strings.TrimSpace(out) != "" {
 		t.Errorf("EINFO_QUIET should suppress, got %q", out)
+	}
+}
+
+// OpenRC's -q sets EINFO_QUIET: nothing printed, exit status kept.
+func TestRunQuietFlagSuppresses(t *testing.T) {
+	proc, _ := writeFixtures(t)
+	for _, flag := range []string{"-q", "--quiet"} {
+		opts, err := parseArgs([]string{flag, "--proc-mounts", proc, "/"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, code := captureStdout(t, func() int { return run(opts) })
+		if code != exitOK || out != "" {
+			t.Errorf("%s /: out=%q code=%d, want \"\" %d", flag, out, code, exitOK)
+		}
+		opts, err = parseArgs([]string{flag, "--proc-mounts", proc, "/nope"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, code = captureStdout(t, func() int { return run(opts) })
+		if code != exitFailure || out != "" {
+			t.Errorf("%s /nope: out=%q code=%d, want \"\" %d", flag, out, code, exitFailure)
+		}
+	}
+}
+
+// OpenRC prints the raw /proc/mounts field; fstab.Parse decodes the
+// octal escapes, so they must be re-encoded on output while matching
+// (positional, regex) keeps working on the decoded path.
+func TestRunPrintsEscapedFieldsLikeProcMounts(t *testing.T) {
+	const table = `/dev/sda1 / ext4 rw 0 0
+srv:/x\040y /mnt/my\040share nfs rw 0 0
+/dev/sdb1 /mnt/a\011b\012c\134d ext4 rw 0 0
+host:/e\0431 /mnt/h ext4 rw 0 0
+`
+	proc := filepath.Join(t.TempDir(), "mounts")
+	if err := os.WriteFile(proc, []byte(table), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		args []string
+		out  string
+	}{
+		{"all mountpoints", nil, "/mnt/h\n/mnt/a\\011b\\012c\\134d\n/mnt/my\\040share\n/\n"},
+		{"positional matches decoded path", []string{"/mnt/my share"}, "/mnt/my\\040share\n"},
+		{"point regex matches decoded path", []string{"-p", "my share"}, "/mnt/my\\040share\n"},
+		{"node escaped incl #", []string{"-t", "-f", "nfs|ext4", "-P", "^/$"}, "host:/e\\0431\n/dev/sdb1\nsrv:/x\\040y\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts, err := parseArgs(append([]string{"--proc-mounts", proc}, c.args...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, code := captureStdout(t, func() int { return run(opts) })
+			if code != exitOK || out != c.out {
+				t.Errorf("out=%q code=%d, want %q 0", out, code, c.out)
+			}
+		})
 	}
 }

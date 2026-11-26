@@ -248,17 +248,34 @@ const cloneNewMask = uint32(0 |
 	0x20000000 | // CLONE_NEWPID
 	0x40000000) // CLONE_NEWNET
 
+// Flags that make a new mount namespace without CLONE_NEWNS.
+const (
+	unshareEmptyMntns = 0x00100000 // UNSHARE_EMPTY_MNTNS; CLONE_PARENT_SETTID to clone
+	openTreeClone     = 0x1        // OPEN_TREE_CLONE: an anonymous mount namespace
+	openTreeNamespace = 0x2        // OPEN_TREE_NAMESPACE: a regular one
+)
+
 // namespaceRules refuses creating or joining any namespace, as systemd's
 // RestrictNamespaces=yes does. clone3 passes its flags in a struct, so it
 // is refused with ENOSYS: glibc and others then fall back to clone, whose
 // flags are checked. setns with nstype 0 joins whatever namespace the fd
 // names, so it is refused too.
+//
+// A mount namespace is also made by unshare(UNSHARE_EMPTY_MNTNS), by
+// open_tree and open_tree_attr with OPEN_TREE_CLONE or OPEN_TREE_NAMESPACE,
+// and by every fsmount; these are refused as systemd's
+// seccomp_add_mount_namespace_rules refuses them. A plain open_tree and
+// fspick only refer to existing mounts, and stay allowed.
 var namespaceRules = []rule{
 	{syscall: "clone3", action: errENOSYS},
 	{syscall: "unshare", conds: []cond{bitsSet(0, cloneNewMask)}, action: errEPERM},
 	{syscall: "clone", conds: []cond{bitsSet(0, cloneNewMask)}, action: errEPERM},
 	{syscall: "setns", conds: []cond{bitsSet(1, cloneNewMask)}, action: errEPERM},
 	{syscall: "setns", conds: []cond{equals(1, 0)}, action: errEPERM},
+	{syscall: "unshare", conds: []cond{bitsSet(0, unshareEmptyMntns)}, action: errEPERM},
+	{syscall: "open_tree", conds: []cond{bitsSet(2, openTreeClone|openTreeNamespace)}, action: errEPERM},
+	{syscall: "open_tree_attr", conds: []cond{bitsSet(2, openTreeClone|openTreeNamespace)}, action: errEPERM},
+	{syscall: "fsmount", action: errEPERM},
 }
 
 // CompileRestrictNamespaces builds the restrict-namespaces filter.

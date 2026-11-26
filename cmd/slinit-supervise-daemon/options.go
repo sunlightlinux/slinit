@@ -16,11 +16,17 @@ const (
 	exitStalePidfile    = 5
 )
 
-// runnerEnvVar names the env variable the top-level process sets when
-// it re-exec's itself as the detached supervisor. The child inspects
-// this in main() and jumps straight into runSupervisor(), skipping the
-// arg parser.
-const runnerEnvVar = "SLINIT_SSD_SUPERVISOR"
+// supervisorMarker is the private first argument cmdStart re-execs
+// itself with; main() sees it and enters runSupervisor(). It is never
+// part of the environment, so nothing the supervisor or its daemon
+// starts inherits it.
+const supervisorMarker = "--slinit-internal-supervisor"
+
+// legacySupervisorEnvVar is the environment variable that used to be
+// the supervisor switch. It is no longer honoured; it is scrubbed from
+// the environment so a daemon started by an older supervisor does not
+// pass it on further.
+const legacySupervisorEnvVar = "SLINIT_SSD_SUPERVISOR"
 
 // Defaults track OpenRC's supervise-daemon(8) so a script that
 // omits a flag sees the same behaviour on both.
@@ -35,6 +41,9 @@ const (
 	// re-exec — matches the ceiling `slinit-start-stop-daemon --notify`
 	// uses.
 	pidfileReadyTimeout = 30 * time.Second
+	// defaultStopSchedule is how the supervisor stops its daemon when
+	// neither --start nor --stop gave --retry.
+	defaultStopSchedule = "TERM/5/KILL/5"
 )
 
 // Options captures the full flag surface. Anything OpenRC accepts is

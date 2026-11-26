@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestOpenConfiguredFileReadOnly opens an existing file with the
@@ -62,5 +65,48 @@ func TestOpenConfiguredFileUnknownOption(t *testing.T) {
 	os.WriteFile(path, nil, 0o644)
 	if _, err := openConfiguredFile(OpenFileEntry{Path: path, Options: "typo-here"}); err == nil {
 		t.Errorf("unknown option should error")
+	}
+}
+
+// A FIFO is a legitimate OpenFile= target, but opening one read-only
+// blocks until a writer appears, and this runs in PID 1. The open must
+// return at once, and the fd the service gets must be blocking.
+func TestOpenConfiguredFileFIFODoesNotBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fifo")
+	if err := unix.Mkfifo(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	type res struct {
+		f   *os.File
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		f, err := openConfiguredFile(OpenFileEntry{Path: path, Options: "read-only"})
+		done <- res{f, err}
+	}()
+	var r res
+	select {
+	case r = <-done:
+	case <-time.After(2 * time.Second):
+		// Unblock the opener so the test can finish.
+		if w, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
+			w.Close()
+		}
+		if r = <-done; r.f != nil {
+			r.f.Close()
+		}
+		t.Fatal("openConfiguredFile blocked on a FIFO")
+	}
+	if r.err != nil {
+		t.Fatalf("open FIFO: %v", r.err)
+	}
+	defer r.f.Close()
+	fl, err := unix.FcntlInt(r.f.Fd(), unix.F_GETFL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fl&unix.O_NONBLOCK != 0 {
+		t.Errorf("FIFO fd handed to the service is O_NONBLOCK")
 	}
 }

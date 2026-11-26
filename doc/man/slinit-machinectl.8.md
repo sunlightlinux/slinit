@@ -21,7 +21,19 @@ mutates those files.
 
 The registry is intentionally simple — one file per machine, all
 plain text: the PID on the first line, then optional **CLASS=**,
-**SERVICE=** and **ROOT=** lines. Scripts that prefer direct
+**SERVICE=**, **ROOT=** and **STARTTIME=** lines. **STARTTIME=** is the
+process's start time in clock ticks since boot (field 22 of
+*/proc/*\ *pid*\ */stat*), recorded at registration; with the PID it
+identifies the process, so an entry left behind by a launcher killed
+with **SIGKILL** is not mistaken for a live machine once the PID is
+reused. Register always writes **STARTTIME=** (**0** when the start
+time could not be read); an entry without the line was written by an
+older slinit. A file that does not end in a newline, has a line that
+is not *KEY*=*VALUE* after the PID, or is a *name*\ **.tmp** entry
+without **STARTTIME=** (the temporary file of an older slinit that
+died before renaming it into place) is not a registry entry: **list**
+skips it, and **status**, **show** and **slinit-journalctl -M** report
+it as an error. Scripts that prefer direct
 filesystem access can read/write the files with **cat**(1) and
 **sed**(1); this tool exists for interactive use, liveness probes,
 and shell one-liners.
@@ -35,7 +47,10 @@ and shell one-liners.
     on the host; when empty, */proc/*\ *pid*\ */root* is used). An
     existing entry with the same name is overwritten. *name* is 1–64
     characters from **A–Z a–z 0–9 _ - .**, not starting with **.** or
-    **-**; *pid* must be greater than 1.
+    **-**; *pid* must be greater than 1. The start time of *pid* is
+    recorded when it can be read. *class*, *service* and *root*
+    must not contain control characters (a newline would start a line
+    of its own in the registry file).
 
 **unregister** *name*
 :   Remove the registry entry for *name*; removing an entry that does
@@ -44,18 +59,33 @@ and shell one-liners.
 
 **list**
 :   Print a table with the columns NAME, PID, ALIVE, CLASS, SERVICE and
-    ROOT. ALIVE is **yes** when the PID can still be signalled
-    (*kill(pid, 0)*) and **no** otherwise; dead entries are not
-    removed automatically (garbage-collection is the operator's
+    ROOT. ALIVE is **yes** when the PID still names the registered process,
+    **no** when no process has it, **reused** when a process has it
+    that started after the entry was registered (its start time differs
+    from **STARTTIME=**), and **unknown** when a process has it but its
+    */proc* entry cannot be read (for instance */proc* mounted with
+    **hidepid=**) or the entry has **STARTTIME=0**. A process owned by
+    another user counts: it need not be signalable. An entry without
+    **STARTTIME=**, written by an older slinit, has nothing that tells
+    its process from one that reused the PID: while a process has the
+    PID it is **legacy**, and is used as that slinit used it (**status**
+    says **Alive: true**, **slinit-journalctl -M** accepts it), so
+    containers running across an upgrade keep working. Re-registering
+    the machine (restarting the container) records its start time and
+    enables the **reused** check. Dead entries are not removed
+    automatically (garbage-collection is the operator's
     responsibility).
 
 **status** *name*
-:   Show one machine's fields plus liveness in an aligned block.
-    Suitable for direct terminal reading.
+:   Show one machine's fields plus liveness in an aligned block:
+    **Alive:** is **true** only when ALIVE above would be **yes** or
+    **legacy**, and
+    **State:** says why not. Suitable for direct terminal reading.
 
 **show** *name*
 :   Print the entry in registry-file form — the PID line followed by
-    the non-empty **CLASS=**, **SERVICE=** and **ROOT=** lines.
+    the non-empty **CLASS=**, **SERVICE=** and **ROOT=** lines, and
+    **STARTTIME=** unless the entry is legacy.
     Suitable for scripts that want to parse it with their own tools.
 
 # ENVIRONMENT

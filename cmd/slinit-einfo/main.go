@@ -122,12 +122,12 @@ func endMarker(code int, msg string, warnColour, verbose bool) int {
 	return einfo.End(os.Stdout, verbose, code, msg)
 }
 
-// runSyslog implements the `esyslog LEVEL TAG MSG...` and
-// `elog LEVEL TAG MSG...` applets. Levels accept syslog(3) names
-// (info, notice, warning, err) or a numeric priority.
+// runSyslog implements the `esyslog FACILITY.LEVEL TAG MSG...` and
+// `elog FACILITY.LEVEL TAG MSG...` applets (OpenRC einfo.c, logger(1)
+// -p order). See parseSyslogPriority for the accepted forms.
 func runSyslog(argv []string) int {
 	if len(argv) < 3 {
-		fmt.Fprintln(os.Stderr, "esyslog: usage: esyslog LEVEL.FACILITY TAG MSG...")
+		fmt.Fprintln(os.Stderr, "esyslog: usage: esyslog FACILITY.LEVEL TAG MSG...")
 		return 1
 	}
 	prio, err := parseSyslogPriority(argv[0])
@@ -149,33 +149,59 @@ func runSyslog(argv []string) int {
 	return 0
 }
 
-// parseSyslogPriority accepts "info", "info.daemon", or a bare
-// integer. Facility defaults to LOG_USER when omitted so scripts
-// that pass just a severity keep working.
+// parseSyslogPriority accepts, in order of preference:
+//
+//   - FACILITY.LEVEL, as OpenRC's esyslog and logger(1) -p take it
+//     (`daemon.notice`); LEVEL may also be a number 0-7;
+//   - LEVEL.FACILITY, the order slinit used to require (`notice.daemon`),
+//     kept so existing scripts keep working — the facility and level
+//     name sets are disjoint, so the two orders never collide;
+//   - a bare LEVEL name, facility user;
+//   - a bare integer, used as the whole priority.
 func parseSyslogPriority(spec string) (syslog.Priority, error) {
 	// Numeric form.
 	if n, err := strconv.Atoi(spec); err == nil {
 		return syslog.Priority(n), nil
 	}
-	sev := spec
-	fac := "user"
-	if i := strings.IndexByte(spec, '.'); i >= 0 {
-		sev = spec[:i]
-		fac = spec[i+1:]
+	i := strings.IndexByte(spec, '.')
+	if i < 0 {
+		sev, ok := lookupSeverity(spec)
+		if !ok {
+			return 0, fmt.Errorf("unknown syslog level %q", spec)
+		}
+		return sev | syslog.LOG_USER, nil
 	}
-	sevP, ok := syslogSeverities[strings.ToLower(sev)]
-	if !ok {
-		return 0, fmt.Errorf("unknown syslog severity %q", sev)
+	first, second := spec[:i], spec[i+1:]
+	if fac, ok := syslogFacilities[strings.ToLower(first)]; ok {
+		sev, ok := lookupSeverity(second)
+		if !ok {
+			return 0, fmt.Errorf("unknown syslog level %q in %q", second, spec)
+		}
+		return fac | sev, nil
 	}
-	facP, ok := syslogFacilities[strings.ToLower(fac)]
-	if !ok {
-		return 0, fmt.Errorf("unknown syslog facility %q", fac)
+	if sev, ok := lookupSeverity(first); ok {
+		if fac, ok := syslogFacilities[strings.ToLower(second)]; ok {
+			return fac | sev, nil
+		}
 	}
-	return sevP | facP, nil
+	return 0, fmt.Errorf("invalid syslog priority %q: want FACILITY.LEVEL, e.g. daemon.notice", spec)
+}
+
+// lookupSeverity resolves a level name or a number 0-7.
+func lookupSeverity(name string) (syslog.Priority, bool) {
+	if n, err := strconv.Atoi(name); err == nil {
+		if n < 0 || n > 7 {
+			return 0, false
+		}
+		return syslog.Priority(n), true
+	}
+	sev, ok := syslogSeverities[strings.ToLower(name)]
+	return sev, ok
 }
 
 var syslogSeverities = map[string]syslog.Priority{
 	"emerg":   syslog.LOG_EMERG,
+	"panic":   syslog.LOG_EMERG,
 	"alert":   syslog.LOG_ALERT,
 	"crit":    syslog.LOG_CRIT,
 	"err":     syslog.LOG_ERR,
@@ -188,24 +214,27 @@ var syslogSeverities = map[string]syslog.Priority{
 }
 
 var syslogFacilities = map[string]syslog.Priority{
-	"kern":   syslog.LOG_KERN,
-	"user":   syslog.LOG_USER,
-	"mail":   syslog.LOG_MAIL,
-	"daemon": syslog.LOG_DAEMON,
-	"auth":   syslog.LOG_AUTH,
-	"syslog": syslog.LOG_SYSLOG,
-	"lpr":    syslog.LOG_LPR,
-	"news":   syslog.LOG_NEWS,
-	"uucp":   syslog.LOG_UUCP,
-	"cron":   syslog.LOG_CRON,
-	"local0": syslog.LOG_LOCAL0,
-	"local1": syslog.LOG_LOCAL1,
-	"local2": syslog.LOG_LOCAL2,
-	"local3": syslog.LOG_LOCAL3,
-	"local4": syslog.LOG_LOCAL4,
-	"local5": syslog.LOG_LOCAL5,
-	"local6": syslog.LOG_LOCAL6,
-	"local7": syslog.LOG_LOCAL7,
+	"kern":     syslog.LOG_KERN,
+	"user":     syslog.LOG_USER,
+	"mail":     syslog.LOG_MAIL,
+	"daemon":   syslog.LOG_DAEMON,
+	"auth":     syslog.LOG_AUTH,
+	"security": syslog.LOG_AUTH,
+	"authpriv": syslog.LOG_AUTHPRIV,
+	"ftp":      syslog.LOG_FTP,
+	"syslog":   syslog.LOG_SYSLOG,
+	"lpr":      syslog.LOG_LPR,
+	"news":     syslog.LOG_NEWS,
+	"uucp":     syslog.LOG_UUCP,
+	"cron":     syslog.LOG_CRON,
+	"local0":   syslog.LOG_LOCAL0,
+	"local1":   syslog.LOG_LOCAL1,
+	"local2":   syslog.LOG_LOCAL2,
+	"local3":   syslog.LOG_LOCAL3,
+	"local4":   syslog.LOG_LOCAL4,
+	"local5":   syslog.LOG_LOCAL5,
+	"local6":   syslog.LOG_LOCAL6,
+	"local7":   syslog.LOG_LOCAL7,
 }
 
 // runWaitFile: `ewaitfile TIMEOUT PATH...` polls every 20ms until

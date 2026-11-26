@@ -22,15 +22,28 @@ import (
 // (defaulting to _PID = the emitter, i.e. slinit itself, was
 // misleading — every event looked like it came from PID 1).
 func emitJournalLogLine(serviceName string, lineLevel int, matchLine []byte, servicePID int) {
+	pidStr := ""
+	if servicePID > 0 {
+		pidStr = strconv.Itoa(servicePID)
+	}
+	emitJournalLogLinePID(serviceName, lineLevel, matchLine, pidStr)
+}
+
+// emitJournalLogLinePID is emitJournalLogLine with the pid already
+// formatted ("" for none), for a caller that caches the string.
+func emitJournalLogLinePID(serviceName string, lineLevel int, matchLine []byte, pidStr string) {
+	if !journal.Enabled() {
+		return
+	}
 	evt := &journal.Event{
 		Unit:      serviceName,
 		Prio:      journal.Priority(lineLevel),
 		Transport: journal.TransportStdout,
 		Msg:       string(matchLine),
 	}
-	if servicePID > 0 {
+	if pidStr != "" {
 		evt.Fields = map[string]string{
-			"SLINIT_TARGET_PID": strconv.Itoa(servicePID),
+			"SLINIT_TARGET_PID": pidStr,
 		}
 	}
 	journal.Emit(evt)
@@ -52,6 +65,11 @@ func emitJournalLogLine(serviceName string, lineLevel int, matchLine []byte, ser
 // query tools can distinguish "slinit said X happened" from
 // "service's own stdout said Y" (Transport=stdout).
 func (sr *ServiceRecord) emitJournalStateEvent(event ServiceEvent) {
+	// Building the event is most of its cost, and it runs under queueMu
+	// on every transition: skip it when Emit would discard it.
+	if !journal.Enabled() {
+		return
+	}
 	prio := journal.PriorityInfo
 	switch event {
 	case EventFailedStart:
@@ -73,13 +91,13 @@ func (sr *ServiceRecord) emitJournalStateEvent(event ServiceEvent) {
 	// process (Process/Scripted/BGProcess with pid > 0). Internal
 	// services and services in STOPPED report -1/0 and we skip the
 	// field so short renderers don't display a misleading [-1] or [0]
-	// bracket. Look up via ServiceSet since ServiceRecord.PID() is a
-	// base -1; overrides live on the concrete Service types.
-	if sr.services != nil {
-		if svc := sr.services.FindService(sr.serviceName, false); svc != nil {
-			if pid := svc.PID(); pid > 0 {
-				fields["SLINIT_TARGET_PID"] = strconv.Itoa(pid)
-			}
+	// bracket. Ask sr.self since ServiceRecord.PID() is a base -1;
+	// overrides live on the concrete Service types. (This used to look
+	// the name up in the ServiceSet under its lock, which finds sr.self
+	// for every record in the set.)
+	if sr.self != nil {
+		if pid := sr.self.PID(); pid > 0 {
+			fields["SLINIT_TARGET_PID"] = strconv.Itoa(pid)
 		}
 	}
 

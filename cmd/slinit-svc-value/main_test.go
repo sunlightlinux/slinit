@@ -84,13 +84,36 @@ func TestDispatchSaveOptionsAlias(t *testing.T) {
 func TestDispatchSetEmptyDeletes(t *testing.T) {
 	setStoreEnv(t, "svc")
 	dispatch("service_set_value", []string{"k", "v"})
-	// Set with no VALUE arg → empty → delete.
+	// Set with no VALUE arg → delete (OpenRC: value NULL → unlink).
 	if rc := dispatch("service_set_value", []string{"k"}); rc != exitOK {
 		t.Errorf("delete rc=%d", rc)
 	}
 	s, _ := newStore()
 	if _, ok, _ := s.Get("k"); ok {
 		t.Error("expected key to be gone")
+	}
+}
+
+func TestDispatchSetExplicitEmptyStores(t *testing.T) {
+	setStoreEnv(t, "svc")
+	dispatch("service_set_value", []string{"k", "v"})
+	// `service_set_value k ""` stores an empty value in OpenRC; only
+	// an absent VALUE deletes. This used to delete the key.
+	if rc := dispatch("service_set_value", []string{"k", ""}); rc != exitOK {
+		t.Fatalf("rc=%d", rc)
+	}
+	out, rc := captureStdout(t, func() int {
+		return dispatch("service_get_value", []string{"k"})
+	})
+	if rc != exitOK || out != "" {
+		t.Errorf("get after empty set: rc=%d out=%q, want rc=0 out=\"\"", rc, out)
+	}
+}
+
+func TestDispatchRejectsTraversalServiceName(t *testing.T) {
+	setStoreEnv(t, "../../escaped")
+	if rc := dispatch("service_set_value", []string{"k", "v"}); rc != exitBadUsage {
+		t.Errorf("rc=%d, want %d", rc, exitBadUsage)
 	}
 }
 

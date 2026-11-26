@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -2022,5 +2023,73 @@ func TestRenderShortCatNeutraliseMessage(t *testing.T) {
 	}
 	if got := buf.String(); got != forged+"\n" {
 		t.Errorf("--all cat: %q", got)
+	}
+}
+
+// --verify of a file that is not sealed checked nothing and exited 0, so
+// clearing the unsealed sealed flag turned any tampering into a pass.
+func TestRunVerifyFailsUnsealedFile(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := dir + "/journal-key"
+	key, err := journalbin.NewFSSKey(0, 60_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journalbin.SaveFSSKey(keyPath, key); err != nil {
+		t.Fatal(err)
+	}
+	path := dir + "/plain.journal"
+	w, err := journalbin.NewWriter(path, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(&journal.Event{Ts: 1000, Msg: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	stdout := os.Stdout
+	os.Stdout, _ = os.Open(os.DevNull)
+	err = runVerify(options{sourceFile: path, fssKeyPath: keyPath})
+	os.Stdout = stdout
+	if err == nil {
+		t.Fatal("--verify of an unsealed file succeeded")
+	}
+}
+
+// --update-catalog --root wrote into the image with MkdirAll and
+// os.Create, both of which follow the image's symlinks: a var/lib, or a
+// catalog.compiled.tmp, pointing at a host path had root write there.
+func TestUpdateCatalogStaysInsideRoot(t *testing.T) {
+	host := t.TempDir()
+	victim := filepath.Join(host, "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "var"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(host, filepath.Join(root, "var/lib")); err != nil {
+		t.Fatal(err)
+	}
+	_ = runUpdateCatalog(options{root: root, quiet: true}, io.Discard)
+	if _, err := os.Stat(filepath.Join(host, "slinit")); err == nil {
+		t.Fatal("--update-catalog --root created a directory through the image's var/lib symlink")
+	}
+
+	root = t.TempDir()
+	dir := filepath.Join(root, "var/lib/slinit/catalog")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(dir, "catalog.compiled.tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runUpdateCatalog(options{root: root, quiet: true}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep" {
+		t.Fatalf("--update-catalog --root wrote through a symlinked temp file: %q", b)
 	}
 }

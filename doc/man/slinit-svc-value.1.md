@@ -48,8 +48,9 @@ default is **/run/slinit**.
 :   Legacy alias for **service_get_value**.
 
 **service_set_value** *KEY* [*VALUE*]
-:   Persist *VALUE* under *KEY*. If *VALUE* is omitted or empty, the
-    key is deleted.
+:   Persist *VALUE* under *KEY*. If *VALUE* is omitted, the key is
+    deleted; an explicit empty *VALUE* (**""**) is stored as an empty
+    value, as in OpenRC.
 
 **save_options** *KEY* [*VALUE*]
 :   Legacy alias for **service_set_value**.
@@ -66,7 +67,10 @@ default is **/run/slinit**.
 
 **RC_SVCNAME** (or, when it is unset or empty,
 **SLINIT_SERVICENAME**) — service the values belong to. Required; the
-applet exits with code **2** when neither is set.
+applet exits with code **2** when neither is set, or when the name
+could leave the store: a leading **/**, a **\0**, or an empty, **.**
+or **..** path element. Inner slashes (*net/eth0*, *mount@/dev/sda1*)
+are kept as nested directories.
 
 **RC_SVCDIR** — alternative runtime dir. Defaults to
 **/run/slinit**.
@@ -94,7 +98,7 @@ start() {
 stop() {
     pidfile=$(service_get_value pidfile) || pidfile=/run/default.pid
     kill "$(cat "$pidfile")"
-    service_set_value pidfile   # empty value → delete
+    service_set_value pidfile   # no value → delete
 }
 ```
 

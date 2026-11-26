@@ -261,8 +261,13 @@ live queries.
 :   Query *CONTAINER*'s journal via the machine registry
     (**slinit-machinectl**(8)): through the container's control socket
     when it has one, otherwise from its journal files. An unregistered
-    *CONTAINER*, or one whose registered PID is no longer alive, is an
-    error. Ignored, with a warning, when **--file**, **--directory**,
+    *CONTAINER*, or one whose registered PID is no longer alive or now
+    belongs to another process (its start time differs from the one
+    registered; see **slinit-machinectl**(8)), or cannot be verified, is
+    an error. An entry written by an older slinit, which recorded no
+    start time, is used while its PID is alive (**legacy** in
+    **slinit-machinectl list**); restarting the container re-registers
+    it with one. Ignored, with a warning, when **--file**, **--directory**,
     **--root** or **--image** is also given.
 
 ## Maintenance (short-circuit — talks to slinit-journald)

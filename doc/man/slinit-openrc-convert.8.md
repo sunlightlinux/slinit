@@ -29,7 +29,7 @@ Script variables are mapped as follows:
 | **pidfile** | **pid-file** (self-forking daemon only, see below) |
 | **stopsig** | **term-signal** |
 | **umask** | **umask** |
-| **respawn_delay**, **respawn_max**, **respawn_period** | **restart-delay**, **restart-limit-count**, **restart-limit-interval** |
+| **respawn_delay**, **respawn_max**, **respawn_period** | **restart-delay**, **restart-limit-count**, **restart-limit-interval** (under **supervisor=supervise-daemon** only) |
 | **no_new_privs=yes** | **options = no-new-privs** |
 | **command_background=yes** | **type = process** |
 | **description**, **name** | comments |
@@ -46,8 +46,13 @@ Otherwise start-stop-daemon expects the daemon to fork itself: with a
 one it stays **process** with a warning, as slinit cannot follow a
 daemon that forks without a pidfile.
 
-Generated services get **restart = yes**, since OpenRC respawns
-supervised daemons. In **depend()**, **need** becomes **depends-on**,
+OpenRC respawns a daemon only under **supervisor=supervise-daemon**,
+which is also the only supervisor that reads **respawn_\***;
+start-stop-daemon, the default, starts the daemon once and leaves it
+stopped when it exits. So such a script gets **restart = yes** and its
+**respawn_\*** values (where one is unset, slinit's own default
+applies, not supervise-daemon's), and any other gets **restart = no**,
+with a note when **respawn_\*** values were left out. In **depend()**, **need** becomes **depends-on**,
 and **want**, **use** and **after** become **waits-for**. slinit fails
 to load a service whose dependency does not exist, where OpenRC skips a missing **use**,
 **want** or **after** and resolves virtual names such as **net** or
@@ -56,11 +61,36 @@ or **after** is kept only when a script of that name sits in the same
 directory as the one converted, and is otherwise left out with a note.
 A **need** is always kept, with a warning when no such script exists.
 **before**, **provide** and **keyword** cannot be mapped and produce a
-warning or note.
+warning or note. The body may sit on one line
+(**depend() { need net; }**), with commands separated by **;**. It is
+shell, and only those verbs are read: a dependency named by a variable
+is left out, one inside an **if**, **case** or loop is mapped as if
+unconditional, and any other shell in the body is listed; each with a
+warning.
 Variables such as **required_files**, **required_dirs**,
 **start_stop_daemon_args**, **supervise_daemon_args**,
 **capabilities**, **output_log** and **extra_commands** are reported
 as not mapped.
+
+A quoted value may run on across lines, and a line ending in a
+backslash continues on the next one, as in the shell; the newlines in
+a value become spaces. The body of a here-document (**<<WORD**,
+**<<-WORD**, **<<'WORD'**, **<<"WORD"**) is skipped up to its
+terminator line (leading tabs stripped with **<<-**), so an apostrophe
+in it opens no quote. A quote or here-document left open to the end of
+the script is wrapped (see below) with a warning; **depend()** is then
+still looked for line by line, and if it cannot be read either, a
+warning says the dependencies were not read.
+
+Only literal values are mapped. A mapped variable whose value the
+shell has to compute (a **$VAR** set in */etc/conf.d*, a
+**${x:-default}**, **\`cmd\`** or **$(cmd)**), or one assigned in shell
+logic (inside an **if**, **case** or loop, behind **&&** or **||**, as
+**${x:=default}**, or in a function body), is known only when the
+script runs: slinit would expand a **$VAR** in **command** from its own
+environment when it loads the service, and the converter cannot tell
+which branch OpenRC takes. Such a script is wrapped like one with
+custom functions (below), with a warning naming the variable.
 
 A script that defines any of the shell functions **start**, **stop**,
 **start_pre**, **start_post**, **stop_pre**, **stop_post**,
@@ -68,7 +98,11 @@ A script that defines any of the shell functions **start**, **stop**,
 a **scripted** service whose **command** is *WRAPPER script* **start**
 and whose **stop-command** is *WRAPPER script* **stop**, so the
 original init.d script keeps doing the work; **-wrapper** sets
-*WRAPPER* (default */usr/sbin/openrc-run*).
+*WRAPPER* (default */usr/sbin/openrc-run*). The wrapper reads the
+script's variables itself, so **pidfile**, **command_user**,
+**directory**, **umask**, **stopsig**, **no_new_privs** and the
+**respawn_\*** settings are left out of such a file (with a note),
+and it gets no **restart**.
 
 Single-input mode writes to standard output. Batch mode
 (**--output-dir**) writes one file per input into *DIR*, named
@@ -84,6 +118,14 @@ printed only with **-verbose**.
 :   Batch mode: write one slinit file per input into *DIR*, which is
     created if missing. Without this flag, output goes to stdout and
     only one script may be passed at a time.
+    A file already at an output name is replaced, so a rerun
+    regenerates it; each file is written to a temporary name in *DIR*
+    and renamed into place, so an interrupted run never leaves a
+    partial file. A symbolic link at an output name is refused, never
+    written through or replaced.
+    A replaced file keeps its permission bits (and, run as root, its
+    owner and group); a new one is created with mode 0644 less the
+    umask. A hard link to the old file keeps the old content.
 
 **-dry-run**
 :   With **-output-dir**: print each file that would be written, on
@@ -137,7 +179,8 @@ OpenRC runlevel:
 **1**
 :   No input, several inputs without **-output-dir**, the output
     directory could not be created, or one or more scripts could not
-    be read, had no **#!** line, or could not be written.
+    be read, had no **#!** line, or could not be written (a symbolic
+    link at an output name counts).
 
 **2**
 :   Unknown flag.

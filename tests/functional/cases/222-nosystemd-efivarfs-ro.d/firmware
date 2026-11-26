@@ -1,0 +1,2 @@
+# OVMF instead of SeaBIOS: /sys/firmware/efi exists only under UEFI.
+efi

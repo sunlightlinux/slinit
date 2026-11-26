@@ -5,8 +5,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"syscall"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadPIDFileBasic(t *testing.T) {
@@ -167,32 +168,6 @@ func TestFindMatchingPIDsRefusesWorldWritablePidfile(t *testing.T) {
 	}
 }
 
-// TestPidfileInsecure: matching on nothing but a pidfile someone
-// else owns lets that someone pick the pid we signal as root. As in
-// Debian's start-stop-daemon (dpkg 1.19.3), such a pidfile is only
-// trusted with another criterion to cross-check the process.
-func TestPidfileInsecure(t *testing.T) {
-	for _, tc := range []struct {
-		name                 string
-		uid, gid, mode       uint32
-		pidfileOnly, wantBad bool
-	}{
-		{"root-owned 0644", 0, 0, 0o644, true, false},
-		{"own 0644", 1000, 1000, 0o644, true, false},
-		{"daemon-owned, pidfile only", 107, 0, 0o644, true, true},
-		{"daemon-owned, with --exec", 107, 0, 0o644, false, false},
-		{"group-writable foreign group", 0, 107, 0o664, true, true},
-		{"group-writable root group", 0, 0, 0o664, true, false},
-		{"world-writable, with --exec", 0, 0, 0o666, false, true},
-	} {
-		st := &syscall.Stat_t{Uid: tc.uid, Gid: tc.gid, Mode: syscall.S_IFREG | tc.mode}
-		bad := pidfileInsecure(st, 1000, 1000, tc.pidfileOnly) != ""
-		if bad != tc.wantBad {
-			t.Errorf("%s: insecure=%v, want %v", tc.name, bad, tc.wantBad)
-		}
-	}
-}
-
 // TestExecMatchesDeletedBinary: after a package upgrade replaces the
 // binary, /proc/PID/exe of the running daemon reads "<path> (deleted)".
 // An exact compare found nothing: --stop left it running and --start
@@ -228,5 +203,176 @@ func TestExecMatchesDeletedBinary(t *testing.T) {
 	}
 	if processMatches(pid, MatchCriteria{Exec: bin + "2", UID: -1}) {
 		t.Error("matched a different path")
+	}
+}
+
+// sleeperEnv makes a copy of this test binary sleep instead of running
+// tests: startCopiedSleep's daemon. sleep(1) itself is not usable there:
+// copied under another name, a multi-call build (busybox, uutils
+// coreutils) dispatches on argv[0], finds no "mydaemon" applet and exits
+// at once, and the tests then looked at a process that was already gone.
+const sleeperEnv = "SLINIT_SSD_TEST_SLEEPER"
+
+func init() {
+	if os.Getenv(sleeperEnv) == "1" {
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+}
+
+// startCopiedSleep copies this test binary, in sleeper mode, into
+// dir/bin/<name>, makes dir/sbin a symlink to bin (the merged-/usr
+// layout) and starts it through the sbin spelling. Returns the pid and
+// the sbin path.
+func startCopiedSleep(t *testing.T, name string) (int, string) {
+	t.Helper()
+	src, err := os.Executable()
+	if err != nil {
+		t.Skip(err)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Skip(err)
+	}
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("bin", filepath.Join(dir, "sbin")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bin", name), data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	viaSbin := filepath.Join(dir, "sbin", name)
+	cmd := exec.Command(viaSbin)
+	cmd.Env = append(os.Environ(), sleeperEnv+"=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("copied sleeper does not run: %v", err)
+	}
+	pid := cmd.Process.Pid
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-exited
+	})
+	// Wait for the exec to land so /proc/PID/exe is the copy, and make
+	// sure it is still running: the tests below need a live process.
+	for i := 0; i < 100; i++ {
+		select {
+		case <-exited:
+			t.Fatal("copied sleeper exited at once")
+		default:
+		}
+		if l, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); filepath.Base(l) == name {
+			return pid, viaSbin
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("copied sleeper never exec'd")
+	return 0, ""
+}
+
+// TestExecMatchThroughSymlinkedDir is the merged-/usr case: the daemon
+// was started as dir/sbin/foo, the kernel reports dir/bin/foo, and
+// --exec dir/sbin/foo must still find it (Debian compares dev+inode).
+func TestExecMatchThroughSymlinkedDir(t *testing.T) {
+	pid, viaSbin := startCopiedSleep(t, "mydaemon")
+	pids, err := FindMatchingPIDs(MatchCriteria{Exec: viaSbin, UID: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range pids {
+		if p == pid {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("--exec %s did not match pid %d (exe=%s); got %v",
+			viaSbin, pid, mustReadlink("/proc/"+strconv.Itoa(pid)+"/exe"), pids)
+	}
+
+	// A different file with the same content is NOT the same executable.
+	other := filepath.Join(t.TempDir(), "mydaemon")
+	data, _ := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(viaSbin)), "bin", "mydaemon"))
+	if err := os.WriteFile(other, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if processMatches(pid, MatchCriteria{Exec: other, UID: -1}) {
+		t.Error("a copy at another inode must not match")
+	}
+}
+
+// TestExecMatchReplacedBinary: an upgrade replaced the binary, so the
+// running image is a deleted inode no stat of --exec reaches; the
+// string fallback (" (deleted)" stripped) must still match it.
+func TestExecMatchReplacedBinary(t *testing.T) {
+	pid, viaSbin := startCopiedSleep(t, "mydaemon")
+	binPath := filepath.Join(filepath.Dir(filepath.Dir(viaSbin)), "bin", "mydaemon")
+	data, _ := os.ReadFile(binPath)
+	if err := os.Remove(binPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binPath, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if !processMatches(pid, MatchCriteria{Exec: binPath, UID: -1}) {
+		t.Errorf("replaced binary: --exec %s should still match (exe=%s)",
+			binPath, mustReadlink("/proc/"+strconv.Itoa(pid)+"/exe"))
+	}
+}
+
+func mustReadlink(p string) string {
+	s, _ := os.Readlink(p)
+	return s
+}
+
+// The kernel keeps 15 bytes of a task name, so a longer --name never
+// equalled any /proc/PID/comm: --stop found nothing and --start
+// launched duplicates. It now matches on the stored prefix.
+func TestNameLongerThanCommMatches(t *testing.T) {
+	const long = "longdaemonname-xyz"
+	pid, _ := startCopiedSleep(t, long)
+	if c := commOf(pid); c != long[:15] {
+		t.Skipf("comm = %q, not the 15-byte truncation this test is about", c)
+	}
+	if !processMatches(pid, MatchCriteria{Name: long, UID: -1}) {
+		t.Errorf("--name %s did not match comm %q", long, commOf(pid))
+	}
+	if !processMatches(pid, MatchCriteria{Name: long[:15], UID: -1}) {
+		t.Errorf("--name %s did not match", long[:15])
+	}
+	if processMatches(pid, MatchCriteria{Name: "longdaemonnamX-xyz", UID: -1}) {
+		t.Error("a name differing in the first 15 bytes matched")
+	}
+}
+
+func TestNameLengthWarning(t *testing.T) {
+	if w := nameLengthWarning("sshd"); w != "" {
+		t.Errorf("short name warned: %q", w)
+	}
+	if w := nameLengthWarning("exactly15chars!"); w != "" {
+		t.Errorf("15-byte name warned: %q", w)
+	}
+	w := nameLengthWarning("longdaemonname-xyz")
+	if !strings.Contains(w, "longdaemonname-") || !strings.Contains(w, "--exec") {
+		t.Errorf("warning = %q", w)
+	}
+}
+
+// TestExecSymlinkAppletNotMatchedByInode: on busybox systems an applet
+// is a symlink to the multi-call binary (/usr/sbin/crond ->
+// /bin/busybox). --exec naming the applet must not match every other
+// process running that binary, as an inode compare would.
+func TestExecSymlinkAppletNotMatchedByInode(t *testing.T) {
+	pid, viaSbin := startCopiedSleep(t, "multicall")
+	applet := filepath.Join(t.TempDir(), "crond")
+	if err := os.Symlink(viaSbin, applet); err != nil {
+		t.Fatal(err)
+	}
+	if processMatches(pid, MatchCriteria{Exec: applet, UID: -1}) {
+		t.Errorf("--exec %s (a symlink to the running binary) matched pid %d", applet, pid)
 	}
 }

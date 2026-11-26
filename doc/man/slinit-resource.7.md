@@ -43,18 +43,21 @@ one executable agent.
 ## OCF ACTIONS
 
 **start**
-:   Run **monitor** first; if the service is already **STARTED**,
-    return **OCF_SUCCESS** without issuing a start, as required by the
-    OCF idempotency rule. Otherwise run **slinitctl start** and return
-    the result of a second **monitor** — so a service still
-    **STARTING** at that point reports **OCF_NOT_RUNNING**.
+:   Probe the service first; if it is already **STARTED**, return
+    **OCF_SUCCESS** without issuing a start, as required by the OCF
+    idempotency rule. Otherwise (including **STARTING**) run
+    **slinitctl start**, then poll for up to **start_timeout** seconds
+    while the service is still **STARTING**. Returns **OCF_SUCCESS**
+    once it is **STARTED**, **OCF_ERR_GENERIC** otherwise.
 
 **stop**
-:   Run **monitor** first; if it reports **OCF_NOT_RUNNING**, return
-    **OCF_SUCCESS** without issuing a stop. Note that this includes a
-    service that is **STARTING** or **STOPPING**. Otherwise run
-    **slinitctl stop \--ignore-unstarted** and return **OCF_SUCCESS**
-    only if a second **monitor** reports the service not running.
+:   Probe the service first; return **OCF_SUCCESS** without issuing a
+    stop only if it is exactly **STOPPED** or the **slinit** daemon is
+    unreachable. Every other state, including **STARTING** and
+    **STOPPING**, gets **slinitctl stop \--ignore-unstarted**, followed
+    by polling for up to **stop_timeout** seconds. Returns
+    **OCF_SUCCESS** once the service is **STOPPED**, **OCF_ERR_GENERIC**
+    otherwise.
 
 **monitor**
 :   Probe the service via **slinitctl status** and translate its
@@ -64,9 +67,17 @@ one executable agent.
 
     | slinit State        | OCF return code      |
     |---------------------|----------------------|
-    | STARTED             | OCF_SUCCESS (0)      |
-    | STOPPED, STARTING, STOPPING | OCF_NOT_RUNNING (7) |
+    | STARTED, STARTING   | OCF_SUCCESS (0)      |
+    | STOPPED             | OCF_NOT_RUNNING (7)  |
+    | STOPPING            | OCF_ERR_GENERIC (1)  |
     | (anything else)     | OCF_ERR_GENERIC (1)  |
+
+    **OCF_NOT_RUNNING** tells Pacemaker the resource is cleanly stopped
+    on this node — after a probe it may then start the resource
+    elsewhere without stopping it here — so only **STOPPED** maps to
+    it. A **STARTING** service may already have running processes and
+    is reported active; a **STOPPING** one is reported as failed, so
+    Pacemaker recovers it with a **stop**.
 
     If the **slinit** daemon is unreachable (socket missing, connection
     refused), the agent reports **OCF_NOT_RUNNING** so Pacemaker can
@@ -133,6 +144,15 @@ variables):
 
 **slinitctl** (default *slinitctl*)
 :   Path to the **slinitctl** binary. Defaults to a **PATH** lookup.
+
+**start_timeout** (default *30*)
+:   Seconds **start** keeps polling for **STARTED** after
+    **slinitctl start** returns while the service is still
+    **STARTING**.
+
+**stop_timeout** (default *30*)
+:   Seconds **stop** keeps polling for **STOPPED** after
+    **slinitctl stop** returns.
 
 ## EXAMPLE
 

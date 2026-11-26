@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -159,7 +160,7 @@ func TestParseChpstBasics(t *testing.T) {
 
 // TestParseChpstWarnings covers the flags that either aren't
 // mappable at all (nice, PID namespaces) or map with a caveat
-// (memory rlimit approximation, envdir vs env-file).
+// (memory rlimit approximation).
 func TestParseChpstWarnings(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -167,7 +168,6 @@ func TestParseChpstWarnings(t *testing.T) {
 		wantWarn string
 	}{
 		{"nice level", []string{"-n", "5", "daemon"}, "chpst -n 5"},
-		{"envdir approximation", []string{"-e", "/etc/env", "daemon"}, "chpst -e /etc/env"},
 		{"unmapped rlimit nproc", []string{"-p", "100", "daemon"}, "chpst -p 100"},
 		{"unmapped rlimit fsize", []string{"-f", "1000000", "daemon"}, "chpst -f 1000000"},
 		{"env-only user", []string{"-U", "nobody", "daemon"}, "chpst -U nobody"},
@@ -608,5 +608,123 @@ func TestQuotedExecArgsSurvive(t *testing.T) {
 		if len(desc.Command) < 1 || !reflect.DeepEqual(desc.Command[1:], tc.args) {
 			t.Errorf("%s: argv = %q, want args %q\n%s", tc.run, desc.Command, tc.args, buf.String())
 		}
+	}
+}
+
+// chpst -u user:group:group2... sets the gid to group and the groups to
+// every group listed. Copied whole into run-as, it was a spec
+// process.ResolveRunAs rejects, so the service never started.
+func TestChpstUserGroupList(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "g")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "run"), []byte("#!/bin/sh\nexec chpst -u foo:bar:audio:video /bin/echo x\n"), 0o755)
+	cfg, _, err := convertService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	desc, err := config.Parse(bytes.NewReader(buf.Bytes()), "g", "g")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, buf.String())
+	}
+	if desc.RunAs != "foo:bar" {
+		t.Errorf("run-as = %q; want foo:bar\n%s", desc.RunAs, buf.String())
+	}
+	if got := strings.Join(desc.SupplementaryGroups, " "); got != "audio video" {
+		t.Errorf("supplementary-groups = %q; want audio video\n%s", got, buf.String())
+	}
+}
+
+// chpst -b was emitted as "argv0 =", a setting slinit does not have, so
+// the converted file failed to load. slinit spells it command-argv0.
+func TestChpstArgv0Loads(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "b")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "run"), []byte("#!/bin/sh\nexec chpst -b shown /bin/echo x\n"), 0o755)
+	cfg, _, err := convertService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	desc, err := config.Parse(bytes.NewReader(buf.Bytes()), "b", "b")
+	if err != nil {
+		t.Fatalf("converted file does not parse: %v\n%s", err, buf.String())
+	}
+	if desc.Argv0 != "shown" {
+		t.Errorf("argv0 = %q; want shown", desc.Argv0)
+	}
+}
+
+// TestParseChpstGroupedFlags — chpst parses its options with getopt,
+// so flags group: `-P0` is -P then -0, and a value-taking flag ends
+// the group and takes the rest of it (or the next argument). Reading
+// only the first letter of each argument dropped -0 from `-P0` and
+// took `u` of `-Pu nobody` for nothing, so "nobody" became the
+// command.
+func TestParseChpstGroupedFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want slinitConfig
+	}{
+		{"P0", []string{"-P0", "daemon"},
+			slinitConfig{newSession: true, closeStdin: true, command: "daemon"}},
+		{"012", []string{"-012", "daemon"},
+			slinitConfig{closeStdin: true, closeStdout: true, closeStderr: true, command: "daemon"}},
+		{"Pu value in next arg", []string{"-Pu", "nobody", "daemon"},
+			slinitConfig{newSession: true, runAs: "nobody", command: "daemon"}},
+		{"Pu value joined", []string{"-Punobody", "daemon"},
+			slinitConfig{newSession: true, runAs: "nobody", command: "daemon"}},
+		{"value flag ends group", []string{"-uP0", "daemon"},
+			slinitConfig{runAs: "P0", command: "daemon"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var cfg slinitConfig
+			parseChpst(&cfg, c.args)
+			if !reflect.DeepEqual(cfg, c.want) {
+				t.Errorf("parseChpst(%q)\n  got %+v\n want %+v", c.args, cfg, c.want)
+			}
+		})
+	}
+}
+
+// TestConvertChpstEnvdir — `chpst -e DIR` is runit's envdir: one file
+// per variable. It used to convert to `env-file = DIR`; slinit's
+// env-file reader fails on a directory, the error is only logged, and
+// the service started without the variables. It must convert to
+// env-dir, which reads the envdir layout, and a relative DIR is taken
+// from the svdir, where runsv runs chpst.
+func TestConvertChpstEnvdir(t *testing.T) {
+	svcDir := filepath.Join(t.TempDir(), "svc")
+	envDir := filepath.Join(svcDir, "env")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "FOO"), []byte("bar\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := "#!/bin/sh\nexec chpst -e ./env /bin/true\n"
+	if err := os.WriteFile(filepath.Join(svcDir, "run"), []byte(run), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := convertService(svcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	out := buf.String()
+	if !strings.Contains(out, "env-dir = "+envDir+"\n") {
+		t.Errorf("want env-dir = %s in output:\n%s", envDir, out)
+	}
+	if strings.Contains(out, "env-file") {
+		t.Errorf("an envdir must not become env-file:\n%s", out)
+	}
+	env, err := process.ReadEnvDir(envDir)
+	if err != nil || env["FOO"] != "bar" {
+		t.Errorf("ReadEnvDir(%s) = %v, %v; want FOO=bar", envDir, env, err)
 	}
 }

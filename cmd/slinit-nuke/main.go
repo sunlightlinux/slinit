@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"syscall"
 	"time"
 )
@@ -48,6 +49,12 @@ func run(args []string, stderr *os.File) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+
+	// Run from an SSH session, the first kill(-1) takes down sshd, the
+	// pty hangs up, and the SIGHUP would kill us before the SIGKILL
+	// round; a dead terminal also turns stderr writes into SIGPIPE.
+	// Nothing should stop us from here on.
+	signal.Ignore(syscall.SIGHUP, syscall.SIGTERM, syscall.SIGPIPE)
 
 	// Signals are best-effort; ESRCH just means "no processes matched"
 	// which is a valid outcome (e.g. we are the only userspace process).

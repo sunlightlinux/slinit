@@ -169,10 +169,35 @@ func TestPinStoreSetSyncsBeforeAndAfterRename(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("fsync calls = %+v, want the temp file then the directory", calls)
 	}
-	if calls[0].name != path+".tmp" || calls[0].finalExists {
-		t.Errorf("first fsync = %+v, want %s.tmp before the rename", calls[0], path)
+	if tmp := filepath.Join(dir, ".db.tmp"); calls[0].name != tmp || calls[0].finalExists {
+		t.Errorf("first fsync = %+v, want %s before the rename", calls[0], tmp)
 	}
 	if calls[1].name != dir || !calls[1].finalExists {
 		t.Errorf("second fsync = %+v, want %s after the rename", calls[1], dir)
+	}
+}
+
+// A service whose name ends in ".tmp" is a valid name, but Load skipped
+// every "*.tmp" entry as Set's temp file, so its pin was lost at boot.
+// Set's own temp file must still be skipped.
+func TestPinStoreLoadKeepsDotTmpServiceName(t *testing.T) {
+	dir := t.TempDir()
+	p := NewPinStore(dir)
+	if err := p.Set("backup.tmp", IntentPinnedStopped); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// A temp file a crash left behind between write and rename.
+	if err := os.WriteFile(filepath.Join(dir, ".db.tmp"), []byte(IntentPinnedStarted+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got["backup.tmp"] != IntentPinnedStopped {
+		t.Errorf("pin of backup.tmp = %q, want %q", got["backup.tmp"], IntentPinnedStopped)
+	}
+	if len(got) != 1 {
+		t.Errorf("Load = %v, want only backup.tmp (a temp file is not a pin)", got)
 	}
 }

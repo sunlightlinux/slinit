@@ -5,17 +5,27 @@
 // slinit-journalctl -M and slinit-machinectl see it.
 //
 // What's inside:
-//   - Namespaces: CLONE_NEWPID, CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC
-//     always; CLONE_NEWNET optional via --private-network.
+//   - Namespaces: CLONE_NEWPID, CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC,
+//     CLONE_NEWCGROUP always; CLONE_NEWNET optional via --private-network.
 //   - Mount setup: mount --rbind rootfs → temp dir + MS_PRIVATE, then
 //     pivot_root inside the child. Standard virtual FS bind mounts:
-//     /proc (rw, private), /sys (ro, private, rebound), /dev
-//     (ro-rbind from host), /dev/pts (new, private), /run (tmpfs).
+//     /proc (rw, private), /sys (ro, private, rebound), /dev (fresh
+//     nodev tmpfs with the standard nodes bound in from the host),
+//     /dev/console the stdin terminal or /dev/null, /dev/pts (new
+//     instance), /dev/shm, /run and /tmp (tmpfs). The
+//     rootfs is nodev, not nosuid. /proc/sys and nspawn's other
+//     read-only /proc entries are read-only, its inaccessible ones
+//     are covered with /dev/null.
+//   - Capabilities: bounding set narrowed to systemd-nspawn's default
+//     retained set.
+//   - Seccomp: the system calls systemd-nspawn's filter leaves out
+//     fail with EPERM; other architectures' system calls are killed.
 //   - Init exec: default /sbin/slinit; override with --init=PATH.
 //     Argv beyond -- is passed through as init's args.
 //   - Registry: parent writes /run/slinit/machines/<name> post-fork,
-//     removes it on child exit. On SIGTERM/SIGINT the parent proxies
-//     SIGTERM to PID 1 inside the container before waiting.
+//     removes it on child exit. SIGTERM and SIGINT are forwarded to
+//     PID 1 inside the container, SIGHUP as SIGTERM; the init has
+//     SIGKILL as its parent death signal.
 //   - Console: the child keeps the launching TTY (no pty allocation
 //     yet — good enough for foreground demos, systemd-nspawn's
 //     -x pseudo-tty is deferred).
@@ -43,6 +53,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -50,6 +62,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sunlightlinux/slinit/pkg/machine"
+	"github.com/sunlightlinux/slinit/pkg/seccomp"
 )
 
 // reexecEnv marks the child re-exec that runs after pivot_root. The
@@ -57,6 +70,11 @@ import (
 // namespaces so `main` can dispatch to childMain instead of restarting
 // the parent flow.
 const reexecEnv = "_SLINIT_NSPAWN_CHILD"
+
+// payloadPrefix starts the name of every variable that carries the
+// launch parameters to the child, reexecEnv included. None of them
+// reaches the container's init.
+const payloadPrefix = "_SLINIT_NSPAWN_"
 
 // childPayload is what the parent hands to the child via env vars.
 // Kept env-based (not a pipe) so the child can be a bare re-exec of
@@ -69,6 +87,7 @@ type childPayload struct {
 	PrivateNet  bool     // CLONE_NEWNET
 	Hostname    string   // container UTS hostname (default = name)
 	RegistryDir string   // override for machine.SetDir (default /run/slinit/machines)
+	SetEnv      []string // --setenv assignments, NAME=VALUE, for the init
 }
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -126,7 +145,10 @@ func parentMain() error {
 		privateNet = fs.Bool("private-network", false, "create CLONE_NEWNET so container has an empty network stack")
 		machineDir = fs.String("machine-dir", machine.DefaultDir, "registry directory to write into")
 		showHelp   = fs.Bool("h", false, "show help")
+		setenv     setenvFlag
 	)
+	fs.Var(&setenv, "setenv", "NAME[=VALUE]: set an environment variable for the container's init; NAME alone passes on the launcher's (repeatable)")
+	fs.Var(&setenv, "E", "short for --setenv")
 	// --help as well as -h. Only "h" was registered, so --help reached
 	// Go's flag package as an undefined flag: it printed the usage and
 	// returned ErrHelp, which this command turned into exit 1. Every
@@ -188,6 +210,7 @@ Flags:
 		PrivateNet:  *privateNet,
 		Hostname:    uts,
 		RegistryDir: *machineDir,
+		SetEnv:      setenv,
 	}
 	return runParent(payload)
 }
@@ -203,7 +226,7 @@ func runParent(p childPayload) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(withoutPayload(os.Environ()),
 		reexecEnv+"=1",
 		"_SLINIT_NSPAWN_NAME="+p.Name,
 		"_SLINIT_NSPAWN_ROOTFS="+p.Rootfs,
@@ -211,21 +234,62 @@ func runParent(p childPayload) error {
 		"_SLINIT_NSPAWN_HOSTNAME="+p.Hostname,
 		"_SLINIT_NSPAWN_INIT_ARGS="+strings.Join(p.InitArgs, "\x1f"),
 	)
+	if p.PrivateNet {
+		cmd.Env = append(cmd.Env, "_SLINIT_NSPAWN_PRIVATE_NET=1")
+	}
+	// One variable each, so a value may hold any byte but NUL.
+	for i, a := range p.SetEnv {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%sSETENV_%d=%s", payloadPrefix, i, a))
+	}
 
+	// CLONE_NEWCGROUP as systemd-nspawn: the container sees its own
+	// cgroup as the root, not the host's hierarchy and its place in it.
 	flagsUnshare := uintptr(unix.CLONE_NEWPID | unix.CLONE_NEWNS |
-		unix.CLONE_NEWUTS | unix.CLONE_NEWIPC)
+		unix.CLONE_NEWUTS | unix.CLONE_NEWIPC | unix.CLONE_NEWCGROUP)
 	if p.PrivateNet {
 		flagsUnshare |= unix.CLONE_NEWNET
 	}
+	// Pdeathsig: a launcher that dies, killed or by a signal it does
+	// not catch, takes the container with it, as systemd-nspawn's
+	// PR_SET_PDEATHSIG does, rather than leaving it running with no
+	// one to reap it or remove its registry entry.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:   flagsUnshare,
 		Setpgid:      true,
 		Unshareflags: unix.CLONE_NEWNS,
+		Pdeathsig:    syscall.SIGKILL,
 	}
+	// The container gets a process group of its own. When the launcher
+	// holds the terminal on stdin, that group is made the terminal's
+	// foreground one: the init keeps the terminal as its stdin and
+	// console, and a read from it in a background group sends SIGTTIN,
+	// which a PID 1 does not act on, so the read restarted forever at
+	// full CPU. Ctrl-C and the other terminal signals then reach the
+	// init directly, as they reach it through systemd-nspawn's pty.
+	fg := ownsTerminal(0)
+	if fg {
+		cmd.SysProcAttr.Foreground = true
+		cmd.SysProcAttr.Ctty = 0 // a descriptor of this process, for Foreground
+	}
+	// The parent death signal fires when the thread that forked the
+	// child exits, not the process. Go ends a thread only when a
+	// goroutine locked to it returns; held by this goroutine until
+	// the container is reaped, the forking thread can run nothing else.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("clone into namespaces: %w", err)
 	}
 	childPid := cmd.Process.Pid
+	if fg {
+		// The terminal goes back to this process group when the
+		// container is gone. From the background that needs SIGTTOU
+		// ignored, which also lets this process write warnings to a
+		// terminal set to tostop meanwhile. Not before Start: the init
+		// would inherit the ignored signal.
+		signal.Ignore(syscall.SIGTTOU)
+		defer takeTerminal(0)
+	}
 
 	// Register early — journalctl -M works as soon as the child is
 	// running, even before init inside has fully come up.
@@ -247,14 +311,29 @@ func runParent(p childPayload) error {
 		}
 	}()
 
-	// Signal proxy: forward SIGTERM/SIGINT to the child's PID 1.
+	// Signal proxy: forward SIGTERM/SIGINT to the child's PID 1, and
+	// SIGHUP, the terminal going away, as SIGTERM: for an init SIGHUP
+	// means reload, and the launcher must stay to see the container
+	// exit and remove its registry entry.
+	//
+	// Under nohup SIGHUP arrives ignored and must stay so: Notify would
+	// install a handler and the logout would stop the container nohup
+	// was meant to keep. The ignored state is inherited from the exec,
+	// so check it before touching the signal.
+	proxied := []os.Signal{syscall.SIGTERM, syscall.SIGINT}
+	if !signal.Ignored(syscall.SIGHUP) {
+		proxied = append(proxied, syscall.SIGHUP)
+	}
 	sigCh := make(chan os.Signal, 4)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sigCh, proxied...)
 	done := make(chan struct{})
 	go func() {
 		for {
 			select {
 			case s := <-sigCh:
+				if s == syscall.SIGHUP {
+					s = syscall.SIGTERM
+				}
 				// Send to the child directly. Inside the container's
 				// PID namespace it appears as PID 1, so init handles
 				// it via its own signal wiring.
@@ -277,6 +356,22 @@ func runParent(p childPayload) error {
 	return nil
 }
 
+// ownsTerminal reports whether fd is a terminal whose foreground
+// process group is this process's own. Only then does the container
+// take the terminal over: run in the background of a job-control
+// shell, the launcher must not take it from the shell.
+func ownsTerminal(fd int) bool {
+	pgrp, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP)
+	return err == nil && pgrp == unix.Getpgrp()
+}
+
+// takeTerminal makes this process's group the foreground one of the
+// terminal on fd again. Best effort: a terminal that was hung up
+// refuses with EIO, and then there is no one to give it back to.
+func takeTerminal(fd int) {
+	_ = unix.IoctlSetPointerInt(fd, unix.TIOCSPGRP, unix.Getpgrp())
+}
+
 // childMain runs inside the new namespaces. Sets hostname, does
 // mount setup, pivot_root into the container rootfs, exec init.
 func childMain() error {
@@ -285,6 +380,23 @@ func childMain() error {
 	initBin := os.Getenv("_SLINIT_NSPAWN_INIT")
 	hostname := os.Getenv("_SLINIT_NSPAWN_HOSTNAME")
 	rawArgs := os.Getenv("_SLINIT_NSPAWN_INIT_ARGS")
+	privateNet := os.Getenv("_SLINIT_NSPAWN_PRIVATE_NET") != ""
+	var setenv []string
+	for i := 0; ; i++ {
+		a, ok := os.LookupEnv(fmt.Sprintf("%sSETENV_%d", payloadPrefix, i))
+		if !ok {
+			break
+		}
+		setenv = append(setenv, a)
+	}
+	// The payload is read: drop it, so that nothing below, and no
+	// slinit-nspawn started inside the container, takes it for its own.
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, payloadPrefix) {
+			os.Unsetenv(k)
+		}
+	}
+	initEnv := containerEnv(os.LookupEnv, isTerminal(0), setenv)
 	var initArgs []string
 	if rawArgs != "" {
 		// US (0x1f) separator — envs are C strings so NUL is unusable,
@@ -292,6 +404,19 @@ func childMain() error {
 		initArgs = strings.Split(rawArgs, "\x1f")
 	}
 	_ = name
+
+	// The bounding and inheritable sets are per thread: the thread that
+	// narrows them must be the one that execs the init.
+	runtime.LockOSThread()
+
+	// The parent death signal is per thread too. The launcher set it on
+	// this process's first thread, which may not be the one that execs
+	// the init, and the init keeps only the exec'ing thread's. Set here,
+	// it is in place before the exec, and the first thread's covers the
+	// time until then.
+	if err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGKILL), 0, 0, 0); err != nil {
+		return fmt.Errorf("set the parent death signal: %w", err)
+	}
 
 	// Nothing the launcher inherited may reach the container: a host
 	// file or directory fd would outlive pivot_root. Marked
@@ -319,6 +444,30 @@ func childMain() error {
 	if err := unix.Mount(rootfs, rootfs, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind rootfs onto itself: %w", err)
 	}
+	// nodev on the whole tree, so a device node shipped in the image is
+	// unusable. systemd-nspawn leaves the root dev and closes devices
+	// with the scope's DevicePolicy=closed instead; slinit-nspawn sets up
+	// no device cgroup, so the mount flag is what stands in for it. Not
+	// nosuid: the container's setuid binaries must keep working.
+	if err := unix.MountSetattr(unix.AT_FDCWD, rootfs, unix.AT_RECURSIVE,
+		&unix.MountAttr{Attr_set: unix.MOUNT_ATTR_NODEV}); err != nil {
+		return fmt.Errorf("rootfs nodev: %w", err)
+	}
+	// The device nodes the container's /dev gets, taken while the host
+	// /dev is still reachable.
+	nodes, err := cloneDevNodes()
+	if err != nil {
+		return err
+	}
+	console, err := unix.OpenTree(unix.AT_FDCWD, consoleSource(), unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC)
+	if err != nil {
+		return fmt.Errorf("clone the console: %w", err)
+	}
+	// /proc and /sys too: inside a user namespace the kernel mounts
+	// them only while a full mount of the same kind is already visible
+	// (mount_too_revealing), and once the old root is gone there is none.
+	proc, procErr := newMount("proc", unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV)
+	sys, sysErr := newMount("sysfs", unix.MOUNT_ATTR_RDONLY|unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV)
 
 	// pivot_root(".", ".") from inside the new root stacks the old
 	// root on top of it, and the umount below takes it off again. No
@@ -347,31 +496,46 @@ func childMain() error {
 	}
 	// Create dirs first (idempotent) — some minimal rootfs don't ship
 	// /proc /sys /dev/pts.
-	for _, d := range []string{"/proc", "/sys", "/dev", "/dev/pts", "/run", "/tmp"} {
+	for _, d := range []string{"/proc", "/sys", "/dev", "/run", "/tmp"} {
 		if err := os.MkdirAll(d, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
+	if err := setupDev(nodes, console); err != nil {
+		return err
+	}
 	mounts := []m{
-		{"proc", "/proc", "proc", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, ""},
-		{"sysfs", "/sys", "sysfs", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_RDONLY, ""},
-		{"devpts", "/dev/pts", "devpts", unix.MS_NOSUID | unix.MS_NOEXEC, "gid=5,mode=620,ptmxmode=666"},
+		{"devpts", "/dev/pts", "devpts", unix.MS_NOSUID | unix.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=620,gid=5"},
+		{"tmpfs", "/dev/shm", "tmpfs", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME, "mode=1777"},
 		{"tmpfs", "/run", "tmpfs", unix.MS_NOSUID | unix.MS_NODEV, "mode=755"},
 		{"tmpfs", "/tmp", "tmpfs", unix.MS_NOSUID | unix.MS_NODEV, "mode=1777"},
 	}
 	for _, mnt := range mounts {
 		if err := unix.Mount(mnt.src, mnt.dst, mnt.fstype, mnt.flags, mnt.data); err != nil {
-			// Non-fatal for /sys and /tmp — some kernels or rootfs
+			// Non-fatal — some kernels or rootfs
 			// setups (e.g. an existing devtmpfs bind on /dev) refuse
 			// remounts. Warn to stderr.
 			fmt.Fprintf(os.Stderr, "slinit-nspawn (child): mount %s: %v\n", mnt.dst, err)
 		}
 	}
+	attach(sys, sysErr, "/sys")
+	if attach(proc, procErr, "/proc") {
+		if err := protectProc(privateNet); err != nil {
+			return err
+		}
+	}
+
+	if err := dropCaps(privateNet); err != nil {
+		return err
+	}
+	if err := installSeccomp(); err != nil {
+		return err
+	}
 
 	// Exec the init. slinit expects PID 1 semantics; nothing to teach
 	// it about our namespaces since it always is one.
 	argv := append([]string{initBin}, initArgs...)
-	if err := syscall.Exec(initBin, argv, os.Environ()); err != nil {
+	if err := syscall.Exec(initBin, argv, initEnv); err != nil {
 		// execve ENOENT is famously ambiguous — the target binary
 		// missing, its dynamic interpreter missing, or a #! shebang
 		// pointing at nothing all look identical. Investigate before
@@ -380,6 +544,345 @@ func childMain() error {
 		return fmt.Errorf("exec %s: %w%s", initBin, err, hint)
 	}
 	return nil
+}
+
+// defaultPath is the init's PATH, systemd-nspawn's DEFAULT_PATH_COMPAT
+// for a split /usr: the init and what it starts find programs whether
+// or not the image has merged /usr.
+const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// containerEnv is the environment the container's init starts with,
+// systemd-nspawn's (nspawn.c, inner_child) less what slinit-nspawn
+// does not provide (container_uuid, NOTIFY_SOCKET, LISTEN_FDS,
+// credentials): PATH, container=, the terminal's TERM, COLORTERM and
+// NO_COLOR when stdin is one (TERM=dumb otherwise), root's HOME, USER
+// and LOGNAME, and then the --setenv assignments, which override.
+// Nothing else of the launcher's environment, its secrets, SSH agent
+// or the launch parameters for the child, reaches the container.
+func containerEnv(lookup func(string) (string, bool), tty bool, setenv []string) []string {
+	env := []string{"PATH=" + defaultPath, "container=slinit-nspawn"}
+	if term, _ := lookup("TERM"); tty && term != "" && term != "dumb" {
+		for _, k := range []string{"TERM", "COLORTERM", "NO_COLOR"} {
+			if v, ok := lookup(k); ok {
+				env = append(env, k+"="+v)
+			}
+		}
+	} else {
+		env = append(env, "TERM=dumb")
+	}
+	env = append(env, "HOME=/root", "USER=root", "LOGNAME=root")
+	for _, a := range setenv {
+		k, _, _ := strings.Cut(a, "=")
+		i := slices.IndexFunc(env, func(kv string) bool { return strings.HasPrefix(kv, k+"=") })
+		if i >= 0 {
+			env[i] = a
+		} else {
+			env = append(env, a)
+		}
+	}
+	return env
+}
+
+// withoutPayload is env less any variable named with payloadPrefix:
+// the launcher passes the child only the parameters it sets itself,
+// not ones it inherited, from a container it runs in, say.
+func withoutPayload(env []string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		return strings.HasPrefix(kv, payloadPrefix)
+	})
+}
+
+// setenvFlag collects --setenv NAME[=VALUE] assignments, as
+// systemd-nspawn's: NAME alone takes the launcher's value, or the
+// empty string.
+type setenvFlag []string
+
+func (f *setenvFlag) String() string { return strings.Join(*f, " ") }
+
+func (f *setenvFlag) Set(a string) error {
+	k, _, hasValue := strings.Cut(a, "=")
+	if !validEnvName(k) {
+		return fmt.Errorf("%q: not a valid environment variable name", k)
+	}
+	if strings.HasPrefix(k, payloadPrefix) {
+		return fmt.Errorf("%q: reserved for slinit-nspawn itself", k)
+	}
+	if strings.ContainsRune(a, 0) {
+		return fmt.Errorf("%q: NUL in the value", k)
+	}
+	if !hasValue {
+		a = k + "=" + os.Getenv(k)
+	}
+	*f = append(*f, a)
+	return nil
+}
+
+// validEnvName is systemd's env_name_is_valid: letters, digits and
+// underscores, not starting with a digit.
+func validEnvName(k string) bool {
+	if k == "" || k[0] >= '0' && k[0] <= '9' {
+		return false
+	}
+	for _, c := range []byte(k) {
+		if !(c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+// isTerminal reports whether fd is a terminal.
+func isTerminal(fd int) bool {
+	_, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	return err == nil
+}
+
+// devNodes are the host device nodes a container's /dev gets: the
+// required set of systemd-nspawn's copy_devnodes.
+var devNodes = []string{"null", "zero", "full", "random", "urandom", "tty"}
+
+// cloneDevNodes takes a detached bind mount of each host /dev node in
+// devNodes, for setupDev to attach once the host is out of reach.
+// systemd-nspawn mknods them and bind-mounts only where mknod is
+// refused; a bind always works, in a user namespace too, and keeps
+// working on a nodev /dev.
+func cloneDevNodes() ([]int, error) {
+	fds := make([]int, len(devNodes))
+	for i, n := range devNodes {
+		fd, err := unix.OpenTree(unix.AT_FDCWD, "/dev/"+n, unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC)
+		if err != nil {
+			return nil, fmt.Errorf("clone /dev/%s: %w", n, err)
+		}
+		fds[i] = fd
+	}
+	return fds, nil
+}
+
+// consoleSource is what the container gets as /dev/console: the
+// terminal on stdin, which the init inherits, as systemd-nspawn binds
+// its console pty, or /dev/null when stdin is not a terminal, as in
+// nspawn's pipe and read-only modes. The terminal is named by the path
+// /proc gives for fd 0, taken only if it is still that same device.
+// Called before pivot_root: the path names a host file.
+func consoleSource() string {
+	if _, err := unix.IoctlGetTermios(0, unix.TCGETS); err != nil {
+		return "/dev/null"
+	}
+	p, err := os.Readlink("/proc/self/fd/0")
+	var fdSt, pathSt unix.Stat_t
+	if err != nil || unix.Fstat(0, &fdSt) != nil || unix.Stat(p, &pathSt) != nil ||
+		pathSt.Mode&unix.S_IFMT != unix.S_IFCHR || pathSt.Rdev != fdSt.Rdev {
+		fmt.Fprintf(os.Stderr, "slinit-nspawn (child): cannot find the terminal on stdin, /dev/console is /dev/null\n")
+		return "/dev/null"
+	}
+	return p
+}
+
+// setupDev gives the container a fresh /dev, as systemd-nspawn does:
+// a tmpfs holding only the devNodes binds, console on /dev/console,
+// the /dev/fd and stdio links,
+// mount points for /dev/pts and /dev/shm, and /dev/ptmx pointing at
+// the container's own devpts. The image's /dev, and any device node in
+// it, is hidden underneath. The tmpfs is nodev, unlike nspawn's, which
+// mknods into it: with no device cgroup here, a node the container
+// creates must not open a host device.
+func setupDev(nodes []int, console int) error {
+	if err := unix.Mount("tmpfs", "/dev", "tmpfs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_STRICTATIME, "mode=755"); err != nil {
+		return fmt.Errorf("mount /dev: %w", err)
+	}
+	for i, n := range devNodes {
+		p := "/dev/" + n
+		if err := os.WriteFile(p, nil, 0o666); err != nil {
+			return fmt.Errorf("create %s: %w", p, err)
+		}
+		if err := unix.MoveMount(nodes[i], "", unix.AT_FDCWD, p, unix.MOVE_MOUNT_F_EMPTY_PATH); err != nil {
+			return fmt.Errorf("bind %s: %w", p, err)
+		}
+		unix.Close(nodes[i])
+	}
+	if err := os.WriteFile("/dev/console", nil, 0o600); err != nil {
+		return fmt.Errorf("create /dev/console: %w", err)
+	}
+	if err := unix.MoveMount(console, "", unix.AT_FDCWD, "/dev/console", unix.MOVE_MOUNT_F_EMPTY_PATH); err != nil {
+		return fmt.Errorf("bind /dev/console: %w", err)
+	}
+	unix.Close(console)
+	for _, d := range []string{"/dev/pts", "/dev/shm"} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", d, err)
+		}
+	}
+	for _, l := range [][2]string{
+		{"/proc/self/fd", "/dev/fd"},
+		{"/proc/self/fd/0", "/dev/stdin"},
+		{"/proc/self/fd/1", "/dev/stdout"},
+		{"/proc/self/fd/2", "/dev/stderr"},
+		{"pts/ptmx", "/dev/ptmx"},
+	} {
+		if err := os.Symlink(l[0], l[1]); err != nil {
+			return fmt.Errorf("symlink %s: %w", l[1], err)
+		}
+	}
+	return nil
+}
+
+// newMount creates a detached mount of a new fstype instance, for the
+// caller's namespaces, with the MOUNT_ATTR_* flags attr.
+func newMount(fstype string, attr int) (int, error) {
+	fsfd, err := unix.Fsopen(fstype, unix.FSOPEN_CLOEXEC)
+	if err != nil {
+		return -1, err
+	}
+	defer unix.Close(fsfd)
+	if err := unix.FsconfigCreate(fsfd); err != nil {
+		return -1, err
+	}
+	return unix.Fsmount(fsfd, unix.FSMOUNT_CLOEXEC, attr)
+}
+
+// attach moves the newMount result fd onto dst. A failure, of either,
+// is reported and skipped, as for the other mounts.
+func attach(fd int, err error, dst string) bool {
+	if err == nil {
+		err = unix.MoveMount(fd, "", unix.AT_FDCWD, dst, unix.MOVE_MOUNT_F_EMPTY_PATH)
+		unix.Close(fd)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-nspawn (child): mount %s: %v\n", dst, err)
+		return false
+	}
+	return true
+}
+
+// procReadOnly and procMasked are systemd-nspawn's read-only and
+// inaccessible /proc entries (nspawn-mount.c, mount_all): /proc/sys
+// holds host-wide tunables such as kernel.core_pattern, which runs a
+// program as host root; the others expose hardware tunables or kernel
+// internals.
+var (
+	procReadOnly = []string{"/proc/sys", "/proc/acpi", "/proc/apm", "/proc/asound",
+		"/proc/bus", "/proc/fs", "/proc/irq", "/proc/scsi"}
+	procMasked = []string{"/proc/kallsyms", "/proc/kcore", "/proc/keys",
+		"/proc/sysrq-trigger", "/proc/timer_list"}
+)
+
+// protectProc makes procReadOnly read-only and covers procMasked with
+// /dev/null. With a private network namespace /proc/sys/net stays
+// writable, as under systemd-nspawn: its sysctls are the container's
+// own. It is bound over the /proc/sys bind, which the read-only
+// remount then leaves alone. An entry this kernel lacks is skipped.
+func protectProc(privateNet bool) error {
+	for _, p := range procReadOnly {
+		err := unix.Mount(p, p, "", unix.MS_BIND, "")
+		if err == nil && p == "/proc/sys" && privateNet {
+			err = unix.Mount("/proc/sys/net", "/proc/sys/net", "", unix.MS_BIND, "")
+		}
+		if err == nil {
+			err = unix.Mount("", p, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|
+				unix.MS_NOSUID|unix.MS_NOEXEC|unix.MS_NODEV, "")
+		}
+		if err != nil && err != unix.ENOENT {
+			return fmt.Errorf("make %s read-only: %w", p, err)
+		}
+	}
+	for _, p := range procMasked {
+		if err := unix.Mount("/dev/null", p, "", unix.MS_BIND, ""); err != nil && err != unix.ENOENT {
+			return fmt.Errorf("mask %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// retainedCaps is systemd-nspawn's default capability set (nspawn.c,
+// arg_caps_retain): what a full init needs inside the container,
+// CAP_SYS_ADMIN included. Everything else, CAP_SYS_MODULE, SYS_RAWIO,
+// SYS_TIME, MAC_ADMIN, NET_ADMIN and the rest, leaves the container.
+// As there, CAP_NET_ADMIN stays with a private network namespace, to
+// configure it.
+var retainedCaps = []uintptr{
+	unix.CAP_AUDIT_CONTROL, unix.CAP_AUDIT_WRITE, unix.CAP_CHOWN,
+	unix.CAP_DAC_OVERRIDE, unix.CAP_DAC_READ_SEARCH, unix.CAP_FOWNER,
+	unix.CAP_FSETID, unix.CAP_IPC_OWNER, unix.CAP_KILL, unix.CAP_LEASE,
+	unix.CAP_LINUX_IMMUTABLE, unix.CAP_MKNOD, unix.CAP_NET_BIND_SERVICE,
+	unix.CAP_NET_BROADCAST, unix.CAP_NET_RAW, unix.CAP_SETFCAP,
+	unix.CAP_SETGID, unix.CAP_SETPCAP, unix.CAP_SETUID, unix.CAP_SYS_ADMIN,
+	unix.CAP_SYS_BOOT, unix.CAP_SYS_CHROOT, unix.CAP_SYS_NICE,
+	unix.CAP_SYS_PTRACE, unix.CAP_SYS_RESOURCE, unix.CAP_SYS_TTY_CONFIG,
+}
+
+// dropCaps narrows the calling thread's bounding set to retainedCaps,
+// as systemd-nspawn's drop_capabilities does, so the init and all it
+// runs can never hold the others. The inheritable set is narrowed too:
+// an exec as root adds it to the permitted set, bounding set or not,
+// and ambient capabilities go with it.
+func dropCaps(privateNet bool) error {
+	var keep uint64
+	for _, c := range retainedCaps {
+		keep |= 1 << c
+	}
+	if privateNet {
+		keep |= 1 << unix.CAP_NET_ADMIN
+	}
+	// Past the kernel's last capability PR_CAPBSET_DROP is EINVAL.
+	for c := uintptr(0); c < 64; c++ {
+		if keep&(1<<c) != 0 {
+			continue
+		}
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, c, 0, 0, 0); err != nil && err != unix.EINVAL {
+			return fmt.Errorf("drop capability %d: %w", c, err)
+		}
+	}
+	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
+	var data [2]unix.CapUserData
+	if err := unix.Capget(&hdr, &data[0]); err != nil {
+		return fmt.Errorf("capget: %w", err)
+	}
+	data[0].Inheritable &= uint32(keep)
+	data[1].Inheritable &= uint32(keep >> 32)
+	if err := unix.Capset(&hdr, &data[0]); err != nil {
+		return fmt.Errorf("capset: %w", err)
+	}
+	return nil
+}
+
+// seccompDeny is what systemd-nspawn's system call filter
+// (nspawn-seccomp.c) does not let through: the calls it excludes
+// outright, quotactl_fd as quotactl's twin, and the groups and calls it
+// admits only with a capability the container does not keep
+// (CAP_SYS_TIME, SYS_MODULE, SYS_RAWIO, IPC_LOCK, SYS_PACCT, SYSLOG,
+// BPF). nspawn allow-lists; this denies the same calls and leaves the
+// rest alone. Most need a capability the container lacks anyway, but
+// kexec_load needs only CAP_SYS_BOOT and open_by_handle_at only
+// CAP_DAC_READ_SEARCH, both kept, and either reaches past the
+// container: a new kernel for the host, any host file by handle.
+var seccompDeny = []string{
+	"@cpu-emulation", "@obsolete", "@pkey", "@swap",
+	"fanotify_init", "fanotify_mark", "kexec_file_load", "kexec_load",
+	"lookup_dcookie", "nfsservctl", "open_by_handle_at", "perf_event_open",
+	"quotactl", "quotactl_fd",
+	"@clock", "@module", "@raw-io", "@memlock", "acct", "syslog", "bpf",
+}
+
+// installSeccomp installs the seccompDeny filter on the calling thread,
+// which must be the one that execs the init. The filter only knows the
+// native architecture: a call through another (a 32-bit binary in the
+// container) kills the process rather than slipping past it. Where
+// pkg/seccomp has no system call table for this architecture the
+// container runs unfiltered, with a warning.
+func installSeccomp() error {
+	if _, ok := seccomp.SyscallNumber("kexec_load"); !ok {
+		fmt.Fprintf(os.Stderr, "slinit-nspawn (child): no system call table for %s, running without a seccomp filter\n", seccomp.NativeArch())
+		return nil
+	}
+	f, err := seccomp.Build(seccompDeny, seccomp.ModeDeny, nil, seccomp.ErrnoAction(unix.EPERM), nil)
+	if err != nil {
+		return err
+	}
+	prog, err := seccomp.Compile(f)
+	if err != nil {
+		return err
+	}
+	return seccomp.Install(prog)
 }
 
 // cloexecFrom sets FD_CLOEXEC on every fd >= first: close_range(2)

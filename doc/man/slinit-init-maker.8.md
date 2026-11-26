@@ -27,7 +27,13 @@ their own service files in alongside the ones produced here.
 The default output directory is */etc/slinit/boot.d*. Existing files
 are preserved unless **--force** is given: the first file that already
 exists stops the run with an error, and files written before it are
-left in place.
+left in place. A symbolic link at an output name stops the run the same
+way, **--force** or not: it is never written through or replaced. Each
+file is written to a fresh temporary name in *DIR* and renamed into
+place, so an interrupted run leaves no partial file. A file replaced
+with **--force** keeps its permission bits (adding only execute bits,
+for a script, where it was already readable) and, run as root, its
+owner and group; a new file is created with its mode less the umask.
 
 # OPTIONS
 
@@ -37,7 +43,8 @@ left in place.
 
 **-f**, **--force**
 :   Overwrite existing files. Without this, the generator refuses to
-    touch any file that already exists in *DIR*.
+    touch any file that already exists in *DIR*. A symbolic link is
+    refused even with it.
 
 **-n**, **--dry-run**
 :   Print the plan — the path and size of every file that would be

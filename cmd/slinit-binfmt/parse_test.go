@@ -91,3 +91,23 @@ func TestParseNameRejectsReservedNames(t *testing.T) {
 		}
 	}
 }
+
+// Trailing blanks and a CR are stripped, as systemd-binfmt's
+// read_stripped_line does: the kernel reads them as part of the flags
+// field and rejects the whole rule with EINVAL.
+func TestParseFileStripsTrailingWhitespace(t *testing.T) {
+	body := ":foo:E::foo::/bin/true: \t\n:bar:E::bar::/bin/true:F\r\n"
+	specs, err := parseFile(strings.NewReader(body), "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(specs) != 2 {
+		t.Fatalf("len=%d, want 2", len(specs))
+	}
+	if want := ":foo:E::foo::/bin/true:"; specs[0].line != want {
+		t.Errorf("line[0]=%q, want %q", specs[0].line, want)
+	}
+	if want := ":bar:E::bar::/bin/true:F"; specs[1].line != want {
+		t.Errorf("line[1]=%q, want %q", specs[1].line, want)
+	}
+}

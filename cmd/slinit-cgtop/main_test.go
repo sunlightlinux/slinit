@@ -1,10 +1,13 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestCountLines(t *testing.T) {
@@ -137,5 +140,99 @@ func TestDepthOf(t *testing.T) {
 		if got := depthOf(tc.rel); got != tc.want {
 			t.Errorf("depthOf(%q): got %d, want %d", tc.rel, got, tc.want)
 		}
+	}
+}
+
+// Rates are per the measured time between the two reads of a cgroup,
+// not the nominal --delay: a scan of a large tree took seconds, and a
+// cgroup busy on one core for those 3s showed 300% with --delay=1s.
+func TestDiffUsesMeasuredInterval(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	prev := map[string]sample{
+		"busy": {path: "busy", tasks: 1, cpuUsageUS: 0, ioRead: 0, at: t0},
+	}
+	curr := map[string]sample{
+		"busy": {path: "busy", tasks: 1, cpuUsageUS: 3_000_000, ioRead: 3072, at: t0.Add(3 * time.Second)},
+	}
+	rows := diff(prev, curr, time.Second, false)
+	if len(rows) != 1 {
+		t.Fatalf("diff: got %d rows, want 1", len(rows))
+	}
+	if got := rows[0].cpuPct; got < 99.9 || got > 100.1 {
+		t.Errorf("cpuPct over a measured 3s: got %.1f, want 100.0", got)
+	}
+	if got := rows[0].ioReadRate; got != 1024 {
+		t.Errorf("ioReadRate over a measured 3s: got %d, want 1024", got)
+	}
+}
+
+// takeAll stamps every cgroup with its own read time: in a slow scan
+// the first and last cgroups are read seconds apart.
+func TestTakeAllTimestampsEachCgroup(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"a", "b"} {
+		os.Mkdir(filepath.Join(root, d), 0o755)
+		os.WriteFile(filepath.Join(root, d, "cpu.stat"), []byte("usage_usec 5\n"), 0o644)
+	}
+	prevRoot, prevClock := cgroupRoot, clock
+	defer func() { cgroupRoot, clock = prevRoot, prevClock }()
+	cgroupRoot = root
+	tick := time.Unix(1000, 0)
+	clock = func() time.Time { tick = tick.Add(time.Second); return tick }
+
+	got, err := takeAll(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[time.Time]bool{}
+	for _, p := range []string{"", "a", "b"} {
+		s, ok := got[p]
+		if !ok || s.at.IsZero() {
+			t.Fatalf("cgroup %q: no timestamp (%+v)", p, s)
+		}
+		seen[s.at] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("timestamps not per cgroup: %v", seen)
+	}
+}
+
+func TestDisplayPath(t *testing.T) {
+	for in, want := range map[string]string{
+		"system.slice/sshd.service":              "system.slice/sshd.service",
+		"user.slice/evil\x1b]0;PWNED\x07\x1b[2J": `user.slice/evil\x1b]0;PWNED\x07\x1b[2J`,
+		"a\nb\rc\x7f":                            `a\x0ab\x0dc\x7f`,
+		"bad\xffutf8":                            `bad\xffutf8`,
+		"c1\u009bcsi":                            `c1\xc2\x9bcsi`,
+		"bidi\u202eexe":                          `bidi\xe2\x80\xaeexe`,
+		`back\slash`:                             `back\\slash`,
+		"caf\u00e9 \u6f22":                       "caf\u00e9 \u6f22",
+	} {
+		if got := displayPath(in); got != want {
+			t.Errorf("displayPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A user-delegated cgroup named with escape sequences must not reach
+// the terminal raw.
+func TestPrintRowsEscapesNames(t *testing.T) {
+	r, w, _ := os.Pipe()
+	stdout := os.Stdout
+	os.Stdout = w
+	printRows([]row{
+		{path: "user.slice/evil\x1b]0;PWNED\x07\x1b[2J", tasks: 1},
+		{path: strings.Repeat("\u00e9", 60), tasks: 1},
+	})
+	w.Close()
+	os.Stdout = stdout
+	out, _ := io.ReadAll(r)
+	for _, c := range out {
+		if c < 0x20 && c != '\n' || c == 0x7f {
+			t.Fatalf("raw control byte %#x in output:\n%q", c, out)
+		}
+	}
+	if !utf8.Valid(out) {
+		t.Errorf("truncation split a rune:\n%q", out)
 	}
 }

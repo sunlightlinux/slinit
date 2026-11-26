@@ -166,6 +166,9 @@ type QueryFilter struct {
 	// GrepInsensitive folds ASCII case in GrepPattern (systemd
 	// `--case-sensitive=no` / `-g` default heuristic).
 	GrepInsensitive bool
+	// grepRE is GrepPattern compiled by CompileGrep. Without it Match
+	// compiles the pattern for every event it looks at.
+	grepRE *regexp.Regexp
 
 	// InvocationID keeps only events whose SLINIT_INVOCATION_ID
 	// field equals this value (systemd `--invocation=UUID`). Empty
@@ -252,8 +255,14 @@ func (q QueryFilter) Match(e *Event) bool {
 			}
 		}
 	}
-	if q.GrepPattern != "" && !grepMatch(q.GrepPattern, q.GrepInsensitive, e.Msg) {
-		return false
+	if q.GrepPattern != "" {
+		if q.grepRE != nil {
+			if !q.grepRE.MatchString(e.Msg) {
+				return false
+			}
+		} else if !grepMatch(q.GrepPattern, q.GrepInsensitive, e.Msg) {
+			return false
+		}
 	}
 	if q.InvocationID != "" {
 		if e.Fields == nil || e.Fields["SLINIT_INVOCATION_ID"] != q.InvocationID {
@@ -284,6 +293,28 @@ func ResolveIdentifier(e *Event) string {
 	default:
 		return "unknown"
 	}
+}
+
+// CompileGrep compiles GrepPattern once, so Match does not compile it
+// per event, and reports a pattern that does not compile. A query over
+// the 4096-event ring compiled it 4096 times: one control request with
+// a long pattern held a PID 1 core for close to a minute, and an
+// invalid pattern quietly matched nothing.
+func (q *QueryFilter) CompileGrep() error {
+	q.grepRE = nil
+	if q.GrepPattern == "" {
+		return nil
+	}
+	pattern := q.GrepPattern
+	if q.GrepInsensitive {
+		pattern = "(?i)" + pattern
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return err
+	}
+	q.grepRE = re
+	return nil
 }
 
 // grepMatch reports whether pattern matches s. Compilation errors

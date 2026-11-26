@@ -173,6 +173,11 @@ type options struct {
 	directory   string // -D/--directory DIR — glob *.jsonl / *.slj under DIR
 	root        string // --root PATH — filesystem root prefix for source lookups
 
+	// foreignDir: directory is a container's or an image's, set by -M
+	// and --image. A symlink in it may name a host file, so only its
+	// regular files are read.
+	foreignDir bool
+
 	// --- Group B: maintenance ---
 
 	sync        bool          // --sync — force daemon fsync via SIGUSR1
@@ -1297,15 +1302,9 @@ func runQuery(opts options) error {
 					opts.machineTarget)
 			}
 		} else {
-			m, err := machine.Lookup(opts.machineTarget)
+			m, err := lookupMachine(opts.machineTarget)
 			if err != nil {
-				return fmt.Errorf("-M %s: %w", opts.machineTarget, err)
-			}
-			if m == nil {
-				return fmt.Errorf("-M %s: no such machine registered under %s", opts.machineTarget, machine.Dir())
-			}
-			if !machine.Alive(m.PID) {
-				return fmt.Errorf("-M %s: registered PID %d is not alive (stale registration?)", opts.machineTarget, m.PID)
+				return err
 			}
 			// Prefer control-socket dial: the container's slinit
 			// itself binds /run/slinit.socket during PID-1 setup, so
@@ -1320,9 +1319,14 @@ func runQuery(opts options) error {
 			// mount source recorded in m.Root. m.Root is only
 			// meaningful for on-disk files (journal dir under
 			// /var/log/, which lives in the rootfs proper).
+			//
+			// Both are resolved inside the container: at their host
+			// paths its symlinks resolve on the host, and a
+			// /run/slinit.socket -> /run/slinit.socket showed the
+			// host's journal as the container's.
 			sockPath := fmt.Sprintf("/proc/%d/root%s", m.PID, machine.ControlSockPath)
-			if _, statErr := os.Stat(sockPath); statErr == nil {
-				opts.socketPath = sockPath
+			if p, sockErr := m.ControlSocketPath(); sockErr == nil {
+				opts.socketPath = p
 			} else {
 				// No live socket → walk the persistent journal
 				// directory instead. Falls out through --directory
@@ -1335,8 +1339,19 @@ func runQuery(opts options) error {
 					return fmt.Errorf("-M %s: no live socket at %s and no persistent journal files under container rootfs", opts.machineTarget, sockPath)
 				}
 				// Point --directory at the first journal dir we found
-				// so runFromDirectory picks up every rotated file.
-				opts.directory = filepath.Dir(files[0])
+				// so runFromDirectory picks up every rotated file. It is
+				// a /proc/self/fd link; the trailing slash makes the
+				// walk enter it rather than stop at the link.
+				opts.directory = filepath.Dir(files[0]) + "/"
+				opts.foreignDir = true
+			}
+			// The socket and directories were reached through
+			// /proc/PID/root. Had the container exited and its PID
+			// been reused after lookupMachine, they would be another
+			// process's; check that it is still the same process,
+			// now that the descriptors are held.
+			if err := checkMachine(m); err != nil {
+				return err
 			}
 		}
 	}
@@ -1637,6 +1652,9 @@ func extractField(e *journal.Event, name string) string {
 func loadFileEvents(opts options) ([]*journal.Event, error) {
 	all, err := readJournalFile(opts.sourceFile)
 	filter := buildRequest(opts).ToFilter()
+	if cerr := filter.CompileGrep(); cerr != nil {
+		return nil, fmt.Errorf("--grep: %w", cerr)
+	}
 	var events []*journal.Event
 	for _, e := range all {
 		if filter.Match(e) {
@@ -1815,6 +1833,15 @@ func runFromDirectory(opts options) error {
 	if err != nil {
 		return err
 	}
+	if opts.foreignDir {
+		regular := files[:0]
+		for _, f := range files {
+			if st, err := os.Lstat(f); err == nil && st.Mode().IsRegular() {
+				regular = append(regular, f)
+			}
+		}
+		files = regular
+	}
 	if len(files) == 0 {
 		if !opts.quiet {
 			fmt.Fprintf(os.Stderr, "slinit-journalctl: no journal files under %s\n", dir)
@@ -1908,6 +1935,9 @@ func runFromFiles(files []string, opts options, out io.Writer) error {
 	}
 
 	filter := buildRequest(opts).ToFilter()
+	if err := filter.CompileGrep(); err != nil {
+		return fmt.Errorf("--grep: %w", err)
+	}
 	tails := map[string]*entryTail{}
 	var kept []seqEntry
 	err = each(func(seq int, e *journal.Event) {
@@ -2320,6 +2350,7 @@ func runFromImage(opts options) error {
 	imgOpts := opts
 	imgOpts.image = ""
 	imgOpts.directory = journalDir
+	imgOpts.foreignDir = true
 	return runFromDirectory(imgOpts)
 }
 
@@ -2557,10 +2588,13 @@ func runUpdateCatalog(opts options, out io.Writer) error {
 		return err
 	}
 	cachePath := catalogCachePath(opts)
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
-		return err
+	if opts.root != "" {
+		// The image's symlinks resolve inside it, never on the host.
+		err = c.SaveCompiledInRoot(opts.root, catalogCachePath(options{}))
+	} else if err = os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
+		err = c.SaveCompiled(cachePath)
 	}
-	if err := c.SaveCompiled(cachePath); err != nil {
+	if err != nil {
 		return err
 	}
 	if !opts.quiet {
@@ -3246,9 +3280,14 @@ func runVerify(opts options) error {
 	if err != nil {
 		return err
 	}
+	// A key was supplied, so the file is meant to be sealed. The flag
+	// saying it is lives in the unsealed header; clearing it made this a
+	// pass with nothing checked. systemd's journalctl still checks an
+	// unsealed file's structure and passes it; here --verify checks
+	// seals only, so a file without them fails.
 	if !res.SealingEnabled {
-		fmt.Printf("%s: FSS not enabled on this file (nothing to verify)\n", opts.sourceFile)
-		return nil
+		fmt.Printf("%s: FAIL: FSS not enabled on this file, nothing could be verified\n", opts.sourceFile)
+		return errors.New("verify: file is not sealed")
 	}
 	if res.OK() {
 		fmt.Printf("%s: OK (%d tags verified, %d entries sealed)\n",
@@ -3274,6 +3313,13 @@ func runVerify(opts options) error {
 			opts.sourceFile, res.HiddenEntries, res.TagsChecked)
 		return fmt.Errorf("verify: %d sealed entries hidden from the entry-array chain",
 			res.HiddenEntries)
+	}
+	if res.ForeignEntries > 0 {
+		fmt.Printf("%s: TAMPER DETECTED: the entry-array chain names %d offsets that "+
+			"are not ENTRY objects of the file (%d tags verified)\n",
+			opts.sourceFile, res.ForeignEntries, res.TagsChecked)
+		return fmt.Errorf("verify: %d foreign entries in the entry-array chain",
+			res.ForeignEntries)
 	}
 	fmt.Printf("%s: TAMPER DETECTED at tag offset %d (seqnum %d, %d prior tags OK)\n",
 		opts.sourceFile, res.FirstBadTagOffset, res.FirstBadTagSeqnum, res.TagsChecked)
@@ -3693,6 +3739,7 @@ func clientSideFilter(events []*journal.Event, req control.JournalQueryRequest) 
 		return events
 	}
 	filter := req.ToFilter()
+	_ = filter.CompileGrep() // validated by the daemon; on error Match compiles per event and matches nothing
 	kept := events[:0]
 	for _, e := range events {
 		if filter.Match(e) {
@@ -4484,4 +4531,37 @@ Output formats:
 Wire path: slinit-journalctl → CmdJournalQuery over /run/slinit.socket
   → RplyJournalEntry* + RplyJournalDone.
 `)
+}
+
+// lookupMachine resolves -M's registry entry and refuses one whose PID
+// no longer names the registered container: /proc/PID/root of whatever
+// has the PID now would be read as the container's root, and a reused
+// PID of a host process showed the host's journal as the container's.
+func lookupMachine(name string) (*machine.Machine, error) {
+	m, err := machine.Lookup(name)
+	if err != nil {
+		return nil, fmt.Errorf("-M %s: %w", name, err)
+	}
+	if m == nil {
+		return nil, fmt.Errorf("-M %s: no such machine registered under %s", name, machine.Dir())
+	}
+	if err := checkMachine(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// checkMachine succeeds only when m's PID is still the registered
+// process, or is the live PID of an entry an older slinit wrote, which
+// records no start time to check it by.
+func checkMachine(m *machine.Machine) error {
+	switch m.State() {
+	case machine.StateAlive, machine.StateLegacy:
+		return nil
+	case machine.StateReused:
+		return fmt.Errorf("-M %s: registered PID %d now belongs to another process (stale registration)", m.Name, m.PID)
+	case machine.StateUnknown:
+		return fmt.Errorf("-M %s: cannot verify that PID %d is still the registered container", m.Name, m.PID)
+	}
+	return fmt.Errorf("-M %s: registered PID %d is not alive (stale registration?)", m.Name, m.PID)
 }

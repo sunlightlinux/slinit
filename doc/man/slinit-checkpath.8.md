@@ -103,10 +103,13 @@ New paths are created subject to the process umask.
 
 # EXAMPLES
 
-Typical use from a slinit service description's **pre-start-command**:
+Typical use from a slinit service description's **pre-start-command**.
+A service with **run-as** runs the hook as that user (since 4.0.3), so
+one that must create and chown a directory under */run* takes the
+**+** prefix, which runs it as root:
 
 ```
-pre-start-command = /usr/bin/slinit-checkpath \
+pre-start-command = +/usr/bin/slinit-checkpath \
                         -d -m 0755 -o redis:redis /run/redis
 ```
 

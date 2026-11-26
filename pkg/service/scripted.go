@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,11 @@ type ScriptedService struct {
 	stopPID     int
 	startHandle process.ProcessHandle
 	stopHandle  process.ProcessHandle
+
+	// pidPublished mirrors the PID that PID() reports, for readers that
+	// cannot take queueMu (the rusage query); see ProcessService. Written
+	// by publishPID at the four assignment sites of startPID/stopPID.
+	pidPublished atomic.Int64
 
 	// Timeouts
 	startTimeout time.Duration
@@ -107,7 +113,7 @@ func (s *ScriptedService) recordExit(exit process.ChildExit) {
 
 // killCgroupTree sends a signal to all processes in the service's cgroup.
 func (s *ScriptedService) killCgroupTree(sig syscall.Signal) {
-	cgPath := s.EffectiveCgroupPath()
+	cgPath := s.OwnCgroupPath()
 	if cgPath == "" {
 		return
 	}
@@ -209,11 +215,19 @@ func (s *ScriptedService) SetStopTimeout(d time.Duration) { s.stopTimeout = d }
 
 // PID returns the PID of the currently running command (start or stop).
 func (s *ScriptedService) PID() int {
-	// See ProcessService.PID() — same reentrancy rationale.
+	// See ProcessService.PID() — same reentrancy rationale, and the same
+	// atomic mirror rather than a bare read of startPID/stopPID.
+	return int(s.pidPublished.Load())
+}
+
+// publishPID keeps the mirror in step with whichever pid PID() should
+// report: the start command's, else the stop command's.
+func (s *ScriptedService) publishPID() {
 	if s.startPID > 0 {
-		return s.startPID
+		s.pidPublished.Store(int64(s.startPID))
+		return
 	}
-	return s.stopPID
+	s.pidPublished.Store(int64(s.stopPID))
 }
 
 // runningStopCommand reports whether this service's current PID belongs
@@ -385,6 +399,7 @@ func (s *ScriptedService) BringUp() bool {
 	}
 
 	s.startPID = pid
+	s.publishPID()
 	s.startHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Create utmp entry for the start process
@@ -423,6 +438,9 @@ func (s *ScriptedService) BringDown() {
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
+	if s.privHooks.Stop {
+		params.FullyPrivileged()
+	}
 	// Use the credentials the main command was started with; the
 	// service's stop removes them.
 	params.ReuseCredentials = true
@@ -437,6 +455,7 @@ func (s *ScriptedService) BringDown() {
 	}
 
 	s.stopPID = pid
+	s.publishPID()
 	s.stopHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Monitor the stop command
@@ -500,6 +519,7 @@ func (s *ScriptedService) stopInterruptedStart() {
 
 func (s *ScriptedService) monitorStart(exitCh <-chan process.ChildExit) {
 	for {
+		timer := s.getTimer()
 		select {
 		case exit, ok := <-exitCh:
 			if !ok {
@@ -508,8 +528,8 @@ func (s *ScriptedService) monitorStart(exitCh <-chan process.ChildExit) {
 			s.handleStartExit(exit)
 			return
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			// Timer was armed; re-enter select to pick up new timer channel
@@ -523,6 +543,7 @@ func (s *ScriptedService) monitorStart(exitCh <-chan process.ChildExit) {
 
 func (s *ScriptedService) monitorStop(exitCh <-chan process.ChildExit) {
 	for {
+		timer := s.getTimer()
 		select {
 		case exit, ok := <-exitCh:
 			if !ok {
@@ -531,8 +552,8 @@ func (s *ScriptedService) monitorStop(exitCh <-chan process.ChildExit) {
 			s.handleStopExit(exit)
 			return
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			// Timer was armed; re-enter select to pick up new timer channel
@@ -564,6 +585,7 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	defer s.services.queueMu.Unlock()
 
 	s.startPID = 0
+	s.publishPID()
 	s.startHandle.Clear()
 	s.cancelTimer()
 	s.recordExit(exit)
@@ -651,6 +673,7 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 	defer s.services.queueMu.Unlock()
 
 	s.stopPID = 0
+	s.publishPID()
 	s.stopHandle.Clear()
 	s.cancelTimer()
 	s.recordExit(exit)
@@ -671,9 +694,16 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 
 // handleTimerExpired processes a timer expiration. Runs in a monitor
 // goroutine; acquires queueMu.
-func (s *ScriptedService) handleTimerExpired() {
+func (s *ScriptedService) handleTimerExpired(timer *time.Timer) {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
+
+	// A tick received just before a stop or restart re-armed the timer
+	// belongs to the timer it replaced: acting on it would give the new
+	// purpose its deadline early (a stop escalated to SIGKILL at once).
+	if timer != s.processTimer {
+		return
+	}
 
 	purpose := s.timerPurpose
 	s.timerPurpose = scriptedTimerNone
@@ -753,11 +783,10 @@ func (s *ScriptedService) cancelTimer() {
 	s.timerPurpose = scriptedTimerNone
 }
 
-func (s *ScriptedService) getTimerChan() <-chan time.Time {
+// getTimer returns the armed timer, or nil. The monitor hands it to
+// handleTimerExpired with its tick.
+func (s *ScriptedService) getTimer() *time.Timer {
 	s.services.queueMu.RLock()
 	defer s.services.queueMu.RUnlock()
-	if s.processTimer != nil {
-		return s.processTimer.C
-	}
-	return nil
+	return s.processTimer
 }

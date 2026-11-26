@@ -1,0 +1,4 @@
+#!/bin/sh
+# Records its arguments, one per line, then stays up as the service.
+for a in "$@"; do echo "$a"; done > /tmp/276-args
+exec sleep 300

@@ -64,6 +64,7 @@ func TestKillActiveServicesSparesStopCommand(t *testing.T) {
 	cleaning := NewScriptedService(set, "ssd-demo")
 	cleaning.startPID = 0
 	cleaning.stopPID = 4242
+	cleaning.publishPID() // PID() reads the mirror
 	set.AddService(cleaning)
 
 	set.KillActiveServices()
@@ -81,6 +82,7 @@ func TestKillActiveServicesKillsWorkload(t *testing.T) {
 	set, _ := newTestSet()
 	running := NewScriptedService(set, "worker")
 	running.startPID = 1111
+	running.publishPID() // PID() reads the mirror
 	set.AddService(running)
 
 	set.KillActiveServices()
@@ -122,6 +124,7 @@ func TestKillActiveServicesGraceExpires(t *testing.T) {
 	cleaning := NewScriptedService(set, "hung")
 	cleaning.startPID = 0
 	cleaning.stopPID = cmd.Process.Pid
+	cleaning.publishPID() // PID() reads the mirror
 	set.AddService(cleaning)
 
 	set.KillActiveServices()
@@ -166,6 +169,7 @@ func TestKillActiveServicesSparesStopCommandForReal(t *testing.T) {
 	cleaning := NewScriptedService(set, "cleaning")
 	cleaning.startPID = 0
 	cleaning.stopPID = cmd.Process.Pid
+	cleaning.publishPID() // PID() reads the mirror
 	set.AddService(cleaning)
 
 	set.KillActiveServices()

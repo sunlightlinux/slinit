@@ -75,7 +75,7 @@ func TestSessionLookupsRefuseUnsafeIDs(t *testing.T) {
 	if p, err := m.GetSession(alice, id); err == nil || err.Name != "org.freedesktop.login1.Error.NoSuchSession" {
 		t.Errorf("GetSession(%q) = %s, %v; want NoSuchSession", id, p, err)
 	}
-	if err := m.ActivateSessionOnSeat(id, "seat9"); err == nil || err.Name != "org.freedesktop.login1.Error.NoSuchSession" {
+	if err := m.ActivateSessionOnSeat(root, id, "seat9"); err == nil || err.Name != "org.freedesktop.login1.Error.NoSuchSession" {
 		t.Errorf("ActivateSessionOnSeat(%q): %v, want NoSuchSession", id, err)
 	}
 	if _, ok := m.resolveAlias(alice, id); ok {

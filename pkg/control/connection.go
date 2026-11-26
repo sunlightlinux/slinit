@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -137,15 +138,54 @@ func (c *Connection) writePacket(pktType uint8, payload []byte) error {
 	}
 	err := WritePacket(c.conn, pktType, payload)
 	if err != nil {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			// Slow-reader client. Mark closed so the state machine's
-			// next event on this connection returns immediately; serve()
-			// will exit its ReadPacket loop on the next iteration and
-			// c.close() unregisters all listeners.
-			c.closed = true
-		}
+		// A slow-reader timeout, or any failed write: part of a packet
+		// may have gone out, so the stream can no longer be framed.
+		// Mark closed so the state machine's next event on this
+		// connection returns at once, and close the socket so serve()'s
+		// read fails and c.close() unregisters the listeners. Marking
+		// alone left the socket open: serve() only treats a read
+		// timeout as idleness, so a client that resumed reading (a
+		// `journalctl -f | less` scrolled back for a few seconds) got a
+		// truncated packet and then waited for ever without an EOF.
+		// Close does not block, so it is safe under writeMu and from a
+		// state-machine callback.
+		c.closed = true
+		_ = c.conn.Close()
 	}
 	return err
+}
+
+// writeChunk bounds one write of writePackets, each with its own
+// writeDeadline, as one packet's write had.
+const writeChunk = 64 << 10
+
+// writePackets writes buf, a run of packets framed by appendPacket, as
+// writePacket writes one: under one hold of writeMu, so no other
+// packet lands between them, and closing the connection on any failed
+// write. It writes in chunks of at most writeChunk, each with a fresh
+// writeDeadline, so a client reading a long reply gets the time per
+// chunk that it used to get per packet.
+func (c *Connection) writePackets(buf []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.closed {
+		return errConnClosed
+	}
+	tc, _ := c.conn.(interface{ SetWriteDeadline(time.Time) error })
+	for len(buf) > 0 {
+		chunk := buf[:min(len(buf), writeChunk)]
+		if tc != nil {
+			_ = tc.SetWriteDeadline(time.Now().Add(writeDeadline))
+		}
+		if _, err := c.conn.Write(chunk); err != nil {
+			// As in writePacket: the stream can no longer be framed.
+			c.closed = true
+			_ = c.conn.Close()
+			return err
+		}
+		buf = buf[len(chunk):]
+	}
+	return nil
 }
 
 func (c *Connection) close() {
@@ -157,6 +197,7 @@ func (c *Connection) close() {
 		// (revHandles has one entry per unique service, no dedup needed)
 		c.handlesMu.Lock()
 		c.closing = true
+		listenEnv := c.listenEnv
 		svcs := make([]service.Service, 0, len(c.revHandles))
 		for svc := range c.revHandles {
 			svcs = append(svcs, svc)
@@ -166,19 +207,19 @@ func (c *Connection) close() {
 			svc.Record().RemoveListener(c)
 		}
 		// Unregister env listener
-		if c.listenEnv {
+		if listenEnv {
 			c.server.services.RemoveEnvListener(c)
 		}
 		c.conn.Close()
 	})
 }
 
-func (c *Connection) allocHandle(svc service.Service) uint32 {
+func (c *Connection) allocHandle(svc service.Service) (uint32, bool) {
 	c.handlesMu.Lock()
 	// O(1) check if this service already has a handle
 	if h, ok := c.revHandles[svc]; ok {
 		c.handlesMu.Unlock()
-		return h
+		return h, true
 	}
 	h := c.nextHandle
 	c.nextHandle++
@@ -186,11 +227,34 @@ func (c *Connection) allocHandle(svc service.Service) uint32 {
 	c.revHandles[svc] = h
 	closing := c.closing
 	c.handlesMu.Unlock()
+
+	// The service was looked up before the handle went in, and an unload
+	// from another client may have removed it since. Unload checks for
+	// other clients' handles and removes the service under the graph
+	// lock, so looking again under it after inserting settles the race:
+	// either unload saw this handle and refused, or the service is gone
+	// here and the handle is taken back.
+	var present bool
+	c.server.services.WithGraphLock(func() {
+		present = c.server.services.FindService(svc.Name(), true) == svc
+	})
+	if !present {
+		c.handlesMu.Lock()
+		if c.handles[h] == svc {
+			delete(c.handles, h)
+		}
+		if c.revHandles[svc] == h {
+			delete(c.revHandles, svc)
+		}
+		c.handlesMu.Unlock()
+		return 0, false
+	}
+
 	// Auto-subscribe as listener for service events
 	if !closing {
 		c.subscribe(svc)
 	}
-	return h
+	return h, true
 }
 
 func (c *Connection) getService(handle uint32) service.Service {
@@ -257,11 +321,13 @@ func (c *Connection) ServiceEvent(svc service.Service, event service.ServiceEven
 	if !ok {
 		return
 	}
-	// Send v5 event first, then v4 for backwards compatibility
-	payload5 := EncodeServiceEvent5(handle, uint8(event), svc)
-	c.writePacket(InfoServiceEvent5, payload5) //nolint: errcheck
-	payload := EncodeServiceEvent(handle, uint8(event), svc)
-	c.writePacket(InfoServiceEvent, payload) //nolint: errcheck
+	// Send v5 event first, then v4 for backwards compatibility. Both
+	// go out in one write: this runs under queueMu, once per subscribed
+	// connection per transition.
+	buf := make([]byte, 0, 2*3+19+17)
+	buf = appendPacket(buf, InfoServiceEvent5, EncodeServiceEvent5(handle, uint8(event), svc))
+	buf = appendPacket(buf, InfoServiceEvent, EncodeServiceEvent(handle, uint8(event), svc))
+	c.writePackets(buf) //nolint: errcheck
 }
 
 // EnvEvent implements service.EnvListener.
@@ -630,7 +696,10 @@ func (c *Connection) handleFindService(payload []byte) error {
 		return c.writePacket(RplyNoService, nil)
 	}
 
-	handle := c.allocHandle(svc)
+	handle, ok := c.allocHandle(svc)
+	if !ok {
+		return c.writePacket(RplyNoService, nil)
+	}
 	reply := getReplyBuf(6)
 	reply[0] = uint8(svc.State())
 	binary.LittleEndian.PutUint32(reply[1:], handle)
@@ -676,7 +745,10 @@ func (c *Connection) handleLoadService(payload []byte) error {
 		}
 	}
 
-	handle := c.allocHandle(svc)
+	handle, ok := c.allocHandle(svc)
+	if !ok {
+		return c.writePacket(RplyNoService, nil)
+	}
 	reply := getReplyBuf(6)
 	reply[0] = uint8(svc.State())
 	binary.LittleEndian.PutUint32(reply[1:], handle)
@@ -898,15 +970,50 @@ func (c *Connection) handleReleaseService(payload []byte) error {
 	return c.writePacket(RplyACK, nil)
 }
 
-func (c *Connection) handleListServices() error {
-	services := c.server.services.ListServices()
-	for _, svc := range services {
-		info := EncodeSvcInfo(svc)
-		if err := c.writePacket(RplySvcInfo, info); err != nil {
-			return err
+// encodeLocked runs enc on svc under the graph lock. A status encoding
+// reads fields the state machine writes holding that lock (start-failed,
+// stop reason, exit status); the packet is written after it is released,
+// so a slow client cannot hold up the state machine.
+func (c *Connection) encodeLocked(enc func(service.Service) []byte, svc service.Service) []byte {
+	var b []byte
+	c.server.services.WithGraphLock(func() { b = enc(svc) })
+	return b
+}
+
+// encodeAllLocked is encodeLocked for every loaded service.
+func (c *Connection) encodeAllLocked(enc func(service.Service) []byte) [][]byte {
+	var out [][]byte
+	c.server.services.WithGraphLock(func() {
+		for _, svc := range c.server.services.ListServices() {
+			out = append(out, enc(svc))
 		}
+	})
+	return out
+}
+
+func (c *Connection) handleListServices() error {
+	return c.writeServiceList(EncodeSvcInfo)
+}
+
+// writeServiceList replies to a list command: one RplySvcInfo per
+// service, encoded by encode under the graph lock, then RplyListDone.
+// The packets go out in as few writes as writePackets needs rather than
+// one write each, which made a list of 1000 services cost 1000 system
+// calls.
+func (c *Connection) writeServiceList(encode func(service.Service) []byte) error {
+	var buf []byte
+	for _, info := range c.encodeAllLocked(encode) {
+		if len(info) > MaxPayloadSize {
+			// A name too long to frame: send what precedes it, then
+			// fail as writePacket always has (closing the connection).
+			if err := c.writePackets(buf); err != nil {
+				return err
+			}
+			return c.writePacket(RplySvcInfo, info)
+		}
+		buf = appendPacket(buf, RplySvcInfo, info)
 	}
-	return c.writePacket(RplyListDone, nil)
+	return c.writePackets(appendPacket(buf, RplyListDone, nil))
 }
 
 func (c *Connection) handleServiceStatus(payload []byte) error {
@@ -920,19 +1027,12 @@ func (c *Connection) handleServiceStatus(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	status := EncodeServiceStatus(svc)
+	status := c.encodeLocked(EncodeServiceStatus, svc)
 	return c.writePacket(RplyServiceStatus, status)
 }
 
 func (c *Connection) handleListServices5() error {
-	services := c.server.services.ListServices()
-	for _, svc := range services {
-		info := EncodeSvcInfo5(svc)
-		if err := c.writePacket(RplySvcInfo, info); err != nil {
-			return err
-		}
-	}
-	return c.writePacket(RplyListDone, nil)
+	return c.writeServiceList(EncodeSvcInfo5)
 }
 
 func (c *Connection) handleServiceStatus5(payload []byte) error {
@@ -946,7 +1046,7 @@ func (c *Connection) handleServiceStatus5(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	status := EncodeServiceStatus5(svc)
+	status := c.encodeLocked(EncodeServiceStatus5, svc)
 	return c.writePacket(RplyServiceStatus, status)
 }
 
@@ -965,6 +1065,16 @@ func (c *Connection) handleShutdown(payload []byte) error {
 	if len(payload) >= 2 {
 		flags = payload[1]
 	}
+	// An immediate shutdown supersedes a scheduled one, as an immediate
+	// ScheduleShutdown does, for every type: left armed, the timer fired
+	// later on the system a soft-reboot or `remain` kept running, and
+	// the scheduled shutdown's /run/nologin, which /run keeps across a
+	// soft-reboot, refused non-root logins there.
+	c.server.scheduledMu.Lock()
+	c.server.clearScheduledLocked()
+	c.server.scheduledDeadline = time.Time{}
+	c.server.scheduledMessage = ""
+	c.server.scheduledMu.Unlock()
 	if c.server.ShutdownFunc != nil {
 		c.server.ShutdownFunc(shutType, flags)
 	}
@@ -1126,19 +1236,17 @@ func (c *Connection) handleReloadSignal(payload []byte) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	pid := svc.PID()
-	if pid <= 0 {
+	return c.replySignal(svc, sig)
+}
+
+// replySignal sends sig to svc and answers with the reply the signal and
+// reload-signal commands share.
+func (c *Connection) replySignal(svc service.Service, sig syscall.Signal) error {
+	hasPID, err := c.server.services.SignalService(svc, sig)
+	if !hasPID {
 		return c.writePacket(RplySignalNoPID, nil)
 	}
-
-	if ps, ok := svc.(*service.ProcessService); ok {
-		if ps.SendSignalWithControl(sig) {
-			return c.writePacket(RplyACK, nil)
-		}
-		return c.writePacket(RplySignalErr, []byte("signal failed"))
-	}
-
-	if err := syscall.Kill(pid, sig); err != nil {
+	if err != nil {
 		return c.writePacket(RplySignalErr, []byte(fmt.Sprintf("%v", err)))
 	}
 	return c.writePacket(RplyACK, nil)
@@ -1158,25 +1266,8 @@ func (c *Connection) handleSignal(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	pid := svc.PID()
-	if pid <= 0 {
-		return c.writePacket(RplySignalNoPID, nil)
-	}
-
-	sig := syscall.Signal(sigNum)
-
-	// Use SendSignalWithControl if available (ProcessService supports control-command-*)
-	if ps, ok := svc.(*service.ProcessService); ok {
-		if ps.SendSignalWithControl(sig) {
-			return c.writePacket(RplyACK, nil)
-		}
-		return c.writePacket(RplySignalErr, []byte("signal failed"))
-	}
-
-	if err := syscall.Kill(pid, sig); err != nil {
-		return c.writePacket(RplySignalErr, []byte(fmt.Sprintf("%v", err)))
-	}
-	return c.writePacket(RplyACK, nil)
+	// ProcessService runs control-command-<SIG> in place of the signal.
+	return c.replySignal(svc, syscall.Signal(sigNum))
 }
 
 func (c *Connection) handlePauseService(payload []byte) error {
@@ -1192,7 +1283,7 @@ func (c *Connection) handlePauseService(payload []byte) error {
 	if !ok {
 		return c.writePacket(RplyNAK, nil)
 	}
-	if ps.Pause() {
+	if c.server.services.PauseService(ps) {
 		return c.writePacket(RplyACK, nil)
 	}
 	return c.writePacket(RplyNAK, nil)
@@ -1211,7 +1302,7 @@ func (c *Connection) handleContinueService(payload []byte) error {
 	if !ok {
 		return c.writePacket(RplyNAK, nil)
 	}
-	if ps.Continue() {
+	if c.server.services.ContinueService(ps) {
 		return c.writePacket(RplyACK, nil)
 	}
 	return c.writePacket(RplyNAK, nil)
@@ -1257,6 +1348,17 @@ func (c *Connection) handleUnpinService(payload []byte) error {
 func (c *Connection) handleBootTime() error {
 	ss := c.server.services
 
+	// Under the graph lock: the state machine writes the boot times and
+	// each record's start times holding it.
+	var info BootTimeInfo
+	ss.WithGraphLock(func() { info = bootTimeLocked(ss) })
+
+	payload := EncodeBootTime(info)
+	return c.writePacket(RplyBootTime, payload)
+}
+
+// bootTimeLocked builds the boot-time reply. Caller holds the graph lock.
+func bootTimeLocked(ss *service.ServiceSet) BootTimeInfo {
 	info := BootTimeInfo{
 		KernelUptimeNs: int64(ss.KernelUptime()),
 		BootSvcName:    ss.BootServiceName(),
@@ -1293,9 +1395,7 @@ func (c *Connection) handleBootTime() error {
 		}
 		info.Services = append(info.Services, entry)
 	}
-
-	payload := EncodeBootTime(info)
-	return c.writePacket(RplyBootTime, payload)
+	return info
 }
 
 func (c *Connection) handleCatLog(payload []byte) error {
@@ -1364,7 +1464,12 @@ func lastBytes(b []byte, n int) []byte {
 // readLogFileTail returns the last `max` bytes of a file (or whole file if smaller).
 // Aligns to the next newline after the seek point so partial first line is dropped.
 func readLogFileTail(path string, max int64) ([]byte, error) {
-	f, err := os.Open(path)
+	// Non-blocking, regular files only, and never more than max bytes.
+	// os.Open + io.ReadAll read a log path pointing at /dev/zero until
+	// PID 1 ran out of memory, and blocked the connection for ever on a
+	// FIFO. A symlink to a regular file is still followed, as the log
+	// writer follows one (logging.OpenAppend).
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1373,6 +1478,9 @@ func readLogFileTail(path string, max int64) ([]byte, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
 	}
 	size := info.Size()
 
@@ -1383,12 +1491,12 @@ func readLogFileTail(path string, max int64) ([]byte, error) {
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, max))
 	if err != nil {
 		return nil, err
 	}
 	if offset > 0 {
-		if nl := strings.IndexByte(string(data), '\n'); nl >= 0 && nl+1 < len(data) {
+		if nl := bytes.IndexByte(data, '\n'); nl >= 0 && nl+1 < len(data) {
 			data = data[nl+1:]
 		}
 	}
@@ -1426,12 +1534,22 @@ func (c *Connection) handleReloadService(payload []byte) error {
 	// This does hold the lock across the description's file I/O. dinit is
 	// single-threaded and reloads on its main loop, so that is the same
 	// property it has, not a regression.
+	//
+	// The handle may name an object no longer in the set: unloaded, or
+	// replaced by another client's type-changing reload whose handle
+	// swap has not reached this connection yet. Reloading it put the
+	// name back, or replaced the newer object, so it is refused.
 	var newSvc service.Service
 	var reloadErr error
+	gone := false
 	c.server.services.WithGraphLock(func() {
+		if c.server.services.FindService(svc.Name(), true) != svc {
+			gone = true
+			return
+		}
 		newSvc, reloadErr = loader.ReloadService(svc)
 	})
-	if reloadErr != nil {
+	if gone || reloadErr != nil {
 		return c.writePacket(RplyNAK, nil)
 	}
 
@@ -1539,11 +1657,22 @@ func (c *Connection) handleReloadAll() error {
 		// dep diff has to be atomic, but holding the lock across a
 		// rescan of every description would stall the state machine for
 		// the length of the scan.
+		//
+		// The list is a snapshot: a service unloaded or replaced since
+		// is skipped, not reloaded back into the set.
 		var newSvc service.Service
 		var reloadErr error
+		gone := false
 		c.server.services.WithGraphLock(func() {
+			if c.server.services.FindService(svc.Name(), true) != svc {
+				gone = true
+				return
+			}
 			newSvc, reloadErr = loader.ReloadService(svc)
 		})
+		if gone {
+			continue
+		}
 		if reloadErr != nil {
 			failed++
 			continue
@@ -1581,35 +1710,20 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 		return c.writePacket(RplyNotStopped, nil)
 	}
 
-	// Count how many handles in this connection point to the service
-	handleCount := 0
-	c.handlesMu.RLock()
-	for _, s := range c.handles {
-		if s == svc {
-			handleCount++
-		}
-	}
-	c.handlesMu.RUnlock()
-
-	// Check if service has only ordering dependents (no active non-ordering refs)
-	if !svc.Record().HasLoneRef(handleCount) {
+	// Check and unload as one step under the graph lock: STOPPED, only
+	// ordering dependents (HasLoneRef), and no other client holding a
+	// handle, as in dinit, where has_lone_ref requires this connection
+	// to be the only listener. Checked first and unloaded after, a find
+	// from another client in between got a handle to the detached
+	// object: a start through it ran a service that was in no list,
+	// could not be found, and was not stopped at shutdown.
+	if !c.server.services.UnloadServiceIfLone(svc, func(svc service.Service) bool {
+		return c.server.heldElsewhere(c, svc)
+	}) {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	// Nor may another client hold a handle to it, as in dinit, where
-	// has_lone_ref requires this connection to be the only listener.
-	// Unloaded anyway, that client's handle kept the detached object:
-	// a start through it ran a service that was in no list, could not
-	// be found, and was not stopped at shutdown.
-	if c.server.heldElsewhere(c, svc) {
-		return c.writePacket(RplyNAK, nil)
-	}
-
-	// Unregister as listener before removing handles
 	svc.Record().RemoveListener(c)
-
-	// Unload: clean up deps and remove from set
-	c.server.services.UnloadService(svc)
 
 	// Remove all handles pointing to this service
 	c.handlesMu.Lock()
@@ -1627,6 +1741,11 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 func (c *Connection) handleSetEnv(payload []byte) error {
 	handle, key, value, isUnset, err := DecodeSetEnv(payload)
 	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	// A key with '=' used to crash PID 1 (see GlobalSetEnv); NUL in
+	// either half made every later service start fail.
+	if !service.ValidEnvAssignment(key, value) {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
@@ -1774,7 +1893,7 @@ func (c *Connection) handleRmDep(payload []byte, v7 bool) error {
 		// dep_exists is always 0 after a successful remove; kept for
 		// wire compatibility with ENABLE_SERVICE_V7 so client code
 		// can share the status decoder.
-		status := EncodeServiceStatus6(to)
+		status := c.encodeLocked(EncodeServiceStatus6, to)
 		reply := make([]byte, 1+len(status))
 		copy(reply[1:], status)
 		return c.writePacket(RplyServiceStatus, reply)
@@ -1837,17 +1956,20 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	if !depExists {
-		// Persist by creating a waits-for.d symlink in the source
-		// service's load directory, so the dependency survives a
-		// daemon restart. A persistence failure is logged but does
-		// not undo the runtime change — operators who re-enable after
-		// the disk is full or read-only should see the error in logs
-		// and re-run once the underlying issue is fixed.
-		if err := persistEnable(fromSvc, svc); err != nil {
-			fmt.Fprintf(os.Stderr, "slinit: enable: persist waits-for.d link: %v\n", err)
-		}
+	// Persist by creating a waits-for.d symlink in the source service's
+	// load directory, so the dependency survives a daemon restart. Done
+	// on every enable, not only when the runtime edge is new: whether
+	// the link is there is decided on disk, as dinitctl decides it, so
+	// an enable re-run after a failed persist (disk full, read-only)
+	// retries it. A failure does not undo the runtime change; as in
+	// dinitctl, the service is enabled for now and the client is told
+	// the persistent enable failed.
+	persistErr := persistEnable(fromSvc, svc)
+	if persistErr != nil {
+		fmt.Fprintf(os.Stderr, "slinit: enable: persist waits-for.d link: %v\n", persistErr)
+	}
 
+	if !depExists {
 		// Start it through the new edge, not explicitly: disable removes
 		// that edge, and must not end a start the operator asked for. An
 		// edge already there starts nothing, so enabling what was stopped
@@ -1855,9 +1977,15 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 		c.server.services.StartWaitsFor(fromSvc, svc)
 	}
 
+	if persistErr != nil {
+		// NAK carrying the reason; slinitctl prints it.
+		return c.writePacket(RplyNAK, []byte(fmt.Sprintf(
+			"service was enabled for now; persistent enable failed: %v", persistErr)))
+	}
+
 	if v7 {
 		// Wire: [RplyServiceStatus][dep_exists(1B)][status_v6(22B)]
-		status := EncodeServiceStatus6(svc)
+		status := c.encodeLocked(EncodeServiceStatus6, svc)
 		reply := make([]byte, 1+len(status))
 		if depExists {
 			reply[0] = 1
@@ -1928,7 +2056,7 @@ func (c *Connection) handleDisableService(payload []byte, v7 bool) error {
 	}
 
 	if v7 {
-		status := EncodeServiceStatus6(svc)
+		status := c.encodeLocked(EncodeServiceStatus6, svc)
 		reply := make([]byte, 1+len(status))
 		copy(reply[1:], status)
 		return c.writePacket(RplyServiceStatus, reply)
@@ -2187,14 +2315,18 @@ func (c *Connection) handleQueryDependents(payload []byte) error {
 	dependents := c.server.services.DependentsOf(svc)
 	// Allocate handles for each dependent and return them
 	// Wire format: count(4) + [handle(4)]*
-	buf := make([]byte, 4+4*len(dependents))
-	binary.LittleEndian.PutUint32(buf, uint32(len(dependents)))
-	off := 4
+	// A dependent unloaded since the snapshot gets no handle and is left out.
+	buf := make([]byte, 4, 4+4*len(dependents))
+	n := 0
 	for _, dep := range dependents {
-		depHandle := c.allocHandle(dep.From)
-		binary.LittleEndian.PutUint32(buf[off:], depHandle)
-		off += 4
+		depHandle, ok := c.allocHandle(dep.From)
+		if !ok {
+			continue
+		}
+		buf = binary.LittleEndian.AppendUint32(buf, depHandle)
+		n++
 	}
+	binary.LittleEndian.PutUint32(buf, uint32(n))
 	return c.writePacket(RplyDependents, buf)
 }
 
@@ -2211,15 +2343,19 @@ func (c *Connection) handleQueryDependencies(payload []byte) error {
 
 	deps := c.server.services.DependenciesOf(svc)
 	// Wire format: count(4) + [handle(4) + depType(1)]*
-	buf := make([]byte, 4+5*len(deps))
-	binary.LittleEndian.PutUint32(buf, uint32(len(deps)))
-	off := 4
+	// A dependency unloaded since the snapshot gets no handle and is left out.
+	buf := make([]byte, 4, 4+5*len(deps))
+	n := 0
 	for _, dep := range deps {
-		depHandle := c.allocHandle(dep.To)
-		binary.LittleEndian.PutUint32(buf[off:], depHandle)
-		buf[off+4] = uint8(dep.DepType)
-		off += 5
+		depHandle, ok := c.allocHandle(dep.To)
+		if !ok {
+			continue
+		}
+		buf = binary.LittleEndian.AppendUint32(buf, depHandle)
+		buf = append(buf, uint8(dep.DepType))
+		n++
 	}
+	binary.LittleEndian.PutUint32(buf, uint32(n))
 	return c.writePacket(RplyDependencies, buf)
 }
 
@@ -2266,7 +2402,7 @@ func (c *Connection) handleServiceStatus6(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	status := EncodeServiceStatus6(svc)
+	status := c.encodeLocked(EncodeServiceStatus6, svc)
 	return c.writePacket(RplyServiceStatus, status)
 }
 
@@ -2284,7 +2420,8 @@ func (c *Connection) handleServiceShow(payload []byte) error {
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
-	body := service.RenderShow(svc)
+	var body string
+	c.server.services.WithGraphLock(func() { body = service.RenderShow(svc) })
 	if len(body) > MaxPayloadSize {
 		body = body[:MaxPayloadSize]
 	}
@@ -2328,10 +2465,17 @@ func (c *Connection) handleServiceRusage(payload []byte) error {
 }
 
 func (c *Connection) handleListenEnv() error {
-	if !c.listenEnv {
+	// Under handlesMu, like the closing flag close() sets: close() runs
+	// on the Stop goroutine too, so a plain read of listenEnv there
+	// raced with this write, and a listener added after close() had
+	// looked stayed registered on a dead connection.
+	c.handlesMu.Lock()
+	add := !c.listenEnv && !c.closing
+	if add {
 		c.listenEnv = true
 		c.server.services.AddEnvListener(c)
 	}
+	c.handlesMu.Unlock()
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -2355,12 +2499,19 @@ func (c *Connection) handleRunAction(payload []byte) error {
 	rec := svc.Record()
 	cmd, ok := rec.LookupExtraCommand(actionName)
 	if !ok {
-		return c.writePacket(RplyNAK, []byte("unknown action: "+actionName))
+		return c.writePacket(RplyNAK, lastBytes([]byte("unknown action: "+actionName), MaxPayloadSize))
 	}
 
 	// Execute the action command synchronously and capture output.
+	// Only the tail is kept: the reply carries at most one packet of
+	// it, and CombinedOutputAdhoc buffered all of it, so an action that
+	// printed without end (`yes`) grew PID 1's memory without end.
 	execCmd := exec.Command(cmd[0], cmd[1:]...)
-	output, execErr := process.CombinedOutputAdhoc(execCmd)
+	tail := &tailBuffer{max: MaxPayloadSize}
+	execCmd.Stdout = tail
+	execCmd.Stderr = tail
+	execErr := process.RunAdhoc(execCmd)
+	output := tail.buf
 	if execErr != nil {
 		// Return NAK with the error message + any partial output
 		msg := fmt.Sprintf("action '%s' failed: %v\n%s", actionName, execErr, string(output))
@@ -2371,6 +2522,25 @@ func (c *Connection) handleRunAction(payload []byte) error {
 	// One packet: the end of the output, where a failure is usually
 	// reported, rather than no reply at all.
 	return c.writePacket(RplyActionOutput, lastBytes(output, MaxPayloadSize))
+}
+
+// tailBuffer is an io.Writer that keeps only the last max bytes written,
+// in amortised O(1) memory per byte.
+type tailBuffer struct {
+	buf []byte
+	max int
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(p) > t.max {
+		p = p[len(p)-t.max:]
+	}
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > 2*t.max {
+		t.buf = append(t.buf[:0], t.buf[len(t.buf)-t.max:]...)
+	}
+	return n, nil
 }
 
 // handleListActions returns the list of available extra-command actions.

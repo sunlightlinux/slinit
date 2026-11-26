@@ -50,11 +50,17 @@ func WallShutdownNoticeMsg(st service.ShutdownType, delay time.Duration, custom 
 	if !wallEnabled {
 		return
 	}
+	Wall(ShutdownNoticeText(st, delay, custom), logger)
+}
+
+// ShutdownNoticeText is the text WallShutdownNoticeMsg walls; shutdown -k
+// sends it alone, as a warning with nothing behind it.
+func ShutdownNoticeText(st service.ShutdownType, delay time.Duration, custom string) string {
 	msg := formatShutdownMessage(st, delay)
 	if custom != "" {
 		msg += "\r\n\r\n" + custom
 	}
-	Wall(msg, logger)
+	return msg
 }
 
 // WallShutdownReminder broadcasts a periodic "N minutes until X"

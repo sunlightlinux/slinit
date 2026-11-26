@@ -7,7 +7,8 @@ temporary-filesystem = /run/svc-scratch:size=4m,mode=0700
 bind-paths = /var/tmp/sandbox-ext-rw
 # Probe script:
 #  - /opt must not show sandbox-prep's marker (inaccessible-paths)
-#  - /home should be a fresh tmpfs (protect-home=tmpfs)
+#  - /home should be a fresh, empty, read-only tmpfs (protect-home=tmpfs,
+#    read-only as in systemd)
 #  - /run/svc-scratch should be a writable tmpfs (temporary-filesystem)
 #  - /var/tmp/sandbox-ext-rw should be visible on host (bind-paths)
 #
@@ -26,6 +27,7 @@ if echo scratch > /run/svc-scratch/scratch-probe 2>/dev/null && [ -f /run/svc-sc
 else
     scratch=blocked
 fi
-echo "opt=$$opt home=$$home scratch=$$scratch" > /var/tmp/sandbox-ext-rw/probe-result
+if [ -z "$$(ls -A /home 2>/dev/null)" ]; then hempty=yes; else hempty=no; fi
+echo "opt=$$opt home=$$home hempty=$$hempty scratch=$$scratch" > /var/tmp/sandbox-ext-rw/probe-result
 exec sleep 600
 end script

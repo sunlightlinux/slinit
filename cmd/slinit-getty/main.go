@@ -17,7 +17,9 @@
 //	         Optional; defaults to whatever the caller set.
 //
 // Flow:
-//  1. Open TTY as new controlling terminal (setsid + TIOCSCTTY).
+//  1. Open TTY as new controlling terminal (setsid + TIOCSCTTY),
+//     reclaimed as agetty does: root:tty 0620 (0600 with no tty
+//     group), then vhangup(2) and a fresh open.
 //  2. dup2 into fd 0/1/2.
 //  3. Configure termios for canonical line input with echo.
 //  4. Render /etc/issue with the classic backslash escapes.
@@ -26,10 +28,11 @@
 //
 // Fallback chain if /bin/login is missing:
 //
-//	/sbin/login → /usr/bin/login → /bin/sh (interactive rescue).
+//	/sbin/login → /usr/bin/login → sulogin → exit 1.
 //
-// Same shape as finit's getty.c fallback so an operator without
-// a proper login binary still gets a shell, not a boot-time hang.
+// finit's getty.c ends the chain with /bin/sh; slinit-getty stops at
+// sulogin, which asks for the root password, and otherwise exits so
+// the supervisor respawns it.
 package main
 
 import (
@@ -37,6 +40,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"os/user"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -63,12 +69,13 @@ var loginPathCandidates = []string{
 	"/usr/bin/login",
 }
 
-// rescueShellCandidates fire when no login binary is present. The
-// operator gets an interactive shell instead of a boot-time hang.
+// rescueShellCandidates run when login cannot. Only sulogin, which
+// authenticates: finit's last resort, a plain /bin/sh, gave anyone at
+// the terminal a root shell whenever login failed to exec.
 var rescueShellCandidates = []string{
 	"/sbin/sulogin",
 	"/bin/sulogin",
-	"/bin/sh",
+	"/usr/sbin/sulogin",
 }
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -119,7 +126,16 @@ func run(ttyArg, baud, term string, passEnv bool) error {
 	// was in. Best-effort — if we already own a fresh session
 	// (spawned via Setsid at fork), setsid returns EPERM which is
 	// fine.
-	_, _ = syscall.Setsid()
+	if _, err := syscall.Setsid(); err != nil {
+		// EPERM when already a session leader is fine. A process-group
+		// leader that is not one (a service without new-session = yes)
+		// cannot take a session, so the tty will not become the
+		// controlling terminal of getty or of the login it runs.
+		if sid, _ := unix.Getsid(0); sid != os.Getpid() {
+			fmt.Fprintf(os.Stderr, "slinit-getty: cannot start a session (%v): %s will not "+
+				"be the controlling terminal; run this service with new-session = yes\n", err, ttyPath)
+		}
+	}
 
 	// Open the tty for reading + writing. O_NOCTTY delays the
 	// controlling-terminal assignment so we can decide when to
@@ -128,6 +144,17 @@ func run(ttyArg, baud, term string, passEnv bool) error {
 	fd, err := syscall.Open(ttyPath, syscall.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", ttyPath, err)
+	}
+
+	// Reclaim the tty from its previous user, as agetty does: root
+	// owns it again, and a vhangup revokes every descriptor a process
+	// left from the last session still holds, so nothing of theirs can
+	// read the next login.
+	if err := reclaimTTY(fd, ttyGroup()); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-getty: reclaim %s: %v\n", ttyPath, err)
+	}
+	if fd, err = hangupAndReopen(fd, ttyPath); err != nil {
+		return fmt.Errorf("reopen %s after vhangup: %w", ttyPath, err)
 	}
 
 	// Wire the tty as fd 0/1/2 for both this process AND the
@@ -181,28 +208,92 @@ func run(ttyArg, baud, term string, passEnv bool) error {
 		os.Setenv("TERM", term)
 	}
 
-	// exec /bin/login. Fallback chain if the binary is missing.
-	// argv[0] = login (POSIX-standard invocation name).
-	loginBin := firstExisting(loginPathCandidates)
-	if loginBin != "" {
+	return execLogin(name, passEnv, syscall.Exec)
+}
+
+// execLogin replaces getty with login(1) for name. When no login binary
+// exists or its exec fails (ETXTBSY mid-upgrade, ENOMEM), it runs
+// sulogin, which asks for the root password, and otherwise returns an
+// error so getty exits and its supervisor respawns it. It never starts
+// a shell without authentication: that handed whoever sat at the
+// terminal a root shell.
+func execLogin(name string, passEnv bool, execve func(string, []string, []string) error) error {
+	loginErr := fmt.Errorf("none of %v found", loginPathCandidates)
+	if loginBin := firstExisting(loginPathCandidates); loginBin != "" {
+		// argv[0] = login (POSIX-standard invocation name).
 		argv := []string{"login"}
 		if passEnv {
 			argv = append(argv, "-p")
 		}
 		argv = append(argv, "--", name)
-		if err := syscall.Exec(loginBin, argv, os.Environ()); err != nil {
-			// Exec failed — fall through to rescue shell.
-			fmt.Fprintf(os.Stderr, "slinit-getty: exec %s: %v (falling back)\n", loginBin, err)
+		err := execve(loginBin, argv, os.Environ())
+		if err == nil {
+			return nil // only a stand-in execve returns on success
 		}
+		loginErr = fmt.Errorf("exec %s: %w", loginBin, err)
 	}
+	fmt.Fprintf(os.Stderr, "slinit-getty: cannot run login: %v\n", loginErr)
 
-	rescue := firstExisting(rescueShellCandidates)
-	if rescue == "" {
-		return fmt.Errorf("no login binary and no rescue shell found (tried %v, %v)",
-			loginPathCandidates, rescueShellCandidates)
+	sulogin := firstExisting(rescueShellCandidates)
+	if sulogin == "" {
+		return fmt.Errorf("cannot run login (%v) and no sulogin found (tried %v)", loginErr, rescueShellCandidates)
 	}
-	fmt.Fprintf(os.Stderr, "slinit-getty: no /bin/login, dropping to %s\n", rescue)
-	return syscall.Exec(rescue, []string{rescue}, os.Environ())
+	fmt.Fprintf(os.Stderr, "slinit-getty: running %s instead\n", sulogin)
+	if err := execve(sulogin, []string{sulogin}, os.Environ()); err != nil {
+		return fmt.Errorf("cannot run login (%v) nor %s: %w", loginErr, sulogin, err)
+	}
+	return nil
+}
+
+// ttyGroup is the gid of the tty group, or 0 when there is none.
+func ttyGroup() int {
+	g, err := user.LookupGroup("tty")
+	if err != nil {
+		return 0
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return 0
+	}
+	return gid
+}
+
+// ttyMode is agetty's: 0620 when a tty group can write(1) to the user,
+// 0600 when there is none.
+func ttyMode(gid int) uint32 {
+	if gid != 0 {
+		return 0o620
+	}
+	return 0o600
+}
+
+// reclaimTTY gives the tty back to root and the tty group before the
+// prompt, as agetty does: the last session's login made it the user's.
+func reclaimTTY(fd, gid int) error {
+	if err := unix.Fchown(fd, 0, gid); err != nil {
+		return fmt.Errorf("fchown: %w", err)
+	}
+	if err := unix.Fchmod(fd, ttyMode(gid)); err != nil {
+		return fmt.Errorf("fchmod: %w", err)
+	}
+	return nil
+}
+
+// hangupAndReopen makes fd's tty our controlling terminal, hangs it up
+// with vhangup(2) so every other descriptor on it goes dead, and opens
+// it afresh. vhangup sends SIGHUP to our own session too, so SIGHUP is
+// ignored around it and restored before login inherits it. Without
+// the privilege for vhangup the tty is kept as it is.
+func hangupAndReopen(fd int, ttyPath string) (int, error) {
+	_ = unix.IoctlSetInt(fd, unix.TIOCSCTTY, 1)
+	signal.Ignore(syscall.SIGHUP)
+	defer signal.Reset(syscall.SIGHUP)
+	if _, _, errno := unix.Syscall(unix.SYS_VHANGUP, 0, 0, 0); errno != 0 {
+		fmt.Fprintf(os.Stderr, "slinit-getty: vhangup %s: %v\n", ttyPath, errno)
+		return fd, nil
+	}
+	_ = syscall.Close(fd)
+	return syscall.Open(ttyPath, syscall.O_RDWR|syscall.O_NOCTTY, 0)
 }
 
 // configureTermios sets canonical + echo mode on fd, and if `baud`

@@ -216,6 +216,11 @@ long options may be written with one or two leading dashes.
     without the executable bit is treated as staged-but-unarmed —
     the operator can prepare it in advance and flip `chmod +x` when
     the trigger should fire (this matches **runit**(8)'s workflow).
+    Only a regular file owned by root fires; a symlink or a file
+    owned by anyone else is logged and ignored. *dir* is created
+    mode 0700 when missing; an existing one must be a real directory
+    (not a symlink) owned by root and not writable by group or
+    others, or the watcher is disabled with an error.
     Every trigger logs an audit line with the file owner's UID and
     mtime before the file is unlinked, so a compliance regime that
     requires forensic evidence of who requested a system state
@@ -323,7 +328,8 @@ long options may be written with one or two leading dashes.
     with no syslog daemon. Default */dev/log*. Empty disables. The
     sender's pid, uid and gid come from the kernel, not from the
     message; each uid may send 1000 (root) or 200 (others) messages
-    per 10 seconds, and a note says how many were dropped. A syslog
+    per 10 seconds, and a note says how many were dropped. A message
+    from a non-root sender is cut to 8 KiB. A syslog
     daemon already serving *path* keeps it, and one started later as a
     service takes it over, as they unlink the path before binding.
 
@@ -592,7 +598,10 @@ SysV/LSB init scripts under the *init.d* directories, then systemd
 *.service* units under */etc/systemd/system*,
 */run/systemd/system*, */usr/lib/systemd/system* and
 */lib/systemd/system*, searched in that order so an administrator's
-override in */etc* beats the packaged unit.
+override in */etc* beats the packaged unit. A unit masked the way
+**systemctl mask** does it, a symlink to */dev/null* or an empty file,
+ends the search: the name does not load, and a *Wants=* naming it is
+left out.
 
 Both fallbacks resolve a name that something already asked for. A
 directory is never enumerated, so installing a package that ships
@@ -689,6 +698,7 @@ Recognised **slinit.**-prefixed selectors:
   **single** / **s** / **1** for sysvinit compat).
 * **slinit.debug-shell** — arm a persistent sulogin on a secondary VT.
 * **slinit.confirm-spawn** — prompt before each service is brought up.
+  A prompt left unanswered for 30 seconds starts the service.
 * **slinit.crash-shell** — drop to sulogin instead of exiting on PID-1
   panic.
 * **slinit.debug** — verbose console logging: debug level, with the
@@ -773,6 +783,12 @@ line inside the hook settles it:
         failing) logger -t ups "on battery" ;;
         ok)      logger -t ups "mains restored" ;;
     esac
+
+The hook runs beside the event loop, so a slow hook delays nothing
+else, including a shutdown it asks for. Hooks never run two at a time:
+a *SIGPWR* that arrives while the hook runs makes it run once more
+afterwards, reading the status file then, and any further ones before
+that run starts are folded into it.
 
 A hook that is absent, not executable, or exits non-zero is logged and
 otherwise ignored — by the time it runs the power event has already
@@ -898,7 +914,11 @@ on the console:
     on the console. A process the script starts in the background
     (a daemon) is not waited for and is left running; its output
     is still logged. `SLINIT_HOOK_POINT=rc-local` in the env so a
-    shared script can branch on the invocation path.
+    shared script can branch on the invocation path. A script, or
+    the *rc.local.d* directory, that is not owned by root or is
+    writable by group or others is skipped with a warning (a
+    symlinked *rc.local.d* is refused; */etc/rc.local* may be a
+    symlink, and its target is checked).
 
 */etc/slinit/hooks.d/&lt;point&gt;/\**
 :   Operator-supplied scripts run at defined lifecycle points.
@@ -906,7 +926,10 @@ on the console:
     (`10-x` before `20-y`); one at a time; 30 s per-script timeout;
     non-zero exit is logged but doesn't abort. A process a script
     leaves in the background is not waited for. `SLINIT_HOOK_POINT`
-    is set in the child environment. Recognised points:
+    is set in the child environment. The point directory and each
+    script must be owned by root and not writable by group or
+    others, as sudo and cron require; anything else (a symlinked
+    directory included) is skipped with a warning. Recognised points:
     **system-up** (fires when the boot service reaches STARTED),
     **system-down** (fires at the top of shutdown, before teardown),
     **switch-root** (fires at the top of switch-root, before

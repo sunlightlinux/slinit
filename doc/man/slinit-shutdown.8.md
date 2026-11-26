@@ -154,11 +154,20 @@ other name **-h** halts, as above.
     **pam_nologin**(8). The command returns once the shutdown is
     scheduled. It cannot be combined with **-f** or **\--system**.
     Before 3.20.0 only a time meaning now was accepted.
+    Options may also follow the operands (**shutdown now -r** reboots);
+    **\--** ends the options.
 
-**shutdown -c**
-:   Cancel the scheduled shutdown, which lets logins in again. Says so
+**shutdown -c** [*message*...]
+:   Cancel the scheduled shutdown, which lets logins in again. The
+    operands are a message, never a time. Says so
     when none was scheduled. **slinitctl shutdown \--status** shows the
     pending one.
+
+**shutdown -k** [*time* [*message*...]]
+:   Only warn: every terminal gets the notice a shutdown at *time*
+    would send, with *message* appended, and nothing is scheduled or
+    shut down, as in sysvinit and systemd. Under every other name **-k**
+    still kexecs. (Before this release **shutdown -k** started a kexec reboot at once.)
 
 */run/nologin* is only removed if slinit created it: one an administrator
 put there stays. It is also removed before a scheduled soft-reboot runs,

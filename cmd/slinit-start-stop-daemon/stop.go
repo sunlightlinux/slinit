@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/user"
 	"strconv"
 	"syscall"
 	"time"
@@ -75,7 +74,15 @@ func buildSchedule(opts Options) ([]Step, error) {
 }
 
 func runSchedule(pid int, schedule []Step, opts Options) error {
-	for i, step := range schedule {
+	repeatAt := -1
+	for i := 0; i < len(schedule); i++ {
+		step := schedule[i]
+		if step.Repeat {
+			repeatAt = i + 1
+			continue
+		}
+		// Last step of the schedule, and nothing to start again from.
+		last := i == len(schedule)-1 && repeatAt < 0
 		if step.Signal != 0 {
 			if opts.Verbose {
 				writeMsg(opts, "sending %s to pid=%d", signalName(step.Signal), pid)
@@ -90,17 +97,29 @@ func runSchedule(pid int, schedule []Step, opts Options) error {
 				return fmt.Errorf("kill(%s): %w", signalName(step.Signal), err)
 			}
 		}
-		if step.Timeout == noWait {
+		switch step.Timeout {
+		case noWait:
 			return nil
-		}
-		if !waitExitProgress(pid, step.Timeout, opts.Progress) {
+		case sendOnly:
+			if !last {
+				break
+			}
+			if waitExitProgress(pid, sendOnlyGrace, false) {
+				return nil
+			}
+			return fmt.Errorf("did not exit after %s (end of --retry schedule)", signalName(step.Signal))
+		default:
+			if waitExitProgress(pid, step.Timeout, opts.Progress) {
+				return nil
+			}
 			// Timed out; move to next step. Last step timing out is a fail.
-			if i == len(schedule)-1 {
+			if last {
 				return fmt.Errorf("did not exit after %s within %s", signalName(step.Signal), step.Timeout)
 			}
-			continue
 		}
-		return nil
+		if i == len(schedule)-1 && repeatAt >= 0 {
+			i = repeatAt - 1 // the loop's i++ lands on repeatAt
+		}
 	}
 	return nil
 }
@@ -142,8 +161,10 @@ func signalName(sig syscall.Signal) string {
 	return strconv.Itoa(int(sig))
 }
 
+// lookupPrimaryGID is the passwd gid of a user name or numeric uid
+// (--chuid 51 took the caller's gid, root's, when only names resolved).
 func lookupPrimaryGID(userSpec string) (int, error) {
-	u, err := user.Lookup(userSpec)
+	u, err := lookupUser(userSpec)
 	if err != nil {
 		return 0, err
 	}

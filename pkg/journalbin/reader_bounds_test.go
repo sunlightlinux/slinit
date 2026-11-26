@@ -344,3 +344,170 @@ func TestVerifyRejectsWrappingObjectSize(t *testing.T) {
 		t.Fatal("Verify of an object with a wrapping size did not terminate")
 	}
 }
+
+// ENTRY_ARRAYs only had to chain forward. Arrays 24 bytes apart overlap,
+// so each re-reads its successors' headers as entry offsets: 96 KB of
+// file yielded 13.5M offsets and 817 MiB. The chain may not overlap now,
+// and no file yields more offsets than it could hold entries.
+func TestEntryOffsetsOverlappingArraysBounded(t *testing.T) {
+	const n = 4000
+	const start = HeaderSize
+	end := uint64(start + 24*n + 8192)
+	buf := make([]byte, end)
+	h := NewHeader()
+	h.EntryArrayOffset = start
+	h.TailObjectOffset = end
+	if err := h.EncodeInto(buf); err != nil {
+		t.Fatal(err)
+	}
+	for i := uint64(start + 24*n); i < end; i++ {
+		buf[i] = 0x5a
+	}
+	for k := uint64(0); k < n; k++ {
+		off := start + 24*k
+		size := min(maxEntryArrayObjectSize, end-off)
+		next := off + 24
+		if k == n-1 {
+			next = 0
+		}
+		buf[off] = byte(ObjectEntryArray)
+		binary.LittleEndian.PutUint64(buf[off+8:], size)
+		binary.LittleEndian.PutUint64(buf[off+16:], next)
+	}
+	path := filepath.Join(t.TempDir(), "overlap.journal")
+	if err := os.WriteFile(path, buf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	offs, _ := r.EntryOffsets()
+	if limit := end / (ObjectHeaderSize + 8 + 8 + 8 + 16 + 8); uint64(len(offs)) > limit {
+		t.Fatalf("a %d-byte file yielded %d entry offsets (at most %d entries fit)", end, len(offs), limit)
+	}
+}
+
+// appendItemEntries appends one tiny ENTRY per target, each with a
+// single item naming that DATA offset.
+func appendItemEntries(t *testing.T, f *os.File, targets []uint64) int64 {
+	t.Helper()
+	st, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := st.Size()
+	ent := make([]byte, minEntryObjectSize+16)
+	for i, target := range targets {
+		clear(ent)
+		ent[0] = byte(ObjectEntry)
+		binary.LittleEndian.PutUint64(ent[8:], uint64(len(ent)))
+		binary.LittleEndian.PutUint64(ent[ObjectHeaderSize+8:], uint64(2000+i))
+		binary.LittleEndian.PutUint64(ent[minEntryObjectSize-8:], 0x5a5a)
+		binary.LittleEndian.PutUint64(ent[minEntryObjectSize:], target)
+		binary.LittleEndian.PutUint64(ent[minEntryObjectSize+8:], 0x5a5a)
+		if _, err := f.WriteAt(ent, at); err != nil {
+			t.Fatal(err)
+		}
+		at += int64(len(ent))
+	}
+	return at
+}
+
+// bigDataJournal writes one entry with a 64 KiB MESSAGE and returns the
+// file, opened for writing, and the offset of that DATA object.
+func bigDataJournal(t *testing.T) (*os.File, uint64) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "shared.journal")
+	w, err := NewWriter(path, testBootID, testMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(&journal.Event{Ts: 1000, Msg: strings.Repeat("x", 64<<10), Prio: journal.PriorityInfo}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	for off := uint64(HeaderSize); ; {
+		var dh [ObjectHeaderSize]byte
+		if _, err := f.ReadAt(dh[:], int64(off)); err != nil {
+			t.Fatal("no 64 KiB DATA object")
+		}
+		d, _ := DecodeObjectHeader(dh[:])
+		if d.Type == ObjectData && d.Size > 64<<10 {
+			return f, off
+		}
+		off += AlignUp(d.Size)
+	}
+}
+
+// iterAlloc iterates the file at path, keeping every event as
+// slinit-journalctl --file does, and returns the bytes allocated.
+func iterAlloc(t *testing.T, path string) (uint64, int, error) {
+	t.Helper()
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var kept []*journal.Event
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	err = r.Iter(func(e *journal.Event) bool {
+		kept = append(kept, e)
+		return true
+	})
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc, len(kept), err
+}
+
+// One DATA object may be named by many entries. Each entry's payload was
+// bounded by the file, but not their sum: 2000 tiny entries sharing one
+// 64 KiB DATA object made a 225 KB file hand back 124 MiB, all of it kept
+// by slinit-journalctl --file. Entries naming one DATA object now share
+// its payload.
+func TestReaderIterSharesRepeatedPayloads(t *testing.T) {
+	f, big := bigDataJournal(t)
+	targets := make([]uint64, 2000)
+	for i := range targets {
+		targets[i] = big
+	}
+	size := appendItemEntries(t, f, targets)
+	got, n, err := iterAlloc(t, f.Name())
+	if err != nil || n != 2001 {
+		t.Fatalf("Iter: %d entries, %v; want all 2001", n, err)
+	}
+	if got > 16<<20 {
+		t.Fatalf("iterating a %d-byte file allocated %d bytes", size, got)
+	}
+}
+
+// DATA objects may overlap: a header every 8 bytes inside one large
+// payload gives as many distinct DATA objects, each nearly as large. The
+// payloads one iteration reads may not add up to more than the file.
+func TestReaderIterOverlappingDataBounded(t *testing.T) {
+	f, big := bigDataJournal(t)
+	const dataFixed = ObjectHeaderSize + 6*8
+	st, _ := f.Stat()
+	end := uint64(st.Size())
+	var targets []uint64
+	for off := big + dataFixed; off+dataFixed+(32<<10) <= end && len(targets) < 2000; off += 16 {
+		var hdr [ObjectHeaderSize]byte
+		hdr[0] = byte(ObjectData)
+		binary.LittleEndian.PutUint64(hdr[8:], dataFixed+(32<<10))
+		if _, err := f.WriteAt(hdr[:], int64(off)); err != nil {
+			t.Fatal(err)
+		}
+		targets = append(targets, off)
+	}
+	size := appendItemEntries(t, f, targets)
+	got, _, _ := iterAlloc(t, f.Name())
+	if got > 16<<20 {
+		t.Fatalf("iterating a %d-byte file allocated %d bytes for %d overlapping DATA objects", size, got, len(targets))
+	}
+}

@@ -419,7 +419,7 @@ func (vt *VirtualTTY) acceptLoop() {
 	}
 }
 
-// addClient registers a new client, sends scrollback, and starts input forwarding.
+// addClient starts input forwarding, registers a new client and sends scrollback.
 func (vt *VirtualTTY) addClient(conn net.Conn) {
 	vt.mu.Lock()
 	if vt.closed {
@@ -435,6 +435,13 @@ func (vt *VirtualTTY) addClient(conn net.Conn) {
 		conn: conn,
 		done: make(chan struct{}),
 	}
+	// Start input forwarding (client → master) before the client becomes
+	// visible. removeClient waits on done, which only the forwarder
+	// closes: started after the scrollback write, a client dropped before
+	// then — its scrollback write timing out here, or the pump's live
+	// write to it failing first — left removeClient waiting forever, and
+	// with it the accept loop or the pump and then Close.
+	go vt.forwardInput(c)
 	vt.clients[id] = c
 
 	// Send scrollback buffer
@@ -447,12 +454,8 @@ func (vt *VirtualTTY) addClient(conn net.Conn) {
 	if len(scrollback) > 0 {
 		if err := writeClient(conn, scrollback); err != nil {
 			vt.removeClient(id)
-			return
 		}
 	}
-
-	// Start input forwarder: client → master
-	go vt.forwardInput(c)
 }
 
 // removeClient disconnects and removes a client.

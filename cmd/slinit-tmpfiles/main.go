@@ -24,6 +24,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -32,6 +33,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/sunlightlinux/slinit/internal/safepath"
+	"golang.org/x/sys/unix"
 )
 
 // defaultDirs is in ascending precedence: for the same file name a
@@ -378,25 +382,53 @@ func apply(e entry) error {
 	}
 }
 
+// Every type below resolves the entry's parent with safepath, which
+// follows a symlinked parent only when that cannot carry root out of what
+// the link's owner owns (CHASE_SAFE, see internal/safepath), and then
+// works relative to the parent's descriptor, never by path. Resolving the
+// whole path let a link anywhere in it redirect root: d base/link/new
+// created outside/new, z re-moded and r deleted outside/victim.
+
 func applyFile(e entry, force bool) error {
-	flag := os.O_CREATE | os.O_WRONLY
-	if force {
-		// O_NOFOLLOW because this branch has no O_EXCL to refuse a
-		// symlink for us, and it does have O_TRUNC: without it, an F
-		// naming a symlink opened and emptied whatever the link
-		// pointed at, as root, at boot. O_EXCL covers the plain f
-		// below — a symlink there fails with EEXIST and falls through
-		// to applyChown, which skips it.
-		flag |= os.O_TRUNC | syscall.O_NOFOLLOW
-	} else {
-		flag |= os.O_EXCL
-	}
-	f, err := os.OpenFile(e.path, flag, os.FileMode(e.mode))
+	pfd, name, err := safepath.OpenParent(e.path)
 	if err != nil {
-		if !force && os.IsExist(err) {
+		return err
+	}
+	defer unix.Close(pfd)
+	// O_NOFOLLOW because F has no O_EXCL to refuse a symlink for us,
+	// and it does truncate: without it, an F naming a symlink opened
+	// and emptied whatever the link pointed at, as root, at boot.
+	// O_EXCL covers the plain f — a symlink there fails with EEXIST and
+	// falls through to applyChown, which skips it.
+	//
+	// O_NONBLOCK because an F naming a FIFO blocked in open(2) waiting
+	// for a reader, and hung the boot. The type is checked on the
+	// descriptor before anything is written, and the truncate waits for
+	// that check: O_TRUNC in the open would have run first.
+	flag := unix.O_CREAT | unix.O_WRONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_NOCTTY | unix.O_CLOEXEC
+	if !force {
+		flag |= unix.O_EXCL
+	}
+	fd, err := unix.Openat(pfd, name, flag, e.mode&0o777)
+	if err != nil {
+		if !force && err == unix.EEXIST {
 			return applyChown(e, false)
 		}
+		return &os.PathError{Op: "open", Path: e.path, Err: err}
+	}
+	f, st, err := regularFile(fd, e.path)
+	if err != nil {
 		return err
+	}
+	if err := checkHardlink(st, e.path); err != nil {
+		f.Close()
+		return err
+	}
+	if force {
+		if err := f.Truncate(0); err != nil {
+			f.Close()
+			return err
+		}
 	}
 	if e.arg != "" {
 		if _, err := f.WriteString(e.arg); err != nil {
@@ -420,28 +452,65 @@ func applyFile(e entry, force bool) error {
 	return f.Close()
 }
 
+// regularFile takes fd, opened O_NONBLOCK, and returns it as an *os.File
+// with O_NONBLOCK cleared, or closes it and fails if it is not a regular
+// file. A FIFO, device or socket is refused rather than written to.
+func regularFile(fd int, path string) (*os.File, *unix.Stat_t, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		unix.Close(fd)
+		return nil, nil, &os.PathError{Op: "stat", Path: path, Err: err}
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		unix.Close(fd)
+		return nil, nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	if err := unix.SetNonblock(fd, false); err != nil {
+		unix.Close(fd)
+		return nil, nil, err
+	}
+	return os.NewFile(uintptr(fd), path), &st, nil
+}
+
+// checkHardlink refuses to change a non-directory with more than one
+// link while fs.protected_hardlinks is off, as systemd-tmpfiles does
+// (hardlink_vulnerable): a user could otherwise link /etc/shadow into a
+// directory this tool fixes up and have root re-own or empty it.
+func checkHardlink(st *unix.Stat_t, path string) error {
+	if st.Mode&unix.S_IFMT != unix.S_IFDIR && st.Nlink > 1 && !safepath.HardlinksProtected() {
+		return fmt.Errorf("%s: refusing to change a hard-linked file while fs.protected_hardlinks is off", path)
+	}
+	return nil
+}
+
 func applyDir(e entry, wipe bool) error {
+	pfd, name, err := safepath.MkdirParent(e.path, e.mode&0o777)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(pfd)
 	if wipe {
-		os.RemoveAll(e.path)
+		removeAt(pfd, name, true)
 		if afterWipeHook != nil {
 			afterWipeHook()
 		}
 	}
-	if err := os.MkdirAll(e.path, os.FileMode(e.mode)); err != nil {
-		return err
+	if err := unix.Mkdirat(pfd, name, e.mode&0o777); err != nil && err != unix.EEXIST {
+		return &os.PathError{Op: "mkdir", Path: e.path, Err: err}
 	}
-	// MkdirAll is satisfied by a symlink to a directory, and a chmod or
-	// chown by path follows one: a link planted at a d path in /tmp
-	// (or between D's wipe and the mkdir) had root re-mode and re-own
-	// its target. Open the final component without following it and
-	// change the directory through the descriptor; a symlink there is
-	// refused, as systemd-tmpfiles refuses it.
-	fd, err := syscall.Open(e.path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	// An existing entry satisfies the mkdir, and a chmod or chown by
+	// path follows a symlink: a link planted at a d path in /tmp (or
+	// between D's wipe and the mkdir) had root re-mode and re-own its
+	// target. Open the final component without following it and change
+	// the directory through the descriptor; a symlink there is refused,
+	// as systemd-tmpfiles refuses it.
+	fd, err := unix.Openat(pfd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		if fi, lerr := os.Lstat(e.path); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+		var st unix.Stat_t
+		if unix.Fstatat(pfd, name, &st, unix.AT_SYMLINK_NOFOLLOW) == nil && st.Mode&unix.S_IFMT == unix.S_IFLNK {
 			return fmt.Errorf("refusing to follow a symlink")
 		}
-		return err
+		return &os.PathError{Op: "open", Path: e.path, Err: err}
 	}
 	defer syscall.Close(fd)
 	// The mode goes in raw: os.FileMode(e.mode) dropped 07000, which Go
@@ -461,22 +530,42 @@ func applyLink(e entry) error {
 	if e.arg == "" {
 		return fmt.Errorf("L: missing target Argument")
 	}
-	if _, err := os.Lstat(e.path); err == nil {
-		return nil // already exists, don't clobber
+	pfd, name, err := safepath.OpenParent(e.path)
+	if err != nil {
+		return err
 	}
-	return os.Symlink(e.arg, e.path)
+	defer unix.Close(pfd)
+	if err := unix.Symlinkat(e.arg, pfd, name); err != nil && err != unix.EEXIST {
+		return &os.PathError{Op: "symlink", Path: e.path, Err: err}
+	}
+	return nil // an existing entry is left alone, not clobbered
 }
 
 func applyWrite(e entry) error {
 	if e.arg == "" {
 		return fmt.Errorf("w: missing value Argument")
 	}
-	// os.WriteFile is O_WRONLY|O_CREATE|O_TRUNC, which follows a
-	// symlink and empties what it names. O_NOFOLLOW only constrains the
-	// final component, so the usual w targets still work: a path like
-	// /sys/class/backlight/*/brightness reaches a regular file through
-	// symlinked directories, and those are still followed.
-	f, err := os.OpenFile(e.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
+	pfd, name, err := safepath.OpenParent(e.path)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(pfd)
+	// No O_CREAT: w writes into a file that exists, and skips a missing
+	// one, as systemd-tmpfiles does ("Not writing missing file"). It
+	// used to create it. O_NOFOLLOW refuses a symlink at the final
+	// component; symlinked directories on the way, such as
+	// /sys/class/backlight/*, are root's and still followed. O_NONBLOCK
+	// keeps a FIFO from blocking the open forever; anything but a
+	// regular file is then refused (sysfs and procfs knobs are regular
+	// files). O_TRUNC does nothing to a FIFO or device.
+	fd, err := unix.Openat(pfd, name, unix.O_WRONLY|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	if err == unix.ENOENT {
+		return nil
+	}
+	if err != nil {
+		return &os.PathError{Op: "open", Path: e.path, Err: err}
+	}
+	f, _, err := regularFile(fd, e.path)
 	if err != nil {
 		return err
 	}
@@ -488,65 +577,121 @@ func applyWrite(e entry) error {
 }
 
 func applyRemove(e entry, recursive bool) error {
-	if recursive {
-		return os.RemoveAll(e.path)
-	}
-	err := os.Remove(e.path)
+	pfd, name, err := safepath.OpenParent(e.path)
 	if os.IsNotExist(err) {
 		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer unix.Close(pfd)
+	if err := removeAt(pfd, name, recursive); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return &os.PathError{Op: "remove", Path: e.path, Err: err}
+	}
+	return nil
+}
+
+// removeAt removes name from the directory dirfd: an R tree through an
+// os.Root on that directory, which removes a symlink and never what it
+// names, and an r entry with unlinkat, as os.Remove did by path.
+func removeAt(dirfd int, name string, recursive bool) error {
+	if recursive {
+		root, err := os.OpenRoot("/proc/self/fd/" + strconv.Itoa(dirfd))
+		if err != nil {
+			return err
+		}
+		defer root.Close()
+		return root.RemoveAll(name)
+	}
+	err := unix.Unlinkat(dirfd, name, 0)
+	if err == unix.EISDIR {
+		err = unix.Unlinkat(dirfd, name, unix.AT_REMOVEDIR)
 	}
 	return err
 }
 
 // applyChown implements z (this path) and Z (this path, recursively).
 //
-// Symlinks are skipped rather than followed. os.Chmod and os.Chown both
-// follow one, and filepath.Walk hands us every symlink it finds without
-// descending into it, so following them let a Z entry re-mode and
-// re-own a file anywhere on the filesystem: plant a link inside a tree
-// that this tool fixes up as root at boot, and the target is what
-// changes. There is nothing worth setting on a symlink itself on Linux
-// — the mode is ignored and the ownership only governs removal from a
-// sticky directory — so skipping is both the safe and the correct
-// reading. systemd's tmpfiles opens with O_NOFOLLOW for the same
-// reason, and finit moved this work onto an fd in 9bfbdc6b.
+// Symlinks are skipped rather than followed. There is nothing worth
+// setting on a symlink itself on Linux — the mode is ignored and the
+// ownership only governs removal from a sticky directory — so skipping
+// is both the safe and the correct reading.
+//
+// The walk goes by descriptor: each entry is opened O_PATH|O_NOFOLLOW
+// relative to its parent's descriptor and changed through that. It used
+// to Lstat each path (filepath.Walk) and then chown/chmod it by path, so
+// whoever owned the tree could swap a subdirectory for a symlink to /etc
+// between the check and the change, and root changed /etc (the
+// CVE-2017-18078 class). A swap now meets an O_NOFOLLOW open and is
+// skipped as a symlink. finit moved this work onto an fd in 9bfbdc6b.
 func applyChown(e entry, recursive bool) error {
-	fi, err := os.Lstat(e.path)
+	pfd, name, err := safepath.OpenParent(e.path)
 	if err != nil {
 		return err
 	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		return nil
-	}
-	if err := chownChmod(e.path, e); err != nil {
-		return err
-	}
-	if !recursive || !fi.IsDir() {
-		return nil
-	}
-	return filepath.Walk(e.path, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if p == e.path || info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		return chownChmod(p, e)
-	})
+	defer unix.Close(pfd)
+	return chownAt(pfd, name, e.path, e, recursive)
 }
 
-// chownChmod gives path e's owner, then e's mode, skipping whichever e
-// leaves alone. Owner before mode, and no chown at all for -1/-1:
-// chown(2) clears setuid/setgid on a regular file, even with -1/-1. The
-// mode goes in raw (see applyDir).
-func chownChmod(path string, e entry) error {
+// chownAt applies e to name in dirfd and, if recursive, below it. A
+// refused entry (a hard link) does not stop the rest of the tree; the
+// first error is returned.
+func chownAt(dirfd int, name, path string, e entry, recursive bool) error {
+	fd, err := unix.Openat(dirfd, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	defer unix.Close(fd)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return &os.PathError{Op: "stat", Path: path, Err: err}
+	}
+	if st.Mode&unix.S_IFMT == unix.S_IFLNK {
+		return nil
+	}
+	first := chownChmod(fd, &st, path, e)
+	if !recursive || st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return first
+	}
+	dfd, err := unix.Openat(fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	dir := os.NewFile(uintptr(dfd), path)
+	names, err := dir.Readdirnames(-1)
+	dir.Close()
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if err := chownAt(fd, n, filepath.Join(path, n), e, true); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// chownChmod gives the inode open as fd (O_PATH) e's owner, then e's
+// mode, skipping whichever e leaves alone. It goes through
+// /proc/self/fd/N, which names that inode whatever its path names now.
+// Owner before mode, and no chown at all for -1/-1: chown(2) clears
+// setuid/setgid on a regular file, even with -1/-1. The mode goes in raw
+// (see applyDir).
+func chownChmod(fd int, st *unix.Stat_t, path string, e entry) error {
+	if err := checkHardlink(st, path); err != nil {
+		return err
+	}
+	inode := "/proc/self/fd/" + strconv.Itoa(fd)
 	if e.uid >= 0 || e.gid >= 0 {
-		if err := os.Chown(path, e.uid, e.gid); err != nil {
-			return err
+		if err := os.Chown(inode, e.uid, e.gid); err != nil {
+			return fmt.Errorf("%s: chown: %w", path, err)
 		}
 	}
 	if e.keepMode {
 		return nil
 	}
-	return syscall.Chmod(path, e.mode)
+	if err := syscall.Chmod(inode, e.mode); err != nil {
+		return fmt.Errorf("%s: chmod: %w", path, err)
+	}
+	return nil
 }

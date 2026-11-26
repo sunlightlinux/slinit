@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
@@ -1368,6 +1369,11 @@ func cmdList(conn net.Conn) error {
 	if err := control.WritePacket(conn, control.CmdListServices, nil); err != nil {
 		return err
 	}
+	// The reply is one packet per service, which ReadPacket takes in two
+	// reads each: read the stream through a buffer. Bytes it reads past
+	// RplyListDone are dropped with it, and nothing reads conn after a
+	// list.
+	conn = bufferedConn{conn, bufio.NewReaderSize(conn, 64<<10)}
 
 	for {
 		rply, payload, err := readReply(conn)
@@ -1395,6 +1401,14 @@ func cmdList(conn net.Conn) error {
 	}
 	return nil
 }
+
+// bufferedConn is a net.Conn whose reads go through r.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 // formatIndicator renders the dinit-style 8-char service state indicator.
 //
@@ -3223,7 +3237,10 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 	// The message tail is only appended when non-empty so pre-message
 	// slinitd instances still accept the packet (they treat the extra
 	// bytes as ignored padding).
-	payload := control.EncodeScheduleShutdown(st, delay, message)
+	payload, err := control.EncodeScheduleShutdown(st, delay, message)
+	if err != nil {
+		return err
+	}
 	if err := control.WritePacket(conn, control.CmdScheduleShutdown, payload); err != nil {
 		return err
 	}
@@ -4999,6 +5016,11 @@ func cmdEnable(conn net.Conn, name string, from string, noWait bool) error {
 		info("Service '%s' enabled.\n", name)
 		return awaitEnabled(conn, handle, name, replyPayload[1:], noWait)
 	case control.RplyNAK:
+		if len(replyPayload) > 0 {
+			// The daemon says why: a persist failure, with the
+			// runtime enable in place.
+			return fmt.Errorf("could not enable service '%s': %s", name, replyPayload)
+		}
 		return fmt.Errorf("could not enable service '%s': no boot service configured", name)
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")

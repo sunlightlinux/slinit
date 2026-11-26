@@ -24,7 +24,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -33,6 +32,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/internal/atomicfile"
 )
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -112,7 +113,7 @@ Flags:
 			if dryRun {
 				fmt.Fprintf(os.Stderr, "--- would write %s ---\n", outPath)
 				os.Stderr.Write(buf.Bytes())
-			} else if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
+			} else if err := atomicfile.Write(outPath, buf.Bytes(), 0o644, true); err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-openrc-convert: write %s: %v\n", outPath, err)
 				hadErrors = true
 				continue
@@ -204,7 +205,6 @@ func convertScript(path, wrapper string) (*slinitConfig, []warning, error) {
 		svcName:    name,
 		scriptPath: abs,
 		svcType:    "process",
-		restart:    "yes", // openrc respawns supervised daemons by default
 	}
 
 	warns := parseOpenrcScript(cfg, string(data), wrapper)
@@ -227,9 +227,199 @@ func convertScript(path, wrapper string) (*slinitConfig, []warning, error) {
 // --- Parser ---
 
 var (
-	varAssignRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
-	funcDefRe   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*(\{)?\s*$`)
+	varAssignRe = regexp.MustCompile(`(?s)^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
+	funcDefRe   = regexp.MustCompile(`(?s)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*(\{.*)?$`)
+
+	// logicAssignRe finds an assignment to a variable the converter maps
+	// anywhere in a line: after a separator (`[ -n "$x" ] && pidfile=…`,
+	// a case arm `*) pidfile=…;;`), behind export/local/readonly, or as a
+	// ${var:=default} expansion.
+	logicAssignRe = regexp.MustCompile(`(?:^|[\s;&|()!{])(?:(?:export|local|readonly)\s+)?(` +
+		mappedVarAlt + `)\+?=|\$\{(` + mappedVarAlt + `):?=`)
 )
+
+// mappedVars are the script variables the converter turns into
+// directives. Their value has to be a literal known before the script
+// runs; anything else is left to openrc-run.
+var mappedVars = []string{
+	"command", "command_args", "command_args_foreground", "command_user",
+	"command_background", "supervisor", "directory", "chroot", "pidfile",
+	"stopsig", "umask", "respawn_delay", "respawn_max", "respawn_period",
+	"no_new_privs",
+}
+
+var mappedVarAlt = strings.Join(mappedVars, "|")
+
+// lineContinues reports whether a line ends inside a quoted string
+// (open) or with an unquoted, unescaped backslash (cont), so the next
+// line belongs to it. An unquoted # at the start of a word starts a
+// comment, where quotes do not count.
+func lineContinues(line string) (open, cont bool) {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case c == '\\':
+			if i == len(line)-1 {
+				return quote != 0, quote == 0 || quote == '"'
+			}
+			i++
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			return false, false
+		}
+	}
+	return quote != 0, false
+}
+
+// heredoc is a here-document a line opens: its body runs from the next
+// line up to a line that is exactly word (after leading tabs, with
+// <<-).
+type heredoc struct {
+	word      string
+	stripTabs bool
+}
+
+// heredocs finds the here-documents a logical line opens, in order:
+// <<WORD, <<-WORD, <<'WORD', <<"WORD", <<\WORD, outside quotes and
+// comments. <<< (a here-string) opens none, and neither does a shift
+// in arithmetic ($((1 << 2))): a word after << that starts with a
+// digit, or a << inside (( )), is not taken for a delimiter.
+func heredocs(line string) []heredoc {
+	var hs []heredoc
+	var quote byte
+	arith := 0
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		case c == '\\':
+			i++
+			continue
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+			continue
+		case c == '\'' || c == '"':
+			quote = c
+			continue
+		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			return hs
+		case strings.HasPrefix(line[i:], "(("):
+			arith++
+			i++
+			continue
+		case strings.HasPrefix(line[i:], "))") && arith > 0:
+			arith--
+			i++
+			continue
+		}
+		if !strings.HasPrefix(line[i:], "<<") {
+			continue
+		}
+		if strings.HasPrefix(line[i:], "<<<") {
+			i += 2
+			continue
+		}
+		j := i + 2
+		h := heredoc{}
+		if j < len(line) && line[j] == '-' {
+			h.stripTabs = true
+			j++
+		}
+		for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
+			j++
+		}
+		// The delimiter word: quoting any part of it only stops
+		// expansion in the body; the quotes are not part of it.
+		var w strings.Builder
+		quotedWord := false
+	word:
+		for ; j < len(line); j++ {
+			c := line[j]
+			switch c {
+			case '\'', '"':
+				end := strings.IndexByte(line[j+1:], c)
+				if end < 0 {
+					break word
+				}
+				w.WriteString(line[j+1 : j+1+end])
+				j += end + 1
+				quotedWord = true
+			case '\\':
+				if j+1 < len(line) {
+					j++
+					w.WriteByte(line[j])
+					quotedWord = true
+				}
+			case ' ', '\t', ';', '&', '|', '<', '>', '(', ')':
+				break word
+			default:
+				w.WriteByte(c)
+			}
+		}
+		i = j - 1
+		h.word = w.String()
+		if h.word == "" || arith > 0 || (!quotedWord && h.word[0] >= '0' && h.word[0] <= '9') {
+			continue
+		}
+		hs = append(hs, h)
+	}
+	return hs
+}
+
+// shellBlockDelta is how far a top-level line opens (+) or closes (-)
+// an if/case/for/while/until block, counted on the line with its
+// quoted text removed so a quoted "if" does not count.
+func shellBlockDelta(line string) int {
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' && i+1 < len(line) {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '\\':
+			i++
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			i = len(line)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	d := 0
+	for _, w := range strings.FieldsFunc(b.String(), func(r rune) bool {
+		return r == ' ' || r == '\t' || r == ';' || r == '&' || r == '|' || r == '(' || r == ')'
+	}) {
+		switch w {
+		case "if", "case", "for", "while", "until":
+			d++
+		case "fi", "esac", "done":
+			d--
+		}
+	}
+	return d
+}
 
 // parseOpenrcScript is a coarse shell-aware scan. It finds top-level
 // variable assignments (before any function opens), notes which
@@ -249,10 +439,64 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 	braceDepth := 0
 	var dependBody []string
 
-	scanner := bufio.NewScanner(strings.NewReader(script))
-	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20)
-	for scanner.Scan() {
-		raw := scanner.Text()
+	// Mapped variables assigned in shell logic — inside an if/case/loop
+	// at top level, behind && or ||, or in a function body — whose value
+	// is only known when the script runs. The plain top-level assignment
+	// the scan keeps is then not the one OpenRC uses.
+	logicSet := map[string]bool{}
+	noteLogic := func(line string) {
+		for _, m := range logicAssignRe.FindAllStringSubmatch(line, -1) {
+			logicSet[m[1]+m[2]] = true
+		}
+	}
+	blockDepth := 0
+
+	// Scan logical lines: a quoted string runs on across newlines, as
+	// in command_args="-a<newline>-b", and a trailing backslash joins
+	// the next line. Read line by line, the first line of such a value
+	// was all the scan saw.
+	lines := strings.Split(script, "\n")
+	unterminated := false
+	unterminatedHeredoc := ""
+	for i := 0; i < len(lines); i++ {
+		raw := lines[i]
+		for {
+			open, cont := lineContinues(raw)
+			if !open && !cont {
+				break
+			}
+			if i+1 >= len(lines) {
+				unterminated = true
+				break
+			}
+			i++
+			if cont {
+				raw = raw[:len(raw)-1] + lines[i]
+			} else {
+				raw += "\n" + lines[i]
+			}
+		}
+		// A here-document's body is data, not script: an apostrophe
+		// in `Don't forget` opened a quote that ran to the end of the
+		// script and swallowed depend() with it. Skip each body up to
+		// its terminator line.
+		for _, h := range heredocs(raw) {
+			closed := false
+			for i+1 < len(lines) {
+				i++
+				body := lines[i]
+				if h.stripTabs {
+					body = strings.TrimLeft(body, "\t")
+				}
+				if body == h.word {
+					closed = true
+					break
+				}
+			}
+			if !closed {
+				unterminatedHeredoc = h.word
+			}
+		}
 		line := strings.TrimSpace(raw)
 
 		// Skip comments and blanks.
@@ -264,18 +508,22 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 		if m := funcDefRe.FindStringSubmatch(line); m != nil {
 			inFunc = m[1]
 			funcs[inFunc] = true
-			// If brace on same line, we're already at depth 1.
-			if m[2] == "{" {
-				braceDepth = 1
-			} else {
-				braceDepth = 0
+			braceDepth = 0
+			if m[2] == "" {
+				continue // the brace opens on a line of its own
 			}
-			continue
+			// The brace, and maybe the whole body, is on this line:
+			// `depend() { need net; }` was not taken for a function at
+			// all, and its dependencies were dropped.
+			line = m[2]
 		}
 		if inFunc != "" {
+			if inFunc != "depend" {
+				noteLogic(line)
+			}
 			// Track brace depth cheaply.
 			braceDepth += strings.Count(line, "{") - strings.Count(line, "}")
-			if inFunc == "depend" && line != "{" && line != "}" {
+			if inFunc == "depend" {
 				dependBody = append(dependBody, line)
 			}
 			if braceDepth <= 0 {
@@ -285,17 +533,42 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 			continue
 		}
 
-		// Top-level assignment.
-		if m := varAssignRe.FindStringSubmatch(line); m != nil {
-			vars[m[1]] = stripQuotes(m[2])
+		// Top-level assignment. One inside an if/case/loop is logic.
+		if m := varAssignRe.FindStringSubmatch(line); m != nil && blockDepth == 0 {
+			// The shell splits an unquoted expansion on newlines as on
+			// spaces; a newline left in would also end a comment line.
+			vars[m[1]] = strings.ReplaceAll(stripQuotes(m[2]), "\n", " ")
 			continue
 		}
-		// Anything else at top-level (`. /etc/rc.conf`, `source X`,
-		// bare commands) is script logic — flag once and continue
-		// so we still see the rest.
-		if !strings.HasPrefix(line, ".") && !strings.HasPrefix(line, "source ") &&
-			!strings.HasPrefix(line, "[[ ") && !strings.HasPrefix(line, "[ ") {
-			// tolerated silently for now
+		// Anything else at top level (`. /etc/rc.conf`, a test, an
+		// if/case/loop) is script logic: what it assigns is known only
+		// when the script runs.
+		noteLogic(line)
+		blockDepth += shellBlockDelta(line)
+		if blockDepth < 0 {
+			blockDepth = 0
+		}
+	}
+
+	// A mapped value the shell has to compute — $VAR from conf.d or the
+	// environment, ${x:-default}, `cmd` or $(cmd) — or one assigned in
+	// shell logic cannot be written into the file: slinit expands $VAR
+	// in command from its own environment when it loads the service, so
+	// command_args="${FOO_OPTS} -f" silently lost FOO_OPTS, and upstream
+	// rarpd's if/else turned into a command with neither -f nor -a. Such
+	// a script runs through openrc-run, which evaluates it as OpenRC does.
+	var dynamic []string
+	if unterminated {
+		dynamic = append(dynamic, "a quoted string or continued line runs to the end of the script")
+	}
+	if unterminatedHeredoc != "" {
+		dynamic = append(dynamic, fmt.Sprintf("a here-document (<<%s) runs to the end of the script", unterminatedHeredoc))
+	}
+	for _, k := range mappedVars {
+		if logicSet[k] {
+			dynamic = append(dynamic, fmt.Sprintf("%s is assigned in shell logic (if/case/loop, && or a function)", k))
+		} else if v, ok := vars[k]; ok && strings.ContainsAny(v, "$`") {
+			dynamic = append(dynamic, fmt.Sprintf("%s=%q needs the shell to expand it", k, v))
 		}
 	}
 
@@ -360,7 +633,22 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 		}
 	}
 
-	// Parse depend() body.
+	// Parse depend() body. When the scan ran off the end of the script
+	// before reaching depend(), look for it line by line: the script is
+	// wrapped, but slinit still orders it only by the dependencies
+	// written into the file, and dropping them was silent.
+	if (unterminated || unterminatedHeredoc != "") && !funcs["depend"] {
+		body, found, closed := rawDependBody(lines)
+		switch {
+		case found && closed:
+			dependBody = body
+			warns = append(warns, warning{"WARN",
+				"depend() read line by line past text the converter could not parse — check the dependencies against the script"})
+		case found:
+			warns = append(warns, warning{"WARN",
+				"dependencies were not read: depend() follows text the converter could not parse — add them by hand"})
+		}
+	}
 	warns = append(warns, parseDepend(cfg, dependBody)...)
 
 	// Fallback decision: if a custom start()/stop()/start_pre()/etc
@@ -372,19 +660,57 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 			customFuncs = append(customFuncs, fn)
 		}
 	}
-	if len(customFuncs) > 0 {
+	if len(customFuncs) > 0 || len(dynamic) > 0 {
 		cfg.command = fmt.Sprintf("%s %s start", wrapper, cfg.scriptPath)
 		cfg.stopCommand = fmt.Sprintf("%s %s stop", wrapper, cfg.scriptPath)
 		// bgprocess makes no sense when we're running openrc-run
 		// (which is a scripted lifecycle wrapper).
 		cfg.svcType = "scripted"
-		// Discard restart-delay / limit-count values we may have
-		// grabbed from vars — openrc-run manages the daemon's
-		// lifetime, slinit's restart* directives duplicate that
-		// and cause spurious respawn.
-		warns = append(warns, warning{"NOTE",
-			fmt.Sprintf("custom shell functions %v — wrapped via %s (requires the binary at runtime)",
-				customFuncs, wrapper)})
+		// Discard what we grabbed from the script's variables:
+		// openrc-run reads them itself when it runs the script, so
+		// here they would only duplicate it — restart* would respawn
+		// behind its back, run-as would run openrc-run itself as the
+		// daemon's user — and they are taken verbatim from shell, so
+		// a value like ${respawn_period:-60} or /run/${RC_SVCNAME}.pid
+		// made the converted file fail to load.
+		var left []string
+		for _, f := range []struct {
+			name string
+			val  *string
+		}{
+			{"pidfile", &cfg.pidFile},
+			{"command_user", &cfg.runAs},
+			{"directory", &cfg.workingDir},
+			{"stopsig", &cfg.termSignal},
+			{"umask", &cfg.umask},
+			{"respawn_delay", &cfg.restartDelay},
+			{"respawn_max", &cfg.restartLimitCount},
+			{"respawn_period", &cfg.restartLimitCounti},
+		} {
+			if *f.val != "" {
+				left = append(left, f.name)
+				*f.val = ""
+			}
+		}
+		if cfg.noNewPrivs {
+			left = append(left, "no_new_privs")
+			cfg.noNewPrivs = false
+		}
+		cfg.restart = ""
+		if len(left) > 0 {
+			warns = append(warns, warning{"NOTE", fmt.Sprintf(
+				"%s left to %s, which applies them itself", strings.Join(left, ", "), wrapper)})
+		}
+		if len(customFuncs) > 0 {
+			warns = append(warns, warning{"NOTE",
+				fmt.Sprintf("custom shell functions %v — wrapped via %s (requires the binary at runtime)",
+					customFuncs, wrapper)})
+		} else {
+			warns = append(warns, warning{"WARN", fmt.Sprintf(
+				"%s: its value is known only when the script runs, so the script is wrapped via %s "+
+					"(requires the binary at runtime) — write the values in to run the daemon directly",
+				strings.Join(dynamic, "; "), wrapper)})
+		}
 	} else {
 		// command_background=yes is the opposite of a forking daemon: the
 		// daemon stays in the foreground and start-stop-daemon backgrounds
@@ -393,6 +719,35 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 		// in the foreground by command_args_foreground or run under
 		// supervise-daemon. Otherwise start-stop-daemon expects the daemon
 		// to fork itself, which slinit follows through the pidfile.
+		// OpenRC respawns a daemon only under supervise-daemon, which
+		// is also the only one that reads respawn_*; start-stop-daemon
+		// starts it once and leaves it dead when it exits (openrc-run(8),
+		// sh/start-stop-daemon.sh). Every converted daemon used to get
+		// restart = yes.
+		if vars["supervisor"] == "supervise-daemon" {
+			cfg.restart = "yes"
+		} else {
+			cfg.restart = "no"
+			var dropped []string
+			for _, f := range []struct {
+				name string
+				val  *string
+			}{
+				{"respawn_delay", &cfg.restartDelay},
+				{"respawn_max", &cfg.restartLimitCount},
+				{"respawn_period", &cfg.restartLimitCounti},
+			} {
+				if *f.val != "" {
+					dropped = append(dropped, f.name)
+					*f.val = ""
+				}
+			}
+			if len(dropped) > 0 {
+				warns = append(warns, warning{"NOTE", fmt.Sprintf(
+					"%s left out: OpenRC applies them under supervise-daemon only, and without it does not respawn the daemon (restart = no)",
+					strings.Join(dropped, ", "))})
+			}
+		}
 		bg := strings.ToLower(vars["command_background"])
 		foreground := bg == "yes" || bg == "true" || bg == "1" ||
 			vars["command_args_foreground"] != "" || vars["supervisor"] == "supervise-daemon"
@@ -467,34 +822,118 @@ func parseDepend(cfg *slinitConfig, body []string) []warning {
 			}
 		}
 	}
+	// The body is shell. Each ;-separated command that starts with a
+	// dependency verb is mapped; anything else — if/case/loops, local,
+	// helper calls — cannot be followed, so a dependency it sets or
+	// guards is reported instead of being taken silently.
+	depth := 0
+	var unparsed []string
 	for _, ln := range body {
-		fields := strings.Fields(ln)
-		if len(fields) < 2 {
-			continue
-		}
-		verb, rest := fields[0], fields[1:]
-		switch verb {
-		case "need":
-			cfg.depends = append(cfg.depends, rest...)
-			for _, n := range rest {
-				if !exists(n) {
-					warns = append(warns, warning{"WARN", fmt.Sprintf(
-						"depend `need %s`: no init.d script of that name beside this one — the service will not load until a slinit service %q exists", n, n)})
+		for _, cmd := range strings.Split(ln, ";") {
+			var fields []string
+			for _, f := range strings.Fields(cmd) {
+				if f != "{" && f != "}" {
+					fields = append(fields, f)
 				}
 			}
-		case "want":
-			soft(verb, rest, &cfg.waitsFor)
-		case "use", "after":
-			soft(verb, rest, &cfg.waitsFor)
-		case "before":
-			warns = append(warns, warning{"WARN", fmt.Sprintf("depend `before %v` not mappable — invert on the target side", rest)})
-		case "provide":
-			warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `provide %v` — no direct slinit alias; consumers must depend on this svc's actual name", rest)})
-		case "keyword":
-			warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `keyword %v` — openrc runlevel gate; slinit uses condition-* predicates instead", rest)})
+			if len(fields) > 0 && (fields[0] == "then" || fields[0] == "else" || fields[0] == "do") {
+				fields = fields[1:]
+			}
+			if len(fields) == 0 {
+				continue
+			}
+			d := shellBlockDelta(strings.Join(fields, " "))
+			verb := fields[0]
+			if d != 0 || !dependVerbs[verb] {
+				unparsed = append(unparsed, strings.Join(fields, " "))
+				if depth += d; depth < 0 {
+					depth = 0
+				}
+				continue
+			}
+			var rest []string
+			for _, n := range fields[1:] {
+				if strings.ContainsAny(n, "$`") {
+					warns = append(warns, warning{"WARN", fmt.Sprintf(
+						"depend `%s %s` left out: the name is known only when the script runs — review manually", verb, n)})
+					continue
+				}
+				rest = append(rest, n)
+			}
+			if len(rest) == 0 {
+				continue
+			}
+			if depth > 0 && verb != "config" {
+				warns = append(warns, warning{"WARN", fmt.Sprintf(
+					"depend `%s %s` sits inside shell logic in depend(); mapped as if unconditional — review manually",
+					verb, strings.Join(rest, " "))})
+			}
+			switch verb {
+			case "need":
+				cfg.depends = append(cfg.depends, rest...)
+				for _, n := range rest {
+					if !exists(n) {
+						warns = append(warns, warning{"WARN", fmt.Sprintf(
+							"depend `need %s`: no init.d script of that name beside this one — the service will not load until a slinit service %q exists", n, n)})
+					}
+				}
+			case "want":
+				soft(verb, rest, &cfg.waitsFor)
+			case "use", "after":
+				soft(verb, rest, &cfg.waitsFor)
+			case "before":
+				warns = append(warns, warning{"WARN", fmt.Sprintf("depend `before %v` not mappable — invert on the target side", rest)})
+			case "provide":
+				warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `provide %v` — no direct slinit alias; consumers must depend on this svc's actual name", rest)})
+			case "keyword":
+				warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `keyword %v` — openrc runlevel gate; slinit uses condition-* predicates instead", rest)})
+			case "config":
+				warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `config %v` — openrc dependency-cache input, nothing to map", rest)})
+			}
 		}
 	}
+	if len(unparsed) > 0 {
+		warns = append(warns, warning{"WARN", fmt.Sprintf(
+			"depend() has shell the converter cannot follow (%q); a dependency it sets or guards is "+
+				"mapped as if unconditional, or not at all — review manually", unparsed)})
+	}
 	return warns
+}
+
+// rawDependBody finds depend() in the script's physical lines, without
+// joining quoted or continued lines, for a script whose logical-line
+// scan never got there. closed is false when no line ends its braces.
+func rawDependBody(lines []string) (body []string, found, closed bool) {
+	depth := 0
+	for _, ln := range lines {
+		line := strings.TrimSpace(ln)
+		if !found {
+			m := funcDefRe.FindStringSubmatch(line)
+			if m == nil || m[1] != "depend" {
+				continue
+			}
+			found = true
+			if m[2] == "" {
+				continue
+			}
+			line = m[2]
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		body = append(body, line)
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+		if depth <= 0 {
+			return body, true, true
+		}
+	}
+	return body, found, false
+}
+
+// dependVerbs are the depend() commands parseDepend maps or reports.
+var dependVerbs = map[string]bool{
+	"need": true, "want": true, "use": true, "after": true,
+	"before": true, "provide": true, "keyword": true, "config": true,
 }
 
 // stripQuotes removes surrounding "..." or '...' from a value (single

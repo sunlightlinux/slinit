@@ -8,9 +8,12 @@ d /tmp/slinit-tf-dir 0755 - - -
 f /tmp/slinit-tf-file 0644 - - -
 w /tmp/slinit-tf-write - - - - hello-tmpfiles
 L /tmp/slinit-tf-link - - - - /tmp/slinit-tf-file
+w /tmp/slinit-tf-absent - - - - never-created
 CONF
 
-rm -rf /tmp/slinit-tf-dir /tmp/slinit-tf-file /tmp/slinit-tf-write /tmp/slinit-tf-link
+rm -rf /tmp/slinit-tf-dir /tmp/slinit-tf-file /tmp/slinit-tf-write /tmp/slinit-tf-link /tmp/slinit-tf-absent
+# w writes into an existing file and never creates one, as in systemd.
+: > /tmp/slinit-tf-write
 slinit-tmpfiles --dirs=/tmp/tmpfiles-fixture 2>/tmp/tf-err
 _rc=$?
 
@@ -40,6 +43,11 @@ else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: w payload='$_val' expected 'hello-tmpfiles'"
 fi
+_TESTS_RUN=$((_TESTS_RUN + 1))
+[ ! -e /tmp/slinit-tf-absent ] && echo "OK: w did not create a missing file" || {
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: w created /tmp/slinit-tf-absent"
+}
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -L /tmp/slinit-tf-link ] && [ "$(readlink /tmp/slinit-tf-link)" = "/tmp/slinit-tf-file" ]; then
     echo "OK: L created symlink"

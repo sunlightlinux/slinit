@@ -123,7 +123,11 @@ type ServiceRecord struct {
 	desired atomicServiceState
 
 	// Flags
-	autoRestart    AutoRestartMode
+	autoRestart AutoRestartMode
+	// onceRun: this activation was started by `once` and is not to be
+	// restarted, whatever autoRestart says (runit's `sv once`). Cleared
+	// by the next ordinary Start; see autoRestartThisRun.
+	onceRun        bool
 	smoothRecovery bool
 	manualStart    bool // upstart-style: refuse all auto-activation
 	// systemd-style RefuseManualStart / RefuseManualStop. Reject the
@@ -167,6 +171,12 @@ type ServiceRecord struct {
 	pinnedStarted     bool
 	deptPinnedStarted bool
 	markedDown        bool // 'down' file exists — don't auto-start
+
+	// depsStartedFrom is where checkDepsStarted resumes: every edge in
+	// dependsOn[:depsStartedFrom] has WaitingOn false. Anything that
+	// sets WaitingOn on one of our edges, or removes an edge, resets it
+	// to 0 (appending keeps it valid). Under queueMu.
+	depsStartedFrom int
 
 	// Waiting flags
 	waitingForDeps      bool
@@ -285,6 +295,10 @@ type ServiceRecord struct {
 	// "concurrent map writes" fatal, which in PID 1 is a kernel panic.
 	envMu    sync.Mutex
 	extraEnv map[string]string
+	// loadEnv is what the loader last put in extraEnv from load-options,
+	// so a reload can drop what it no longer sets without touching a
+	// value `slinitctl setenv` has changed since.
+	loadEnv map[string]string
 
 	// Process attributes (applied post-fork)
 	nice           *int
@@ -475,6 +489,8 @@ type ServiceRecord struct {
 	requiredDirs  []string
 
 	predicates []Predicate
+	// privHooks: the commands with systemd's "+" prefix (PrivilegedHooks).
+	privHooks PrivilegedHooks
 
 	failureAction SystemAction
 	successAction SystemAction
@@ -1189,7 +1205,9 @@ func (sr *ServiceRecord) CheckPredicates() (PredicateOutcome, string) {
 		if p.Kind == PredServiceStarted {
 			ok, why = sr.checkServiceStarted(p)
 		} else {
-			ok, why = p.Evaluate()
+			// The caller (BringUp) holds queueMu, as prepareHookCmdLocked wants.
+			hp, _ := sr.self.(hookCmdPreparer)
+			ok, why = p.evaluateWith(prepareExecCondition(hp))
 		}
 		if ok {
 			continue
@@ -1351,6 +1369,15 @@ func (sr *ServiceRecord) RemoveListener(l ServiceListener) {
 			return
 		}
 	}
+}
+
+// autoRestartThisRun is the auto-restart mode in force for the current
+// activation: RestartNever for one started by `once`, else autoRestart.
+func (sr *ServiceRecord) autoRestartThisRun() AutoRestartMode {
+	if sr.onceRun {
+		return RestartNever
+	}
+	return sr.autoRestart
 }
 
 // --- Setters ---
@@ -1652,6 +1679,38 @@ func (sr *ServiceRecord) SetEnvVar(key, value string) {
 	sr.extraEnv[key] = value
 }
 
+// SetLoadEnv replaces the variables derived from load-options (USER,
+// HOME, DINIT_SERVICE and the rest): the ones the previous call set are
+// removed first, so a reload that drops an option or changes run-as does
+// not leave the old values behind. A variable whose value is no longer
+// the one the loader set was changed at runtime, and is left as it is.
+func (sr *ServiceRecord) SetLoadEnv(vars map[string]string) {
+	sr.envMu.Lock()
+	defer sr.envMu.Unlock()
+	changed := make(map[string]bool)
+	for k, v := range sr.loadEnv {
+		if cur, ok := sr.extraEnv[k]; !ok || cur != v {
+			changed[k] = true
+			continue
+		}
+		delete(sr.extraEnv, k)
+	}
+	sr.loadEnv = nil
+	for k, v := range vars {
+		if changed[k] {
+			continue
+		}
+		if sr.extraEnv == nil {
+			sr.extraEnv = make(map[string]string)
+		}
+		if sr.loadEnv == nil {
+			sr.loadEnv = make(map[string]string)
+		}
+		sr.extraEnv[k] = v
+		sr.loadEnv[k] = v
+	}
+}
+
 func (sr *ServiceRecord) UnsetEnvVar(key string) {
 	sr.envMu.Lock()
 	defer sr.envMu.Unlock()
@@ -1666,6 +1725,7 @@ func (sr *ServiceRecord) ResetEnv() {
 	sr.envMu.Lock()
 	defer sr.envMu.Unlock()
 	sr.extraEnv = nil
+	sr.loadEnv = nil
 }
 
 func (sr *ServiceRecord) GetAllEnv() map[string]string {
@@ -2383,11 +2443,23 @@ var removeCgroupTreeFunc = process.RemoveCgroupTree
 // cgroups remain. That makes it safe to call unconditionally from
 // Stopped(), including on a service that failed to start and never had
 // a cgroup at all.
-func (sr *ServiceRecord) removeOwnCgroup() {
+// OwnCgroupPath is EffectiveCgroupPath when the service has a cgroup of
+// its own (cgroup or slice set), and "" when it only shares the daemon's
+// default one with every other such service. Anything that acts on the
+// cgroup as the service's - killing it, freezing it, watching it for OOM
+// or pressure, waiting for it to drain, guessing the main pid from it,
+// delegating it - must use this: on the shared cgroup it reached every
+// other service in it (kill-mode = control-group SIGKILLed sshd and the
+// gettys; delegate = yes chowned the common ancestor to the service user).
+func (sr *ServiceRecord) OwnCgroupPath() string {
 	if sr.cgroupPath == "" && sr.slice == "" {
-		return
+		return ""
 	}
-	path := sr.EffectiveCgroupPath()
+	return sr.EffectiveCgroupPath()
+}
+
+func (sr *ServiceRecord) removeOwnCgroup() {
+	path := sr.OwnCgroupPath()
 	if path == "" {
 		return
 	}
@@ -2425,7 +2497,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.IOPrioLevel = sr.ioPrioLevel
 	params.CgroupPath = sr.EffectiveCgroupPath()
 	params.CgroupSettings = sr.cgroupSettings
-	params.Delegate = sr.delegate
+	// Only a cgroup of the service's own may be handed over.
+	params.Delegate = sr.delegate && sr.OwnCgroupPath() != ""
 	params.DelegateControllers = sr.delegateControllers
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps
@@ -2596,8 +2669,18 @@ func (sr *ServiceRecord) Start() {
 		sr.requiredBy++
 		sr.startExplicit = true
 	}
+	// An ordinary start ends a `once` (StartOnce sets it again after).
+	sr.onceRun = false
 
 	sr.doStart()
+}
+
+// StartOnce starts the service, as Start does, for one run: when it
+// stops it is not restarted, whatever its restart setting (runit's
+// `sv once`). The next ordinary Start restores the restart policy.
+func (sr *ServiceRecord) StartOnce() {
+	sr.Start()
+	sr.onceRun = true
 }
 
 // Wake re-attaches a service to its active dependents without marking it as
@@ -3105,6 +3188,7 @@ func (sr *ServiceRecord) initiateStart() {
 
 func (sr *ServiceRecord) startCheckDependencies() bool {
 	allStarted := true
+	sr.depsStartedFrom = 0
 
 	for _, dep := range sr.dependsOn {
 		to := dep.To
@@ -3140,6 +3224,7 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 			from := dept.From.Record()
 			if from.state.Load() == StateStarting && from.waitingForDeps {
 				dept.WaitingOn = true
+				from.depsStartedFrom = 0
 			}
 		}
 	}
@@ -3147,9 +3232,13 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 	return allStarted
 }
 
+// checkDepsStarted reports whether no dependency is still waited on.
+// It resumes where the last call stopped (depsStartedFrom): rescanning
+// from the first edge made a start waiting on N dependencies that come
+// up in order cost O(N^2).
 func (sr *ServiceRecord) checkDepsStarted() bool {
-	for _, dep := range sr.dependsOn {
-		if dep.WaitingOn {
+	for ; sr.depsStartedFrom < len(sr.dependsOn); sr.depsStartedFrom++ {
+		if sr.dependsOn[sr.depsStartedFrom].WaitingOn {
 			return false
 		}
 	}
@@ -3282,8 +3371,9 @@ func (sr *ServiceRecord) Started() {
 	// Auto-detect boot service reaching STARTED
 	if sr.services.bootServiceName != "" && sr.serviceName == sr.services.bootServiceName && sr.services.bootReadyTime.IsZero() {
 		sr.services.bootReadyTime = time.Now()
-		if sr.services.OnBootReady != nil {
-			sr.services.OnBootReady()
+		if cb := sr.services.OnBootReady; cb != nil {
+			// Off the lock: see the OnBootReady field.
+			go cb()
 		}
 	}
 
@@ -3291,8 +3381,10 @@ func (sr *ServiceRecord) Started() {
 	if sr.Flags.RWReady && !sr.services.RWReady() {
 		sr.services.SetRWReady()
 		sr.services.logger.Info("Filesystem is now read-write (service '%s')", sr.serviceName)
-		if sr.services.OnRWReady != nil {
-			sr.services.OnRWReady()
+		if f := sr.services.OnRWReady; f != nil {
+			// The utmp/wtmp boot record: queued with the other utmp
+			// writes, off queueMu (utmpqueue.go).
+			sr.services.utmpQ.push(f)
 		}
 	}
 	if sr.Flags.LogReady && !sr.services.LogReady() {
@@ -3641,13 +3733,14 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		// restart-limit-exhausted branch below and treat the service
 		// as failed instead of looping.
 		wantedRestart := false
+		autoRestart := sr.autoRestartThisRun()
 
 		// systemd RestartForceExitStatus: codes that force a restart
 		// regardless of the `restart =` setting. Applied FIRST so
 		// even a normal-exit code entry gets overridden — the
 		// operator's declared "always come back on THIS code" wins
 		// over both `restart = no` and `normal-exit`.
-		if sr.desired.Load() == StateStarted && sr.IsForceRestartExit(exitStatus) {
+		if !sr.onceRun && sr.desired.Load() == StateStarted && sr.IsForceRestartExit(exitStatus) {
 			wantedRestart = true
 			forRestart = sr.self.CheckRestart()
 			sr.inAutoRestart = forRestart
@@ -3658,13 +3751,13 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		}
 
 		// Check for auto-restart
-		if sr.autoRestart == RestartAlways && sr.desired.Load() == StateStarted {
+		if autoRestart == RestartAlways && sr.desired.Load() == StateStarted {
 			if !normal {
 				wantedRestart = true
 				forRestart = sr.self.CheckRestart()
 				sr.inAutoRestart = forRestart
 			}
-		} else if sr.autoRestart == RestartOnFailure && sr.desired.Load() == StateStarted {
+		} else if autoRestart == RestartOnFailure && sr.desired.Load() == StateStarted {
 			// failure-conditions decides what "failure" means here;
 			// its default is the exit-status reading below.
 			if sr.stopReason == ReasonDepFailed && sr.failureConditions.Dependency {
@@ -3678,7 +3771,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 				forRestart = sr.self.CheckRestart()
 				sr.inAutoRestart = forRestart
 			}
-		} else if sr.autoRestart == RestartOnSuccess && sr.desired.Load() == StateStarted {
+		} else if autoRestart == RestartOnSuccess && sr.desired.Load() == StateStarted {
 			if !normal {
 				// The inverse of on-failure, and deliberately strict
 				// about what counts: only a real exit with code 0.
@@ -4004,6 +4097,7 @@ func (sr *ServiceRecord) rmDepByIndex(i int) {
 	}
 
 	sr.dependsOn = append(sr.dependsOn[:i], sr.dependsOn[i+1:]...)
+	sr.depsStartedFrom = 0
 
 	// A start waiting on this dependency has nothing left to wait for
 	// from it: let the start re-check the dependencies it still has,
@@ -4023,6 +4117,7 @@ func (sr *ServiceRecord) SetDependents(deps []*ServiceDep) {
 // ClearDependencies removes all dependencies without updating the target's dependents.
 func (sr *ServiceRecord) ClearDependencies() {
 	sr.dependsOn = nil
+	sr.depsStartedFrom = 0
 }
 
 // HasLoneRef returns true if this service has no significant references beyond
@@ -4063,6 +4158,7 @@ func (sr *ServiceRecord) PrepareForUnload() {
 		}
 	}
 	sr.dependsOn = nil
+	sr.depsStartedFrom = 0
 
 	// Remove ourselves from each dependent's dependsOn list
 	for _, dept := range sr.dependents {
@@ -4070,6 +4166,7 @@ func (sr *ServiceRecord) PrepareForUnload() {
 		for j, d := range fromRec.dependsOn {
 			if d == dept {
 				fromRec.dependsOn = append(fromRec.dependsOn[:j], fromRec.dependsOn[j+1:]...)
+				fromRec.depsStartedFrom = 0
 				break
 			}
 		}

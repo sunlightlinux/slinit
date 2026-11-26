@@ -164,8 +164,8 @@ func TestRestartMapping(t *testing.T) {
 	}
 }
 
-// TestExecStartPrefixStripping — systemd's five prefix chars all
-// get stripped from the extracted command and produce a NOTE.
+// TestExecStartPrefixStripping — systemd's prefix chars are read off
+// the command, not left in its path.
 func TestExecStartPrefixStripping(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -176,12 +176,18 @@ func TestExecStartPrefixStripping(t *testing.T) {
 		{"+/usr/bin/foo", "/usr/bin/foo"},
 		{"!/usr/bin/foo", "/usr/bin/foo"},
 		{"-!/usr/bin/foo", "/usr/bin/foo"},
-		{"@/usr/bin/foo argv0", "/usr/bin/foo argv0"},
+		{"@/usr/bin/foo argv0", "/usr/bin/foo"},
+		{"@/usr/bin/foo argv0 --arg", "/usr/bin/foo --arg"},
 	}
 	for _, c := range cases {
-		got, _ := stripExecPrefixes(c.in)
+		cmds, _, err := parseExecLine(&SystemdConfig{svcName: "t"}, "ExecStart", c.in)
+		if err != nil || len(cmds) != 1 {
+			t.Errorf("parseExecLine(%q) = %v, %v", c.in, cmds, err)
+			continue
+		}
+		got, _ := slinitCommandValue(cmds[0].cmd.argv)
 		if got != c.want {
-			t.Errorf("stripExecPrefixes(%q) = %q, want %q", c.in, got, c.want)
+			t.Errorf("parseExecLine(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

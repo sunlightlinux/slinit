@@ -25,6 +25,11 @@ import (
 // infinite recursion from circular includes.
 const maxIncludeDepth = 10
 
+// maxIncludes caps the @include files one description reads in total.
+// The depth cap alone still let each file include the next several
+// times, which grows as k^depth.
+const maxIncludes = 256
+
 // IDMapping represents a user/group ID mapping for user namespaces.
 // Format: ContainerID:HostID:Size (e.g., "0:1000:65536").
 type IDMapping struct {
@@ -83,6 +88,7 @@ type ServiceDescription struct {
 	ControlCommands      map[string][]string // signal→custom command (runit control/)
 	ExtraCommands        map[string][]string // custom actions (available in any state)
 	ExtraStartedCommands map[string][]string // custom actions (only when STARTED)
+	Privileged           service.PrivilegedHooks
 	WorkingDir           string
 	EnvFile              string
 	EnvDir               string // runit-style: directory with one file per env var
@@ -779,6 +785,9 @@ type ServiceDescription struct {
 	// a conf.d overlay, a .override). A relative depends-on.d and
 	// friends resolves against curFile's directory, like dinit.
 	mainFile, curFile string
+
+	// includes counts the @include files read, against maxIncludes.
+	includes int
 }
 
 // OpenFileSpec captures one open-file directive's parsed form.
@@ -843,6 +852,13 @@ func (e *ParseError) Error() string {
 	}
 	return fmt.Sprintf("service '%s': %s", e.ServiceName, e.Message)
 }
+
+// Upper bounds on sizes that are allocated in full when the service
+// starts: the log buffer's capacity and the shared logger's channel depth.
+const (
+	maxLogBufferSize         = 64 << 20
+	maxSharedLoggerQueueSize = 1 << 20
+)
 
 // Parse reads a dinit-compatible service description file.
 //
@@ -1121,6 +1137,16 @@ func handleInclude(line, name, fileName string, lineNum int, desc *ServiceDescri
 		incPath = filepath.Join(dir, incPath)
 	}
 
+	desc.includes++
+	if desc.includes > maxIncludes {
+		return &ParseError{
+			ServiceName: name,
+			FileName:    fileName,
+			Line:        lineNum,
+			Message:     fmt.Sprintf("more than %d includes", maxIncludes),
+		}
+	}
+
 	f, err := os.Open(incPath)
 	if err != nil {
 		if optional && os.IsNotExist(err) {
@@ -1339,10 +1365,16 @@ func parsePredicate(setting, value string, serviceArg *string) (service.Predicat
 	// full command line, no leading-! negation), so short-circuit here
 	// and synthesise the predicate directly.
 	if setting == "exec-condition" || setting == "assert-exec-condition" {
+		// systemd's "+": run as root, not as the run-as user.
+		v, priv, err := cutPrivilegedPrefix(setting, value)
+		if err != nil {
+			return service.Predicate{}, true, err
+		}
 		return service.Predicate{
-			Kind:     service.PredExecCondition,
-			Param:    expandEnvVars(value, serviceArg),
-			IsAssert: setting == "assert-exec-condition",
+			Kind:       service.PredExecCondition,
+			Param:      expandEnvVars(v, serviceArg),
+			IsAssert:   setting == "assert-exec-condition",
+			Privileged: priv,
 		}, true, nil
 	}
 	var (
@@ -1469,29 +1501,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "command-argv0":
 		desc.Argv0 = expandEnvVars(value, serviceArg)
 	case "stop-command":
-		if op == OpPlusEqual {
-			desc.StopCommand = append(desc.StopCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.StopCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.StopCommand, &desc.Privileged.Stop, setting, value, op, serviceArg)
 	case "finish-command":
-		if op == OpPlusEqual {
-			desc.FinishCommand = append(desc.FinishCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.FinishCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.FinishCommand, &desc.Privileged.Finish, setting, value, op, serviceArg)
 	case "pre-start-command":
-		if op == OpPlusEqual {
-			desc.PreStartCommand = append(desc.PreStartCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.PreStartCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.PreStartCommand, &desc.Privileged.PreStart, setting, value, op, serviceArg)
 	case "post-start-command":
-		if op == OpPlusEqual {
-			desc.PostStartCommand = append(desc.PostStartCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.PostStartCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.PostStartCommand, &desc.Privileged.PostStart, setting, value, op, serviceArg)
 	case "ready-check-command":
 		if op == OpPlusEqual {
 			desc.ReadyCheckCommand = append(desc.ReadyCheckCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
@@ -1513,11 +1529,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "env-generator":
 		desc.EnvGenerator = expandEnvVars(value, serviceArg)
 	case "pre-stop-hook":
-		if op == OpPlusEqual {
-			desc.PreStopHook = append(desc.PreStopHook, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.PreStopHook = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.PreStopHook, &desc.Privileged.PreStop, setting, value, op, serviceArg)
 	case "chroot":
 		desc.Chroot = expandEnvVars(value, serviceArg)
 	case "lock-file":
@@ -2209,6 +2221,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		if err != nil {
 			return fmt.Errorf("invalid buffer size: %w", err)
 		}
+		// Allocated whole when the service starts; a huge value panicked
+		// PID 1 there (makeslice: cap out of range).
+		if n > maxLogBufferSize {
+			return fmt.Errorf("log-buffer-size: %d exceeds the maximum of %d bytes", n, maxLogBufferSize)
+		}
 		desc.LogBufMax = n
 	case "logfile-permissions":
 		perms, err := strconv.ParseInt(value, 8, 32)
@@ -2588,6 +2605,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		n, err := strconv.Atoi(value)
 		if err != nil || n <= 0 {
 			return fmt.Errorf("shared-logger-queue-size: must be a positive integer (got %q)", value)
+		}
+		if n > maxSharedLoggerQueueSize {
+			return fmt.Errorf("shared-logger-queue-size: %d exceeds the maximum of %d", n, maxSharedLoggerQueueSize)
 		}
 		desc.SharedLoggerQueueSize = n
 
@@ -3477,16 +3497,20 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	default:
 		if strings.HasPrefix(setting, "control-command-") {
 			sigName := strings.ToUpper(setting[len("control-command-"):])
-			cmd := splitCommand(expandEnvVarsForCommand(value, serviceArg))
-			if len(cmd) > 0 {
+			cur := desc.ControlCommands[sigName]
+			priv := desc.Privileged.Control[sigName]
+			if err := setPrivilegedCommand(&cur, &priv, setting, value, op, serviceArg); err != nil {
+				return err
+			}
+			if len(cur) > 0 {
 				if desc.ControlCommands == nil {
 					desc.ControlCommands = make(map[string][]string)
 				}
-				if op == OpPlusEqual {
-					desc.ControlCommands[sigName] = append(desc.ControlCommands[sigName], cmd...)
-				} else {
-					desc.ControlCommands[sigName] = cmd
+				desc.ControlCommands[sigName] = cur
+				if desc.Privileged.Control == nil {
+					desc.Privileged.Control = make(map[string]bool)
 				}
+				desc.Privileged.Control[sigName] = priv
 			}
 			return nil
 		}
@@ -3599,6 +3623,9 @@ func applyOptions(desc *ServiceDescription, value string, append bool) error {
 }
 
 // splitCommand splits a command string into parts, respecting quotes.
+// A quoted run starts a word even when it is empty, so `""` is an empty
+// argument, as in dinit's read_setting_value; it used to vanish, which
+// shifted every later argument of a command such as `prog "" file`.
 func splitCommand(cmd string) []string {
 	// Fast-path: no quotes, escapes, or NUL separators → use strings.Fields
 	if strings.IndexByte(cmd, '"') < 0 &&
@@ -3615,6 +3642,7 @@ func splitCommand(cmd string) []string {
 	inQuote := false
 	quoteChar := byte(0)
 	escaped := false
+	inWord := false // a word has started, perhaps with an empty quote
 
 	for i := 0; i < len(cmd); i++ {
 		ch := cmd[i]
@@ -3622,6 +3650,7 @@ func splitCommand(cmd string) []string {
 		if escaped {
 			current.WriteByte(ch)
 			escaped = false
+			inWord = true
 			continue
 		}
 
@@ -3642,30 +3671,26 @@ func splitCommand(cmd string) []string {
 		if ch == '"' || ch == '\'' {
 			inQuote = true
 			quoteChar = ch
+			inWord = true
 			continue
 		}
 
-		if ch == ' ' || ch == '\t' {
-			if current.Len() > 0 {
+		// A blank, or a NUL: the word-split boundary from $/NAME
+		// expansion.
+		if ch == ' ' || ch == '\t' || ch == wordSplitSep {
+			if inWord {
 				parts = append(parts, current.String())
 				current.Reset()
-			}
-			continue
-		}
-
-		// NUL byte = word-split boundary from $/NAME expansion
-		if ch == wordSplitSep {
-			if current.Len() > 0 {
-				parts = append(parts, current.String())
-				current.Reset()
+				inWord = false
 			}
 			continue
 		}
 
 		current.WriteByte(ch)
+		inWord = true
 	}
 
-	if current.Len() > 0 {
+	if inWord {
 		parts = append(parts, current.String())
 	}
 
@@ -4163,7 +4188,6 @@ func parseNonColonOp(expr string) (varName string, op byte, operand string, ok b
 	return "", 0, "", false
 }
 
-// signalNames maps signal names (uppercase) to their syscall values.
 // isValidDBusName does a permissive syntax check for a well-known
 // D-Bus bus name (dot-separated segments; each segment starts with a
 // letter or underscore; subsequent chars are letters, digits,
@@ -4262,44 +4286,34 @@ func parseByteSize(s string) (int64, error) {
 	if n < 0 {
 		return 0, fmt.Errorf("byte-size negative")
 	}
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("byte-size too large")
+	}
 	return n * mult, nil
 }
 
-// Package-level to avoid re-allocating on every parseSignal call.
-var signalNames = map[string]syscall.Signal{
-	"SIGHUP":  syscall.SIGHUP,
-	"SIGINT":  syscall.SIGINT,
-	"SIGQUIT": syscall.SIGQUIT,
-	"SIGKILL": syscall.SIGKILL,
-	"SIGTERM": syscall.SIGTERM,
-	"SIGUSR1": syscall.SIGUSR1,
-	"SIGUSR2": syscall.SIGUSR2,
-	"SIGSTOP": syscall.SIGSTOP,
-	"SIGCONT": syscall.SIGCONT,
-	"HUP":     syscall.SIGHUP,
-	"INT":     syscall.SIGINT,
-	"QUIT":    syscall.SIGQUIT,
-	"KILL":    syscall.SIGKILL,
-	"TERM":    syscall.SIGTERM,
-	"USR1":    syscall.SIGUSR1,
-	"USR2":    syscall.SIGUSR2,
-	"STOP":    syscall.SIGSTOP,
-	"CONT":    syscall.SIGCONT,
-}
-
-// parseSignal parses a signal name or number.
+// parseSignal parses a signal name or number. Names are any the kernel
+// has, with or without the SIG prefix, in any case; numbers must be
+// 1..64, the range rt_sigaction takes. 0 means none, as it always has.
 func parseSignal(value string) (syscall.Signal, error) {
 	if strings.EqualFold(value, "none") {
 		return 0, nil
 	}
 
-	if sig, ok := signalNames[strings.ToUpper(value)]; ok {
+	name := strings.ToUpper(value)
+	if !strings.HasPrefix(name, "SIG") {
+		name = "SIG" + name
+	}
+	if sig := unix.SignalNum(name); sig != 0 {
 		return sig, nil
 	}
 
 	n, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("unknown signal: %s", value)
+	}
+	if n < 0 || n > 64 {
+		return 0, fmt.Errorf("signal number %d out of range [1,64]", n)
 	}
 	return syscall.Signal(n), nil
 }

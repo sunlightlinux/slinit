@@ -33,6 +33,11 @@ func newStore() (*store, error) {
 	if svc == "" {
 		return nil, fmt.Errorf("service name required (set RC_SVCNAME or SLINIT_SERVICENAME)")
 	}
+	// The name becomes a path under options/: RC_SVCNAME=../../x would
+	// otherwise read and write files outside the store root.
+	if err := validateServiceName(svc); err != nil {
+		return nil, fmt.Errorf("invalid service name: %v", err)
+	}
 	root := firstNonEmpty(os.Getenv("RC_SVCDIR"), defaultRuntimeDir)
 	return &store{
 		root:    filepath.Join(root, "options"),
@@ -65,19 +70,14 @@ func (s *store) Get(key string) (string, bool, error) {
 }
 
 // Set writes value under key, creating parent dirs as needed. An
-// empty value deletes the file entirely — OpenRC's C original does
-// the same via `rc_service_value_set(svc, k, NULL)`.
+// empty value is stored as an empty file, not deleted: OpenRC's
+// rc_service_value_set() only unlinks when value is NULL, i.e. when
+// the applet got no VALUE argument at all — see Delete.
 func (s *store) Set(key, value string) error {
 	if err := validateKey(key); err != nil {
 		return err
 	}
 	target := s.path(key)
-	if value == "" {
-		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return err
 	}
@@ -85,6 +85,19 @@ func (s *store) Set(key, value string) error {
 	// consumers concatenate it into shell expressions, and any tail
 	// whitespace would show up in the reconstructed value.
 	return os.WriteFile(target, []byte(value), 0644)
+}
+
+// Delete removes the stored value for key. Deleting a missing key is
+// not an error. This is `service_set_value KEY` with no VALUE, which
+// OpenRC maps to rc_service_value_set(svc, key, NULL) → unlink.
+func (s *store) Delete(key string) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
+	if err := os.Remove(s.path(key)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Export mirrors OpenRC's service_export: for each var, if it is
@@ -122,6 +135,29 @@ func validateKey(key string) error {
 	}
 	if key == "." || key == ".." {
 		return fmt.Errorf("key %q is a path traversal", key)
+	}
+	return nil
+}
+
+// validateServiceName accepts what slinit allows as a service name,
+// inner slashes included (net/eth0, mount@/dev/sda1): they become
+// nested directories under options/, as they always did. It refuses
+// what could leave the store: NUL, a leading slash, and an empty, "."
+// or ".." path element.
+func validateServiceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty name")
+	}
+	if strings.ContainsRune(name, 0) {
+		return fmt.Errorf("name %q contains NUL", name)
+	}
+	if strings.HasPrefix(name, "/") {
+		return fmt.Errorf("name %q is absolute", name)
+	}
+	for _, el := range strings.Split(name, "/") {
+		if el == "" || el == "." || el == ".." {
+			return fmt.Errorf("name %q has an empty, . or .. path element", name)
+		}
 	}
 	return nil
 }

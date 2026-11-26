@@ -33,14 +33,16 @@ Each svdir becomes a **process** service with **restart = yes**,
 | `sv check DEP` in *run* | **waits-for: DEP** |
 
 **chpst** options in the *run* script map where slinit has an
-equivalent: **-u** → **run-as**, **-b** → argv[0], **-e** → **env-file**
-(with a warning, since runit's directory of files is a different
-format), **-d** / **-m** → **rlimit-data**, **-o** → **rlimit-nofile**,
+equivalent: **-u** → **run-as**, **-b** → argv[0], **-e** → **env-dir**
+(a relative directory is taken from the svdir, where **chpst** runs),
+**-d** / **-m** → **rlimit-data**, **-o** → **rlimit-nofile**,
 **-c** → **rlimit-core**, **-/** → **chroot**, **-C** → **working-dir**,
 **-l** / **-L** → **lock-file**, **-P** → **new-session**, **-0**,
 **-1**, **-2**, **-N** → **close-stdin** / **-stdout** / **-stderr**.
 **-U**, **-n**, **-A**, **-p**, **-f**, **-r**, **-t**, **-F** and
-**-I** are reported as not mapped.
+**-I** are reported as not mapped. Flags group as with **getopt**:
+**-P0** is **-P** and **-0**, and a flag that takes a value ends the
+group (**-Pu** *user*).
 
 Single-input mode writes to standard output, the companion log
 service (if any) following the primary after a separator comment.
@@ -57,6 +59,14 @@ printed only with **-verbose**.
 :   Batch mode: write the slinit files into *DIR*, which is created if
     missing. Without this flag, output goes to stdout and only one
     svdir may be passed at a time.
+    A file already at an output name is replaced, so a rerun
+    regenerates it; each file is written to a temporary name in *DIR*
+    and renamed into place, so an interrupted run never leaves a
+    partial file. A symbolic link at an output name is refused, never
+    written through or replaced.
+    A replaced file keeps its permission bits (and, run as root, its
+    owner and group); a new one is created with mode 0644 less the
+    umask. A hard link to the old file keeps the old content.
 
 **-dry-run**
 :   With **-output-dir**: print each file that would be written, on
@@ -98,7 +108,8 @@ Preview a bulk conversion with enable-mapping suggestions:
 **1**
 :   No input, several inputs without **-output-dir**, the output
     directory could not be created, or one or more svdirs could not be
-    read (missing *./run*, permission denied) or written.
+    read (missing *./run*, permission denied) or written (a symbolic
+    link at an output name counts).
 
 **2**
 :   Unknown flag.

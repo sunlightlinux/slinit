@@ -49,6 +49,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
+
+	"github.com/sunlightlinux/slinit/pkg/dbusservice"
 )
 
 const (
@@ -77,6 +79,32 @@ type systemd1Manager struct {
 	nextJ     uint64            // next job id, atomic-accessed
 	leaderMon uint32            // gnome-session-ctl-monitor compat: 0=off, 1=goroutine running
 	debug     bool              // set to true to log every dispatched call
+	units     map[string]bool   // names with a unit object exported
+
+	// callerUID is set on the system bus, where every method but the
+	// GetUnitByPID* lookups is root's (mayChange); nil on a user's
+	// session bus, where every caller is that user.
+	callerUID func(dbus.Sender) (uint32, error)
+}
+
+// maxUnitObjects bounds the unit objects GetUnit and LoadUnit export, one
+// per name asked for, which are never removed.
+const maxUnitObjects = 1024
+
+// mayChange refuses a caller other than root on the system bus. The stub
+// was open to every local user there: SetEnvironment and StartUnit kept
+// whatever they were sent, and LoadUnit exported an object for every
+// name, all without bound. Its users on the system bus are root (GDM's
+// daemon), except polkitd, which needs only GetUnitByPIDFD.
+func (s *systemd1Manager) mayChange(sender dbus.Sender, what string) *dbus.Error {
+	if s.callerUID == nil {
+		return nil
+	}
+	if uid, err := s.callerUID(sender); err != nil || uid != 0 {
+		s.dbg("%s: refused %s", what, sender)
+		return errAccessDenied("%s: access denied", what)
+	}
+	return nil
 }
 
 // dbg is a one-liner tracer for stub calls. Enabled when the daemon
@@ -150,7 +178,10 @@ func (s *systemd1Manager) jobPath() dbus.ObjectPath {
 
 // SetEnvironment merges the given "KEY=VALUE" strings into the
 // manager's env. Idempotent; last write wins.
-func (s *systemd1Manager) SetEnvironment(assignments []string) *dbus.Error {
+func (s *systemd1Manager) SetEnvironment(sender dbus.Sender, assignments []string) *dbus.Error {
+	if err := s.mayChange(sender, "SetEnvironment"); err != nil {
+		return err
+	}
 	s.dbg("SetEnvironment(%d entries)", len(assignments))
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -166,7 +197,10 @@ func (s *systemd1Manager) SetEnvironment(assignments []string) *dbus.Error {
 
 // UnsetEnvironment drops any key that appears in the argument list.
 // Values-in-args are ignored — this matches systemd's semantics.
-func (s *systemd1Manager) UnsetEnvironment(names []string) *dbus.Error {
+func (s *systemd1Manager) UnsetEnvironment(sender dbus.Sender, names []string) *dbus.Error {
+	if err := s.mayChange(sender, "UnsetEnvironment"); err != nil {
+		return err
+	}
 	s.dbg("UnsetEnvironment(%d entries)", len(names))
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,7 +215,10 @@ func (s *systemd1Manager) UnsetEnvironment(names []string) *dbus.Error {
 
 // UnsetAndSetEnvironment atomically clears then sets — used by
 // gnome-session to swap its whole env in one shot.
-func (s *systemd1Manager) UnsetAndSetEnvironment(unset, set []string) *dbus.Error {
+func (s *systemd1Manager) UnsetAndSetEnvironment(sender dbus.Sender, unset, set []string) *dbus.Error {
+	if err := s.mayChange(sender, "UnsetAndSetEnvironment"); err != nil {
+		return err
+	}
 	s.dbg("UnsetAndSetEnvironment(unset=%d, set=%d)", len(unset), len(set))
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -212,7 +249,10 @@ func (s *systemd1Manager) UnsetAndSetEnvironment(unset, set []string) *dbus.Erro
 // and proceed with their own startup instead of thinking it's
 // already up. This matches systemd's semantics: GetUnit is a lookup,
 // not a load — LoadUnit is the load call.
-func (s *systemd1Manager) GetUnit(name string) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) GetUnit(sender dbus.Sender, name string) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "GetUnit"); err != nil {
+		return "", err
+	}
 	if !s.isActive(name) {
 		s.dbg("GetUnit(%q) -> NoSuchUnit", name)
 		return "", dbus.NewError(
@@ -221,7 +261,9 @@ func (s *systemd1Manager) GetUnit(name string) (dbus.ObjectPath, *dbus.Error) {
 	}
 	s.dbg("GetUnit(%q) -> ok", name)
 	p := s.unitPath(name)
-	s.registerUnitObject(name, p)
+	if !s.registerUnitObject(name, p) {
+		return "", errTooManyUnits()
+	}
 	return p, nil
 }
 
@@ -229,10 +271,15 @@ func (s *systemd1Manager) GetUnit(name string) (dbus.ObjectPath, *dbus.Error) {
 // doesn't mark it active — the unit is "loaded but not started".
 // Matches systemd where LoadUnit succeeds for any nameable unit
 // without changing its ActiveState.
-func (s *systemd1Manager) LoadUnit(name string) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) LoadUnit(sender dbus.Sender, name string) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "LoadUnit"); err != nil {
+		return "", err
+	}
 	s.dbg("LoadUnit(%q)", name)
 	p := s.unitPath(name)
-	s.registerUnitObject(name, p)
+	if !s.registerUnitObject(name, p) {
+		return "", errTooManyUnits()
+	}
 	return p, nil
 }
 
@@ -252,6 +299,10 @@ func (s *systemd1Manager) GetUnitByPID(pid uint32) (dbus.ObjectPath, *dbus.Error
 // it polkitd takes an UnknownMethod error on every authorisation check
 // before falling back — answering NoSuchUnit sends it down the same
 // fallback path as GetUnitByPID, without the error.
+//
+// The pidfd is closed by the connection once the reply is sent
+// (dbusservice.CloseReceivedFDs); it used to be closed by nothing, so
+// every polkit check leaked a descriptor.
 func (s *systemd1Manager) GetUnitByPIDFD(pidfd dbus.UnixFD) (dbus.ObjectPath, *dbus.Error) {
 	s.dbg("GetUnitByPIDFD(fd=%d) -> NoSuchUnit", int(pidfd))
 	return "", dbus.NewError(
@@ -259,7 +310,10 @@ func (s *systemd1Manager) GetUnitByPIDFD(pidfd dbus.UnixFD) (dbus.ObjectPath, *d
 		[]any{"No unit for PID."})
 }
 
-func (s *systemd1Manager) GetUnitByInvocationID(id []byte) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) GetUnitByInvocationID(sender dbus.Sender, id []byte) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "GetUnitByInvocationID"); err != nil {
+		return "", err
+	}
 	return "", dbus.NewError(
 		"org.freedesktop.systemd1.NoSuchUnit",
 		[]any{"No unit for invocation ID."})
@@ -314,12 +368,18 @@ func (s *systemd1Manager) startJob(name, verb string) (dbus.ObjectPath, *dbus.Er
 	return p, nil
 }
 
-func (s *systemd1Manager) StartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) StartUnit(sender dbus.Sender, name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "StartUnit"); err != nil {
+		return "", err
+	}
 	s.setActive(name, true)
 	s.maybeSpawnSessionLeaderMonitor(name)
 	return s.startJob(name, "start")
 }
-func (s *systemd1Manager) StartUnitWithFlags(name, mode string, flags uint64) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) StartUnitWithFlags(sender dbus.Sender, name, mode string, flags uint64) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "StartUnitWithFlags"); err != nil {
+		return "", err
+	}
 	s.setActive(name, true)
 	s.maybeSpawnSessionLeaderMonitor(name)
 	return s.startJob(name, "start")
@@ -387,29 +447,47 @@ func (s *systemd1Manager) holdSessionLeaderFIFO() {
 	// Close releases the fd.
 	_, _ = io.Copy(io.Discard, f)
 }
-func (s *systemd1Manager) StopUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) StopUnit(sender dbus.Sender, name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "StopUnit"); err != nil {
+		return "", err
+	}
 	s.setActive(name, false)
 	return s.startJob(name, "stop")
 }
-func (s *systemd1Manager) RestartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) RestartUnit(sender dbus.Sender, name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "RestartUnit"); err != nil {
+		return "", err
+	}
 	s.setActive(name, true)
 	return s.startJob(name, "restart")
 }
-func (s *systemd1Manager) ReloadUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) ReloadUnit(sender dbus.Sender, name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "ReloadUnit"); err != nil {
+		return "", err
+	}
 	return s.startJob(name, "reload")
 }
-func (s *systemd1Manager) ReloadOrRestartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) ReloadOrRestartUnit(sender dbus.Sender, name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "ReloadOrRestartUnit"); err != nil {
+		return "", err
+	}
 	s.setActive(name, true)
 	return s.startJob(name, "reload-or-restart")
 }
-func (s *systemd1Manager) TryRestartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) TryRestartUnit(sender dbus.Sender, name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "TryRestartUnit"); err != nil {
+		return "", err
+	}
 	// try-restart is a nop if the unit isn't already active.
 	if s.isActive(name) {
 		return s.startJob(name, "try-restart")
 	}
 	return s.startJob(name, "try-restart")
 }
-func (s *systemd1Manager) ReloadOrTryRestartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+func (s *systemd1Manager) ReloadOrTryRestartUnit(sender dbus.Sender, name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	if err := s.mayChange(sender, "ReloadOrTryRestartUnit"); err != nil {
+		return "", err
+	}
 	return s.startJob(name, "reload-or-try-restart")
 }
 
@@ -419,21 +497,33 @@ func (s *systemd1Manager) ReloadOrTryRestartUnit(name, mode string) (dbus.Object
 // failed units) during greeter startup — it's one of the first
 // systemd1 calls after activation, and without it gnome-session
 // abandons startup with "Failed to reset failed state of units".
-func (s *systemd1Manager) KillUnit(name, who string, sig int32) *dbus.Error {
+func (s *systemd1Manager) KillUnit(sender dbus.Sender, name, who string, sig int32) *dbus.Error {
+	if err := s.mayChange(sender, "KillUnit"); err != nil {
+		return err
+	}
 	s.dbg("KillUnit(%q, %q, %d)", name, who, sig)
 	return nil
 }
-func (s *systemd1Manager) ResetFailedUnit(name string) *dbus.Error {
+func (s *systemd1Manager) ResetFailedUnit(sender dbus.Sender, name string) *dbus.Error {
+	if err := s.mayChange(sender, "ResetFailedUnit"); err != nil {
+		return err
+	}
 	s.dbg("ResetFailedUnit(%q)", name)
 	return nil
 }
-func (s *systemd1Manager) ResetFailed() *dbus.Error { s.dbg("ResetFailed"); return nil }
-func (s *systemd1Manager) ClearJobs() *dbus.Error   { s.dbg("ClearJobs"); return nil }
-func (s *systemd1Manager) SetUnitProperties(name string, runtime bool, props []struct {
+func (s *systemd1Manager) ResetFailed(sender dbus.Sender) *dbus.Error {
+	s.dbg("ResetFailed")
+	return s.mayChange(sender, "ResetFailed")
+}
+func (s *systemd1Manager) ClearJobs(sender dbus.Sender) *dbus.Error {
+	s.dbg("ClearJobs")
+	return s.mayChange(sender, "ClearJobs")
+}
+func (s *systemd1Manager) SetUnitProperties(sender dbus.Sender, name string, runtime bool, props []struct {
 	Name  string
 	Value dbus.Variant
 }) *dbus.Error {
-	return nil
+	return s.mayChange(sender, "SetUnitProperties")
 }
 
 // -----------------------------------------------------------------------------
@@ -444,10 +534,22 @@ func (s *systemd1Manager) SetUnitProperties(name string, runtime bool, props []s
 // Subscribe is a pure success stub.
 // -----------------------------------------------------------------------------
 
-func (s *systemd1Manager) Subscribe() *dbus.Error   { s.dbg("Subscribe"); return nil }
-func (s *systemd1Manager) Unsubscribe() *dbus.Error { s.dbg("Unsubscribe"); return nil }
-func (s *systemd1Manager) Reload() *dbus.Error      { s.dbg("Reload"); return nil }
-func (s *systemd1Manager) Reexecute() *dbus.Error   { s.dbg("Reexecute"); return nil }
+func (s *systemd1Manager) Subscribe(sender dbus.Sender) *dbus.Error {
+	s.dbg("Subscribe")
+	return s.mayChange(sender, "Subscribe")
+}
+func (s *systemd1Manager) Unsubscribe(sender dbus.Sender) *dbus.Error {
+	s.dbg("Unsubscribe")
+	return s.mayChange(sender, "Unsubscribe")
+}
+func (s *systemd1Manager) Reload(sender dbus.Sender) *dbus.Error {
+	s.dbg("Reload")
+	return s.mayChange(sender, "Reload")
+}
+func (s *systemd1Manager) Reexecute(sender dbus.Sender) *dbus.Error {
+	s.dbg("Reexecute")
+	return s.mayChange(sender, "Reexecute")
+}
 
 // -----------------------------------------------------------------------------
 // List methods — return empty arrays. GNOME doesn't rely on these to
@@ -470,16 +572,28 @@ type unitStatus struct {
 	Job         dbus.ObjectPath
 }
 
-func (s *systemd1Manager) ListUnits() ([]unitStatus, *dbus.Error) {
+func (s *systemd1Manager) ListUnits(sender dbus.Sender) ([]unitStatus, *dbus.Error) {
+	if err := s.mayChange(sender, "ListUnits"); err != nil {
+		return nil, err
+	}
 	return []unitStatus{}, nil
 }
-func (s *systemd1Manager) ListUnitsFiltered(states []string) ([]unitStatus, *dbus.Error) {
+func (s *systemd1Manager) ListUnitsFiltered(sender dbus.Sender, states []string) ([]unitStatus, *dbus.Error) {
+	if err := s.mayChange(sender, "ListUnitsFiltered"); err != nil {
+		return nil, err
+	}
 	return []unitStatus{}, nil
 }
-func (s *systemd1Manager) ListUnitsByNames(names []string) ([]unitStatus, *dbus.Error) {
+func (s *systemd1Manager) ListUnitsByNames(sender dbus.Sender, names []string) ([]unitStatus, *dbus.Error) {
+	if err := s.mayChange(sender, "ListUnitsByNames"); err != nil {
+		return nil, err
+	}
 	return []unitStatus{}, nil
 }
-func (s *systemd1Manager) ListUnitsByPatterns(states, patterns []string) ([]unitStatus, *dbus.Error) {
+func (s *systemd1Manager) ListUnitsByPatterns(sender dbus.Sender, states, patterns []string) ([]unitStatus, *dbus.Error) {
+	if err := s.mayChange(sender, "ListUnitsByPatterns"); err != nil {
+		return nil, err
+	}
 	return []unitStatus{}, nil
 }
 
@@ -488,17 +602,29 @@ type unitFile struct {
 	State string
 }
 
-func (s *systemd1Manager) ListUnitFiles() ([]unitFile, *dbus.Error) {
+func (s *systemd1Manager) ListUnitFiles(sender dbus.Sender) ([]unitFile, *dbus.Error) {
+	if err := s.mayChange(sender, "ListUnitFiles"); err != nil {
+		return nil, err
+	}
 	return []unitFile{}, nil
 }
-func (s *systemd1Manager) ListUnitFilesByPatterns(states, patterns []string) ([]unitFile, *dbus.Error) {
+func (s *systemd1Manager) ListUnitFilesByPatterns(sender dbus.Sender, states, patterns []string) ([]unitFile, *dbus.Error) {
+	if err := s.mayChange(sender, "ListUnitFilesByPatterns"); err != nil {
+		return nil, err
+	}
 	return []unitFile{}, nil
 }
 
-func (s *systemd1Manager) GetDefaultTarget() (string, *dbus.Error) {
+func (s *systemd1Manager) GetDefaultTarget(sender dbus.Sender) (string, *dbus.Error) {
+	if err := s.mayChange(sender, "GetDefaultTarget"); err != nil {
+		return "", err
+	}
 	return "graphical.target", nil
 }
-func (s *systemd1Manager) GetUnitFileState(name string) (string, *dbus.Error) {
+func (s *systemd1Manager) GetUnitFileState(sender dbus.Sender, name string) (string, *dbus.Error) {
+	if err := s.mayChange(sender, "GetUnitFileState"); err != nil {
+		return "", err
+	}
 	return "enabled", nil
 }
 
@@ -684,8 +810,21 @@ func (u *systemd1UnitStub) Set(iface, prop string, value dbus.Variant) *dbus.Err
 }
 
 // registerUnitObject installs a per-unit stub at the given path.
-// Idempotent — a repeat GetUnit for the same name is cheap.
-func (s *systemd1Manager) registerUnitObject(name string, path dbus.ObjectPath) {
+// Idempotent — a repeat GetUnit for the same name is cheap. It refuses a
+// new name once maxUnitObjects are exported.
+func (s *systemd1Manager) registerUnitObject(name string, path dbus.ObjectPath) bool {
+	s.mu.Lock()
+	if !s.units[name] {
+		if len(s.units) >= maxUnitObjects {
+			s.mu.Unlock()
+			return false
+		}
+		if s.units == nil {
+			s.units = map[string]bool{}
+		}
+		s.units[name] = true
+	}
+	s.mu.Unlock()
 	// dbus.Conn.Export is idempotent enough for our purposes; a
 	// re-export overwrites the handler and both point at the same
 	// answers, so we don't dedup.
@@ -695,6 +834,12 @@ func (s *systemd1Manager) registerUnitObject(name string, path dbus.ObjectPath) 
 	_ = s.conn.Export(
 		introspect.Introspectable(systemd1UnitIntrospect(name, path)),
 		path, "org.freedesktop.DBus.Introspectable")
+	return true
+}
+
+func errTooManyUnits() *dbus.Error {
+	return dbus.NewError("org.freedesktop.DBus.Error.LimitsExceeded",
+		[]any{fmt.Sprintf("more than %d units", maxUnitObjects)})
 }
 
 // -----------------------------------------------------------------------------
@@ -783,12 +928,22 @@ func systemd1UnitIntrospect(name string, path dbus.ObjectPath) string {
 // without owning it so login1 stays functional.
 // -----------------------------------------------------------------------------
 
-func registerSystemd1(conn *dbus.Conn, debug bool) *systemd1Manager {
+// registerSystemd1 exports the stub on conn and claims the name. On the
+// system bus (systemBus) every method but the GetUnitByPID* lookups is
+// root's; see mayChange.
+func registerSystemd1(conn *dbus.Conn, debug, systemBus bool) *systemd1Manager {
 	s := &systemd1Manager{
 		conn:    conn,
 		env:     make(map[string]string, 32),
 		started: make(map[string]bool, 32),
 		debug:   debug,
+	}
+	if systemBus {
+		s.callerUID = func(sender dbus.Sender) (uint32, error) {
+			var uid uint32
+			err := conn.BusObject().Call("org.freedesktop.DBus.GetConnectionUnixUser", 0, string(sender)).Store(&uid)
+			return uid, err
+		}
 	}
 
 	if err := conn.Export(s, dbus.ObjectPath(systemd1ObjPath), systemd1Iface); err != nil {
@@ -840,14 +995,14 @@ func registerSystemd1(conn *dbus.Conn, debug bool) *systemd1Manager {
 // per-user, dbus-daemon --session ships an `<allow own="*"/>`
 // default for the owner-user context).
 func userMain(debug bool) {
-	conn, err := dbus.ConnectSessionBus()
+	conn, err := dbus.ConnectSessionBus(dbusservice.CloseReceivedFDs()...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-logind --user: connect session bus: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	if s := registerSystemd1(conn, debug); s == nil {
+	if s := registerSystemd1(conn, debug, false); s == nil {
 		fmt.Fprintln(os.Stderr, "slinit-logind --user: systemd1 registration failed on session bus")
 		os.Exit(1)
 	}
@@ -857,5 +1012,10 @@ func userMain(debug bool) {
 	// logout / DM stop), so we exit cleanly along with the session.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	<-sig
+	select {
+	case <-sig:
+	case <-conn.Context().Done():
+		fmt.Fprintln(os.Stderr, "slinit-logind --user: lost the session bus connection")
+		os.Exit(1)
+	}
 }

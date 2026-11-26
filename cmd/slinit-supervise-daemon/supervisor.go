@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -24,12 +25,14 @@ func runSupervisor(opts Options) int {
 		return exitInsufficientPri
 	}
 	superLogf(opts, "supervisor pidfile written pid=%d", os.Getpid())
-	// Both files are removed on clean exit so stale content does not
+	// All three files are removed on exit so stale content does not
 	// linger for the next start.
-	defer func() {
-		_ = os.Remove(opts.PidFile)
-		_ = os.Remove(opts.PidFile + ".daemon")
-	}()
+	defer removePidfiles(opts)
+	// Publish the stop schedule, so --stop knows how long stopping the
+	// daemon may take; a --stop given its own --retry replaces it.
+	if err := writeFileNoFollow(retryFile(opts), effectiveRetry(opts.Retry)+"\n"); err != nil {
+		superLogf(opts, "write %s: %v", retryFile(opts), err)
+	}
 
 	// Signal channel: SIGTERM / SIGINT tell the supervisor to shut the
 	// daemon down and exit. SIGHUP is forwarded to the daemon (config
@@ -44,6 +47,7 @@ func runSupervisor(opts Options) int {
 	respawn := 0
 	for {
 		daemonPID, waitCh, err := startDaemon(opts)
+		started := time.Now()
 		if err != nil {
 			superLogf(opts, "spawn daemon: %v", err)
 			return exitInsufficientPri
@@ -71,7 +75,7 @@ func runSupervisor(opts Options) int {
 						limiter.count, opts.RespawnPeriod)
 					return exitInsufficientPri
 				}
-				respawn++
+				respawn = nextRespawn(respawn, time.Since(started), opts.RespawnPeriod)
 				delay := backoffDelay(opts, respawn)
 				if delay > 0 {
 					timer := time.NewTimer(delay)
@@ -100,10 +104,16 @@ func runSupervisor(opts Options) int {
 				switch sig {
 				case syscall.SIGTERM, syscall.SIGINT:
 					// Clean shutdown: kill the daemon and exit.
-					superLogf(opts, "shutdown signal %s → stopping daemon pid=%d",
-						sig, daemonPID)
-					if err := stopDaemon(opts, daemonPID); err != nil {
+					// --stop may have left its own schedule in
+					// the retry file; it replaces the one --start
+					// gave.
+					stopOpts := opts
+					stopOpts.Retry = stopSchedule(opts)
+					superLogf(opts, "shutdown signal %s → stopping daemon pid=%d (%s)",
+						sig, daemonPID, stopOpts.Retry)
+					if err := stopDaemon(stopOpts, daemonPID); err != nil {
 						superLogf(opts, "stop daemon: %v", err)
+						return exitInsufficientPri
 					}
 					return exitOK
 				case syscall.SIGHUP:
@@ -146,20 +156,20 @@ func startDaemon(opts Options) (int, <-chan string, error) {
 	if opts.ChDir != "" {
 		cmd.Dir = opts.ChDir
 	}
-	if len(opts.Env) > 0 {
-		cmd.Env = append(os.Environ(), opts.Env...)
-	}
+	// Always an explicit environment, so the legacy supervisor switch
+	// is never handed to the daemon even if something put it back.
+	cmd.Env = append(scrubEnviron(os.Environ()), opts.Env...)
 
 	sys := &syscall.SysProcAttr{}
 	if opts.Chroot != "" {
 		sys.Chroot = opts.Chroot
 	}
 	if opts.User != "" || opts.Group != "" {
-		uid, gid, err := resolveCredentials(opts)
+		cred, err := daemonCredential(opts)
 		if err != nil {
 			return 0, nil, err
 		}
-		sys.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+		sys.Credential = cred
 	}
 	cmd.SysProcAttr = sys
 
@@ -204,33 +214,60 @@ func startDaemon(opts Options) (int, <-chan string, error) {
 	return pid, exitCh, nil
 }
 
-// stopDaemon shuts the daemon down using --retry when provided,
-// otherwise SIGTERM/5/KILL/5. Waits for the process to actually exit.
-func stopDaemon(opts Options, pid int) error {
-	spec := opts.Retry
+// retryFile is where the supervisor publishes its stop schedule and
+// --stop hands it a replacement.
+func retryFile(opts Options) string { return opts.PidFile + ".retry" }
+
+// removePidfiles removes the supervisor pidfile and its companions.
+func removePidfiles(opts Options) {
+	_ = os.Remove(opts.PidFile)
+	_ = os.Remove(opts.PidFile + ".daemon")
+	_ = os.Remove(retryFile(opts))
+}
+
+// effectiveRetry is spec, or the default schedule when it is empty.
+func effectiveRetry(spec string) string {
 	if spec == "" {
-		spec = "TERM/5/KILL/5"
+		return defaultStopSchedule
 	}
-	steps, err := ParseRetry(spec, syscall.SIGTERM)
+	return spec
+}
+
+// stopSchedule is the schedule to stop the daemon with: the one in the
+// retry file when it is trusted and parses, else --start's own.
+func stopSchedule(opts Options) string {
+	if b, err := readTrustedFile(retryFile(opts)); err == nil {
+		spec := trimSpace(string(b))
+		if _, err := ParseRetry(spec, syscall.SIGTERM); err == nil {
+			return spec
+		}
+	}
+	return effectiveRetry(opts.Retry)
+}
+
+// stopDaemon shuts the daemon down using --retry when provided,
+// otherwise defaultStopSchedule. Waits for the process to actually exit.
+func stopDaemon(opts Options, pid int) error {
+	steps, err := ParseRetry(effectiveRetry(opts.Retry), syscall.SIGTERM)
 	if err != nil {
 		return err
 	}
-	for _, step := range steps {
-		if step.Signal != 0 {
-			_ = syscall.Kill(pid, step.Signal)
-		}
-		if step.Timeout == 0 {
-			// "wait forever" tail.
-			for processAlive(pid) {
-				time.Sleep(50 * time.Millisecond)
-			}
-			return nil
-		}
-		if waitExit(pid, step.Timeout) {
-			return nil
-		}
+	if runSchedule(pid, steps) {
+		return nil
 	}
 	return fmt.Errorf("daemon pid=%d still alive after retry schedule", pid)
+}
+
+// scrubEnviron returns env without legacySupervisorEnvVar.
+func scrubEnviron(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, legacySupervisorEnvVar+"=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 func setupStdio(cmd *exec.Cmd, opts Options) error {
@@ -304,6 +341,75 @@ func resolveCredentials(opts Options) (int, int, error) {
 	return uid, gid, nil
 }
 
+// daemonCredential is the identity the daemon runs as. With --user
+// its supplementary groups are the user's own plus the primary gid,
+// as initgroups(3) sets them in OpenRC: a bare Credential has Go call
+// setgroups(0), which left a daemon run as a user without the groups
+// that give it access to its sockets, devices and files. With --group
+// alone only the gid changes and the supplementary set is kept, again
+// as OpenRC does.
+func daemonCredential(opts Options) (*syscall.Credential, error) {
+	uid, gid, err := resolveCredentials(opts)
+	if err != nil {
+		return nil, err
+	}
+	cred := &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+	if opts.User == "" {
+		cred.NoSetGroups = true
+		return cred, nil
+	}
+	cred.Groups = userGroups(opts.User, uint32(gid))
+	// Already exactly these groups: skip setgroups(2), which needs
+	// CAP_SETGID even when it changes nothing.
+	if cur, err := syscall.Getgroups(); err == nil && sameGIDs(cur, cred.Groups) {
+		cred.NoSetGroups = true
+	}
+	return cred, nil
+}
+
+// userGroups is name's group list (by name or numeric uid) with gid
+// added; just gid when the user has no entry to look the list up in.
+func userGroups(name string, gid uint32) []uint32 {
+	groups := []uint32{gid}
+	u, err := user.Lookup(name)
+	if err != nil {
+		if _, nerr := strconv.Atoi(name); nerr != nil {
+			return groups
+		}
+		if u, err = user.LookupId(name); err != nil {
+			return groups
+		}
+	}
+	ids, err := u.GroupIds()
+	if err != nil {
+		return groups
+	}
+	for _, id := range ids {
+		n, err := strconv.ParseUint(id, 10, 32)
+		if err != nil || uint32(n) == gid {
+			continue
+		}
+		groups = append(groups, uint32(n))
+	}
+	return groups
+}
+
+// sameGIDs reports whether a and b hold the same set of gids.
+func sameGIDs(a []int, b []uint32) bool {
+	set := make(map[uint32]bool, len(a))
+	for _, g := range a {
+		set[uint32(g)] = true
+	}
+	other := make(map[uint32]bool, len(b))
+	for _, g := range b {
+		if !set[g] {
+			return false
+		}
+		other[g] = true
+	}
+	return len(other) == len(set)
+}
+
 func lookupUID(s string) (int, error) {
 	if n, err := strconv.Atoi(s); err == nil {
 		return n, nil
@@ -370,12 +476,18 @@ func waitExit(pid int, timeout time.Duration) bool {
 // followed; a stale regular pid-file is still replaced, which is what
 // O_TRUNC is for.
 func writePIDFile(path string, pid int) error {
+	return writeFileNoFollow(path, strconv.Itoa(pid)+"\n")
+}
+
+// writeFileNoFollow replaces path's contents, refusing a symlink as
+// writePIDFile explains.
+func writeFileNoFollow(path, content string) error {
 	f, err := os.OpenFile(path,
 		os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0644)
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(strconv.Itoa(pid) + "\n"); err != nil {
+	if _, err := f.WriteString(content); err != nil {
 		f.Close()
 		return err
 	}

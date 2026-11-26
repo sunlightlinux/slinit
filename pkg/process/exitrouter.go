@@ -49,12 +49,29 @@ type ExitRouter struct {
 	// shells — that nobody will ever register, and on PID 1 those arrive
 	// for the life of the machine.
 	pending map[int]pendingExit
+
+	// pendingOrder lists pending's entries oldest first, so pruning
+	// pops from the head instead of scanning the table on every orphan
+	// (18 us per Route at the cap). Entries are appended in time order
+	// under mu, so the expired ones are always a prefix. A ref whose
+	// entry was since claimed or replaced (seq differs) is stale and is
+	// skipped when it reaches the head.
+	pendingOrder []pendingRef
+	pendingSeq   uint64
 }
 
 // pendingExit is a reaped status waiting for its registration.
 type pendingExit struct {
 	status syscall.WaitStatus
 	at     time.Time
+	seq    uint64
+}
+
+// pendingRef is one pendingOrder slot: the entry for pid if its seq
+// still matches.
+type pendingRef struct {
+	pid int
+	seq uint64
 }
 
 // pendingTTL is how long an unclaimed status is kept.
@@ -131,7 +148,9 @@ func (r *ExitRouter) Route(pid int, status syscall.WaitStatus) bool {
 		// and the two are indistinguishable from here, so the status is
 		// held rather than guessed about.
 		r.prunePendingLocked()
-		r.pending[pid] = pendingExit{status: status, at: time.Now()}
+		r.pendingSeq++
+		r.pending[pid] = pendingExit{status: status, at: time.Now(), seq: r.pendingSeq}
+		r.pendingOrder = append(r.pendingOrder, pendingRef{pid: pid, seq: r.pendingSeq})
 	}
 	r.mu.Unlock()
 	if !ok {
@@ -155,21 +174,36 @@ var DefaultExitRouter = NewExitRouter()
 
 // prunePendingLocked drops expired entries, and if the table is somehow
 // still at its cap, the oldest one. Caller holds r.mu.
+//
+// pendingOrder is in insertion order, which is time order, so the
+// expired entries are its live prefix and the oldest survivor is its
+// first live ref: popping from the head while it is stale, expired, or
+// the table is at its cap does what a scan of the whole table did.
 func (r *ExitRouter) prunePendingLocked() {
 	now := time.Now()
-	for pid, p := range r.pending {
-		if now.Sub(p.at) > pendingTTL {
-			delete(r.pending, pid)
+	for len(r.pendingOrder) > 0 {
+		ref := r.pendingOrder[0]
+		p, live := r.pending[ref.pid]
+		live = live && p.seq == ref.seq
+		if live && now.Sub(p.at) <= pendingTTL && len(r.pending) < pendingMax {
+			break
 		}
+		if live {
+			delete(r.pending, ref.pid)
+		}
+		r.pendingOrder = r.pendingOrder[1:]
 	}
-	for len(r.pending) >= pendingMax {
-		oldestPID, oldest := 0, now
-		for pid, p := range r.pending {
-			if !p.at.After(oldest) {
-				oldestPID, oldest = pid, p.at
+	// Claimed entries leave stale refs behind, which normally expire at
+	// the head within pendingTTL. Should they pile up faster (a burst of
+	// claims, or a clock that stopped), drop them all.
+	if len(r.pendingOrder) > 2*pendingMax {
+		live := r.pendingOrder[:0]
+		for _, ref := range r.pendingOrder {
+			if p, ok := r.pending[ref.pid]; ok && p.seq == ref.seq {
+				live = append(live, ref)
 			}
 		}
-		delete(r.pending, oldestPID)
+		r.pendingOrder = live
 	}
 }
 

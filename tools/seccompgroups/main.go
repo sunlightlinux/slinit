@@ -18,6 +18,11 @@
 // the groups had drifted from systemd's — @system-service allowed 207
 // syscalls where systemd allows 313 — so a unit ported from systemd
 // could be killed by a call systemd lets through.
+//
+// A syscall x/sys does not name yet comes from extraSyscalls. Where the
+// kernel's header (/usr/include/asm/unistd_64.h) is installed, a group
+// member it lists and the table lacks fails the run: cut from the
+// groups, it would pass every deny-list that names its group.
 package main
 
 import (
@@ -37,7 +42,20 @@ var (
 	setRe   = regexp.MustCompile(`(?s)\[SYSCALL_FILTER_SET_[A-Z_]+\] = \{\s*(?:/\*.*?\*/\s*)?\.name = "(@[a-z-]+)",\s*\.help = "([^"]*)",\s*\.value =(.*?)\n        \},`)
 	entryRe = regexp.MustCompile(`"([^"]+)\\0"`)
 	sysRe   = regexp.MustCompile(`SYS_([A-Z0-9_]+)\s*=\s*\d+`)
+	nrRe    = regexp.MustCompile(`(?m)^#define __NR_([a-z0-9_]+) (\d+)$`)
 )
+
+// extraSyscalls are x86_64 syscalls golang.org/x/sys does not name yet,
+// numbered from the kernel's arch/x86/entry/syscalls/syscall_64.tbl.
+// One x/sys names is taken from x/sys instead.
+var extraSyscalls = map[string]int{
+	"file_getattr": 468, // @file-system, Linux 6.17
+	"file_setattr": 469, // @file-system, Linux 6.17
+}
+
+// kernelHeader lists the native syscalls, for the cross-check; absent on
+// a system without the kernel headers, where the check is skipped.
+var kernelHeader = "/usr/include/asm/unistd_64.h"
 
 func main() {
 	sdDir := flag.String("systemd", "../systemd", "systemd source tree")
@@ -73,10 +91,15 @@ func generate(sdDir string) (map[string][]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	consts := map[string]string{} // name -> SYS_ constant
+	consts := map[string]string{} // name -> number expression
 	for _, m := range sysRe.FindAllSubmatch(sysSrc, -1) {
 		c := string(m[1])
-		consts[strings.ToLower(c)] = "SYS_" + c
+		consts[strings.ToLower(c)] = "unix.SYS_" + c
+	}
+	for n, nr := range extraSyscalls {
+		if _, ok := consts[n]; !ok {
+			consts[n] = fmt.Sprint(nr)
+		}
 	}
 
 	sdSrc, err := os.ReadFile(filepath.Join(sdDir, "src", "shared", "seccomp-util.c"))
@@ -104,6 +127,23 @@ func generate(sdDir string) (map[string][]byte, string, error) {
 	// slinit without a word, which is how @obsolete was first lost.
 	if want := bytes.Count(sdSrc, []byte(`.name = "@`)); len(sets) != want {
 		return nil, "", fmt.Errorf("read %d of the %d groups in seccomp-util.c; has its layout changed?", len(sets), want)
+	}
+	if hdr, err := os.ReadFile(kernelHeader); err == nil {
+		native := map[string]bool{}
+		for _, m := range nrRe.FindAllSubmatch(hdr, -1) {
+			native[string(m[1])] = true
+		}
+		var missing []string
+		for _, name := range order {
+			for _, e := range sets[name].entries {
+				if _, ok := consts[e]; !ok && native[e] {
+					missing = append(missing, name+" "+e)
+				}
+			}
+		}
+		if len(missing) > 0 {
+			return nil, "", fmt.Errorf("x86_64 syscalls in systemd's groups but not in x/sys; add them to extraSyscalls: %s", strings.Join(missing, ", "))
+		}
 	}
 
 	var expand func(name string, seen map[string]bool) (map[string]bool, error)
@@ -179,7 +219,7 @@ func generate(sdDir string) (map[string][]byte, string, error) {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		fmt.Fprintf(&tb, "\t%q: unix.%s,\n", n, consts[n])
+		fmt.Fprintf(&tb, "\t%q: %s,\n", n, consts[n])
 	}
 	tb.WriteString("}\n")
 

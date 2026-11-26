@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/signal"
 	"syscall"
 	"testing"
 	"time"
@@ -149,5 +150,30 @@ func TestRun_ZeroGraceStillTerms(t *testing.T) {
 	}
 	if *slept != 0 {
 		t.Errorf("slept %v, want 0", *slept)
+	}
+}
+
+// From an SSH session, kill(-1, SIGTERM) kills sshd and the pty's
+// hangup used to kill nuke during the grace period, before the SIGKILL
+// round. SIGHUP, SIGTERM and SIGPIPE must be ignored before the first
+// kill.
+func TestRun_IgnoresHangupBeforeFirstKill(t *testing.T) {
+	t.Cleanup(saveAndRestore(t))
+	t.Cleanup(func() { signal.Reset(syscall.SIGHUP, syscall.SIGTERM, syscall.SIGPIPE) })
+	sleepFunc = func(time.Duration) {}
+	checked := false
+	killFunc = func(_ int, sig syscall.Signal) error {
+		if !checked {
+			checked = true
+			for _, s := range []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGPIPE} {
+				if !signal.Ignored(s) {
+					t.Errorf("%v not ignored at the first kill (%v)", s, sig)
+				}
+			}
+		}
+		return nil
+	}
+	if rc := run(nil, devNull(t)); rc != 0 {
+		t.Errorf("rc = %d", rc)
 	}
 }

@@ -99,7 +99,7 @@ func TestServeDoesNotWaitForeverOnASilentClient(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// The handler's own deadline is 10s; read until it gives up. If the
+	// The handler gives a silent client requestTimeout; read until it gives up. If the
 	// deadline were missing this would block until the test times out.
 	_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
 	buf := make([]byte, 1)
@@ -201,5 +201,34 @@ func TestServeCapsConcurrentConnections(t *testing.T) {
 	_ = extra.SetReadDeadline(time.Now().Add(3 * time.Second))
 	if _, err := extra.Read(make([]byte, 1)); err != io.EOF {
 		t.Fatalf("connection past the cap: read err = %v, want EOF (closed on accept)", err)
+	}
+}
+
+// maxConns connections that never send a request held every slot for
+// the whole 10s deadline, so a scrape in that time was closed on accept.
+// The request now has requestTimeout to arrive; once that has passed a
+// scrape gets through again.
+func TestServeIdleConnectionsFreeTheirSlots(t *testing.T) {
+	ss := testSet(t)
+	base := serveTest(t, ss)
+	addr := strings.TrimPrefix(base, "http://")
+
+	for i := 0; i < maxConns; i++ {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("dial %d: %v", i, err)
+		}
+		defer c.Close()
+	}
+	time.Sleep(requestTimeout + time.Second)
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(base + "/metrics")
+	if err != nil {
+		t.Fatalf("scrape after idle connections timed out: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }

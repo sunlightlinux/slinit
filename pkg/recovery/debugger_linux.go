@@ -1,7 +1,10 @@
 package recovery
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -170,6 +173,13 @@ type Debugger struct {
 	stopCh    chan struct{}
 	doneCh    chan struct{}
 	tty       *os.File
+	// wakeFd is an eventfd in the reader's poll set. Stop writes to it
+	// so the reader wakes at once; closing the tty does not wake a
+	// poll(2) already parked on it.
+	wakeFd int
+	// menuIn is what the menu reads keys from: the tty, through a read
+	// a timed-out menu can cancel.
+	menuIn *pollReader
 	// termios is the ORIGINAL termios captured by Start, so Stop
 	// (and the shell-fork detour in runShell) can restore it.
 	// Guarded by termiosMu because runShell re-captures on
@@ -215,7 +225,23 @@ func (d *Debugger) Start() error {
 		close(d.doneCh)
 		return fmt.Errorf("open console %q: %w", d.opts.ConsolePath, err)
 	}
+	wakeFd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		tty.Close()
+		d.running.Store(false)
+		close(d.doneCh)
+		return fmt.Errorf("eventfd: %w", err)
+	}
+	cancelFd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		unix.Close(wakeFd)
+		tty.Close()
+		d.running.Store(false)
+		close(d.doneCh)
+		return fmt.Errorf("eventfd: %w", err)
+	}
 	d.tty = tty
+	d.wakeFd = wakeFd
 	orig := setRawMode(tty)
 	d.termiosMu.Lock()
 	d.termios = orig
@@ -226,7 +252,9 @@ func (d *Debugger) Start() error {
 	// a Stop() landing in the window before the goroutine got that far
 	// was a data race, and a lost race means polling a descriptor number
 	// that has since been reused by something else.
-	go d.run(int(tty.Fd()))
+	fd := int(tty.Fd())
+	d.menuIn = &pollReader{fd: fd, cancelFd: cancelFd}
+	go d.run(fd, wakeFd)
 	if d.opts.Logger != nil {
 		d.opts.Logger.Info("Boot debugger active on %s (press Ctrl-B for menu)", d.opts.ConsolePath)
 	}
@@ -258,15 +286,60 @@ func (d *Debugger) Stop() {
 	// returns immediately; the wait matters only when a real menu
 	// is up.
 	d.menuMu.Lock()
-	d.menuMu.Unlock()
+	d.finishStop()
+}
+
+// StopOrDefer is Stop for a caller that must not wait on the operator:
+// ProcessService.BringUp calls it with the scheduling lock held, just
+// before a console service inherits /dev/console. With no menu open it
+// stops inline, so termios is back to the original before the child
+// captures it. With a menu open it returns at once and the stop runs on
+// its own goroutine once the menu closes: waiting inline froze every
+// start, stop and control command for as long as the operator read the
+// menu (each redraw allows 60s) or sat in its shell (no limit at all).
+//
+// The price, only when the operator has the menu open as the console
+// service starts: that service starts on a console still in the menu's
+// raw mode and shared with the menu's reader until the menu closes. A
+// login shell may then keep echo off; Stop puts the original mode back
+// afterwards only if nothing has changed it since.
+func (d *Debugger) StopOrDefer() {
+	if !d.running.Load() {
+		return
+	}
+	if !d.menuMu.TryLock() {
+		go d.Stop()
+		return
+	}
+	if !d.running.CompareAndSwap(true, false) {
+		d.menuMu.Unlock()
+		return
+	}
+	d.finishStop()
+}
+
+// finishStop is the rest of Stop. Called with menuMu held and running
+// already cleared; releases menuMu.
+func (d *Debugger) finishStop() {
+	// stopCh closes under menuMu, so a Ctrl-B that arrives from here
+	// on finds it closed and opens no menu.
 	close(d.stopCh)
-	// Closing the tty fd unblocks the goroutine's ReadByte via
-	// EBADF/EIO — the standard way to unstick a blocking read on
-	// a file with no deadline support.
+	d.menuMu.Unlock()
+	// Wake the reader through the eventfd and wait for it to leave
+	// before closing anything: closing the tty does not wake a parked
+	// poll(2), which left Stop waiting for the next poll tick (up to
+	// 200ms, under the scheduling lock, on every boot), and a reader
+	// still running after the close could poll or read a descriptor
+	// number that had since been reused.
+	var one [8]byte
+	binary.NativeEndian.PutUint64(one[:], 1)
+	_, _ = unix.Write(d.wakeFd, one[:])
+	<-d.doneCh
 	if d.tty != nil {
 		d.tty.Close()
 	}
-	<-d.doneCh
+	unix.Close(d.wakeFd)
+	unix.Close(d.menuIn.cancelFd)
 	// Restore termios AFTER goroutine exit. termios is per-tty
 	// kernel state (not per-fd), so we re-open the console just
 	// for the ioctl — the goroutine's fd is closed and calling
@@ -296,40 +369,40 @@ func (d *Debugger) Stop() {
 // trigger anything, and letting bytes accumulate on getty would
 // break the eventual login flow (mitigated by Stop before getty).
 //
-// Poll-with-timeout instead of a naked ReadByte because Linux does
-// not unblock a pending tty read when the fd is Close()'d from
-// another goroutine — the driver keeps the reader parked in the
-// wait queue independently of which fd initiated the read. Without
-// this loop Stop() would hang until the operator pressed a key.
+// Poll instead of a naked ReadByte because Linux does not unblock a
+// pending tty read when the fd is Close()'d from another goroutine —
+// the driver keeps the reader parked in the wait queue independently
+// of which fd initiated the read. Stop wakes the poll through wakeFd
+// instead, and closes the tty only once this loop has returned.
 // fd is passed in rather than read from d.tty: see the comment at the
 // `go d.run(...)` call site.
-func (d *Debugger) run(fd int) {
+func (d *Debugger) run(fd, wakeFd int) {
 	defer close(d.doneCh)
 	buf := make([]byte, 1)
-	pollFds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	pollFds := []unix.PollFd{
+		{Fd: int32(fd), Events: unix.POLLIN},
+		{Fd: int32(wakeFd), Events: unix.POLLIN},
+	}
 	for {
 		select {
 		case <-d.stopCh:
 			return
 		default:
 		}
-		// 200ms is small enough that Stop responds snappily (the
-		// wait sits inside main.go's boot loop and blocks the tty
-		// service start), but large enough that we don't burn CPU
-		// during the seconds-long service startup window.
 		pollFds[0].Revents = 0
-		n, err := unix.Poll(pollFds, 200)
+		pollFds[1].Revents = 0
+		_, err := unix.Poll(pollFds, -1)
 		if err != nil {
 			if err == unix.EINTR {
 				continue
 			}
 			return
 		}
-		if n == 0 {
-			continue // timeout, re-check stopCh
+		if pollFds[1].Revents != 0 {
+			return // Stop
 		}
 		if pollFds[0].Revents&(unix.POLLHUP|unix.POLLNVAL|unix.POLLERR) != 0 {
-			return // fd went away (Stop closed it) or errored
+			return // console hung up or errored
 		}
 		if pollFds[0].Revents&unix.POLLIN == 0 {
 			continue
@@ -352,6 +425,12 @@ func (d *Debugger) run(fd int) {
 		// interleave input, so we hold menuMu across the whole
 		// present-and-dispatch cycle.
 		d.menuMu.Lock()
+		select {
+		case <-d.stopCh:
+			d.menuMu.Unlock()
+			return
+		default:
+		}
 		action := d.presentMenu()
 		d.menuMu.Unlock()
 		d.dispatch(action)
@@ -411,7 +490,7 @@ func (d *Debugger) presentMenu() DebugAction {
 		renderedAt := time.Now()
 		bx := newBox(d.tty)
 		renderDebugMenu(bx, snap, d.opts.Timeout)
-		c, ok := readByteWithTimeout(d.tty, bx, d.opts.Timeout, "continue")
+		c, ok := readByteWithTimeout(d.menuIn, bx, d.opts.Timeout, "continue")
 		if !ok {
 			return DebugTimeout
 		}
@@ -632,4 +711,61 @@ func debugCharToAction(b byte) DebugAction {
 		// hit something unintentionally, don't reboot).
 		return DebugContinue
 	}
+}
+
+// pollReader reads the console one byte at a time, and its read can be
+// cancelled. readByte reads on a goroutine of its own, and one left
+// blocked on a plain tty read after a menu timed out took the
+// operator's next key and dropped it: the next Ctrl-B, or once the
+// debugger had stopped, the first key typed at the login prompt.
+type pollReader struct {
+	fd       int
+	cancelFd int // eventfd; readable means "give up"
+}
+
+var errReadCancelled = errors.New("read cancelled")
+
+// Read returns at most one byte, so nothing typed after the key the menu
+// wanted is left in a buffer that dies with the reading goroutine.
+func (r *pollReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	fds := []unix.PollFd{
+		{Fd: int32(r.fd), Events: unix.POLLIN},
+		{Fd: int32(r.cancelFd), Events: unix.POLLIN},
+	}
+	for {
+		fds[0].Revents, fds[1].Revents = 0, 0
+		if _, err := unix.Poll(fds, -1); err != nil {
+			if err == unix.EINTR {
+				continue
+			}
+			return 0, err
+		}
+		if fds[1].Revents != 0 {
+			return 0, errReadCancelled
+		}
+		n, err := unix.Read(r.fd, p[:1])
+		if err == unix.EINTR || err == unix.EAGAIN {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			return 0, io.EOF
+		}
+		return n, nil
+	}
+}
+
+// cancelRead stops a Read in progress, waits for the goroutine reading
+// to exit, and then re-arms the reader for the next menu.
+func (r *pollReader) cancelRead(exited <-chan struct{}) {
+	var one [8]byte
+	binary.NativeEndian.PutUint64(one[:], 1)
+	_, _ = unix.Write(r.cancelFd, one[:])
+	<-exited
+	_, _ = unix.Read(r.cancelFd, one[:])
 }

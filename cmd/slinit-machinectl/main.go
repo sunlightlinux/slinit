@@ -132,12 +132,8 @@ func doList(args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tPID\tALIVE\tCLASS\tSERVICE\tROOT")
 	for _, m := range machines {
-		alive := "no"
-		if machine.Alive(m.PID) {
-			alive = "yes"
-		}
 		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\n",
-			m.Name, m.PID, alive, dashIfEmpty(m.Class),
+			m.Name, m.PID, m.State(), dashIfEmpty(m.Class),
 			dashIfEmpty(m.Service), dashIfEmpty(m.Root))
 	}
 	return w.Flush()
@@ -156,7 +152,9 @@ func doStatus(args []string) error {
 	}
 	fmt.Printf("Name:    %s\n", m.Name)
 	fmt.Printf("PID:     %d\n", m.PID)
-	fmt.Printf("Alive:   %v\n", machine.Alive(m.PID))
+	state := m.State()
+	fmt.Printf("Alive:   %v\n", state.Usable())
+	fmt.Printf("State:   %s\n", stateWords(state, m))
 	fmt.Printf("Class:   %s\n", dashIfEmpty(m.Class))
 	fmt.Printf("Service: %s\n", dashIfEmpty(m.Service))
 	fmt.Printf("Root:    %s\n", dashIfEmpty(m.Root))
@@ -187,7 +185,29 @@ func doShow(args []string) error {
 	if m.Root != "" {
 		fmt.Printf("ROOT=%s\n", m.Root)
 	}
+	if !m.Legacy() {
+		fmt.Printf("STARTTIME=%d\n", m.StartTime)
+	}
 	return nil
+}
+
+// stateWords explains a State for `status`.
+func stateWords(s machine.State, m *machine.Machine) string {
+	switch s {
+	case machine.StateAlive:
+		return "running"
+	case machine.StateLegacy:
+		return "running, as far as can be told: registered by an older slinit, " +
+			"which recorded no start time to tell it from a reused PID (restart the container to re-register it)"
+	case machine.StateReused:
+		return fmt.Sprintf("stale: PID %d now belongs to another process", m.PID)
+	case machine.StateUnknown:
+		if m.StartTime == 0 {
+			return fmt.Sprintf("PID %d exists but its identity cannot be checked (no start time was recorded at registration)", m.PID)
+		}
+		return fmt.Sprintf("PID %d exists but its identity cannot be checked (/proc hidden?)", m.PID)
+	}
+	return "stale: not running"
 }
 
 func dashIfEmpty(s string) string {

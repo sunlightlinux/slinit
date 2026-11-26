@@ -8,6 +8,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/internal/nstest"
 )
 
 // newTestFeeder wires a Feeder around a regular file so tests can verify
@@ -252,17 +256,26 @@ func TestOpenMissingDeviceReturnsError(t *testing.T) {
 }
 
 func TestOpenAutoDiscoveryNoneFound(t *testing.T) {
-	// Run only when neither watchdog device exists on the test host.
-	// On a developer laptop both files are typically absent; on a host
-	// running slinit they exist, in which case we skip — Open with an
-	// empty Device would actually succeed and arm the kernel timer.
+	// Run where neither watchdog device exists. On a host that has them
+	// (any machine with a hardware or softdog watchdog) the test runs in
+	// a user and mount namespace with an empty tmpfs over /dev. The checks
+	// below stay: should /dev still show a device, it skips rather than
+	// arm the kernel timer.
+	if !nstest.AsRoot(t, nstest.Opts{Mount: true}) {
+		return
+	}
+	if nstest.Inside() {
+		if err := unix.Mount("tmpfs", "/dev", "tmpfs", 0, "mode=0755"); err != nil {
+			t.Skipf("mount an empty /dev in the namespace: %v", err)
+		}
+	}
 	if _, err := os.Stat(DefaultDevice); err == nil {
 		t.Skipf("%s exists, skipping no-device assertion", DefaultDevice)
 	}
 	if _, err := os.Stat(FallbackDevice); err == nil {
 		t.Skipf("%s exists, skipping no-device assertion", FallbackDevice)
 	}
-	if _, err := Open(Config{}); err == nil {
-		t.Fatal("Open with no devices present returned nil error")
+	if _, err := Open(Config{}); !errors.Is(err, ErrNoDevice) {
+		t.Fatalf("Open with no devices present: %v, want ErrNoDevice", err)
 	}
 }

@@ -3,9 +3,12 @@ package control
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1609,6 +1612,59 @@ func TestEnablePersistsViaSymlink(t *testing.T) {
 	}
 }
 
+// A persist that fails must be reported, and a repeated enable must retry
+// it. persistEnable used to run only when the runtime edge was new, so once
+// the edge was in, no enable could ever write the link, and the failure
+// itself reached the client as a plain ACK.
+func TestEnableRetriesFailedPersist(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	bootDir := t.TempDir()
+	boot := service.NewInternalService(server.services, "boot")
+	boot.Record().SetServiceDir(bootDir)
+	server.services.AddService(boot)
+	server.services.SetBootServiceName("boot")
+	server.services.StartService(boot)
+
+	target := service.NewInternalService(server.services, "target-svc")
+	server.services.AddService(target)
+
+	// A file where waits-for.d should be: MkdirAll fails, even as root.
+	waitsDir := filepath.Join(bootDir, "waits-for.d")
+	if err := os.WriteFile(waitsDir, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	handle := findHandle(t, conn, "target-svc")
+
+	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
+	rply, payload := readReply(t, conn)
+	if rply != RplyNAK {
+		t.Errorf("enable with persist failing: rply=%d, want NAK", rply)
+	}
+	if !strings.Contains(string(payload), "persistent enable failed") {
+		t.Errorf("NAK payload %q does not say the persist failed", payload)
+	}
+	if target.State() != service.StateStarted {
+		t.Errorf("runtime enable should still start the target, state %v", target.State())
+	}
+
+	// Fix the cause and enable again: the link must be written now.
+	if err := os.Remove(waitsDir); err != nil {
+		t.Fatal(err)
+	}
+	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
+	if rply, _ := readReply(t, conn); rply != RplyACK {
+		t.Fatalf("second enable: rply=%d, want ACK", rply)
+	}
+	if _, err := os.Readlink(filepath.Join(waitsDir, "target-svc")); err != nil {
+		t.Fatalf("repeated enable did not persist the link: %v", err)
+	}
+}
+
 // TestEnableWithoutServiceDirNoOp verifies that enabling a programmatic
 // (non-disk-backed) service does not error and does not try to write
 // anywhere.
@@ -1918,5 +1974,90 @@ func TestQueryDependenciesEmpty(t *testing.T) {
 	count := binary.LittleEndian.Uint32(payload)
 	if count != 0 {
 		t.Errorf("expected 0 dependencies, got %d", count)
+	}
+}
+
+// A global setenv whose key holds '=' crashed PID 1: the env index is
+// keyed by the text before the first '=', so after an unset moved the
+// entry, the next set of that key indexed past the slice. Keys and
+// values that cannot be a process environment entry are now refused.
+func TestSetEnvRejectsUnusableAssignments(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	send := func(key, val string, unset bool) uint8 {
+		t.Helper()
+		if err := WritePacket(conn, CmdSetEnv, EncodeSetEnv(0, key, val, unset)); err != nil {
+			t.Fatal(err)
+		}
+		r, _ := readReply(t, conn)
+		return r
+	}
+	if r := send("X", "1", false); r != RplyACK {
+		t.Fatalf("setenv X=1: reply %d, want ACK", r)
+	}
+	for _, kv := range [][2]string{{"A=B", "C"}, {"", "v"}, {"K\x00", "v"}, {"K", "v\x00w"}} {
+		if r := send(kv[0], kv[1], false); r != RplyBadReq {
+			t.Errorf("setenv %q=%q: reply %d, want BADREQ", kv[0], kv[1], r)
+		}
+	}
+	// The sequence that used to panic.
+	send("X", "", true)
+	send("A=B", "D", false)
+	if r := send("Y", "2", false); r != RplyACK {
+		t.Fatalf("setenv Y=2 after the rejected keys: reply %d", r)
+	}
+	for _, e := range server.services.GlobalEnv() {
+		if strings.HasPrefix(e, "A=") || strings.HasPrefix(e, "=") || strings.ContainsRune(e, 0) {
+			t.Errorf("unusable entry reached the global env: %q", e)
+		}
+	}
+}
+
+// readLogFileTail read a log path pointing at /dev/zero until PID 1 ran
+// out of memory, and blocked for ever on a FIFO. It now reads regular
+// files only, never past max.
+func TestReadLogFileTailRefusesNonRegular(t *testing.T) {
+	dir := t.TempDir()
+	zero := filepath.Join(dir, "zero")
+	if err := os.Symlink("/dev/zero", zero); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{zero, fifo} {
+		done := make(chan error, 1)
+		go func() {
+			data, err := readLogFileTail(p, 4096)
+			if err == nil && len(data) > 4096 {
+				err = fmt.Errorf("read %d bytes, max 4096", len(data))
+			} else if err == nil {
+				err = fmt.Errorf("no error for a non-regular file")
+			} else {
+				err = nil
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("%s: %v", p, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: readLogFileTail still blocked after 2s", p)
+		}
+	}
+
+	// A regular file is still read, tail only.
+	reg := filepath.Join(dir, "log")
+	if err := os.WriteFile(reg, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := readLogFileTail(reg, 8); err != nil || string(data) != "three\n" {
+		t.Errorf("regular file tail = %q, %v; want \"three\\n\"", data, err)
 	}
 }

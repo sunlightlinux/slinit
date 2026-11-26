@@ -12,6 +12,12 @@
 //     and the component is resolved once: every check and change goes
 //     through the descriptor, so the entry cannot be swapped in between.
 //     Callers that need symlink traversal can resolve the path themselves.
+//   - Parent directories are resolved one component at a time and a
+//     symlink among them is followed only under systemd's CHASE_SAFE rule
+//     (see internal/safepath), so a link the service user owns cannot
+//     carry root out of that user's files.
+//   - A hard-linked regular file is not changed while
+//     fs.protected_hardlinks is off, as OpenRC refuses it.
 //   - Mode and owner are corrected only when the path already exists; they
 //     are set as part of creation otherwise.
 package checkpath
@@ -23,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sunlightlinux/slinit/internal/safepath"
 	"golang.org/x/sys/unix"
 )
 
@@ -94,17 +101,26 @@ func Apply(spec Spec) (Result, error) {
 	// user) could swap the entry for a symlink, and root would change the
 	// target. -D emptied a directory by name the same way, so the swap
 	// could make root delete another directory's contents.
-	fd, openErr := openNoFollow(spec.Path)
+	//
+	// The parent is resolved the same way, and everything after works
+	// relative to its descriptor: by path, a symlink in any parent
+	// (base/link/made, link -> /etc) had root create and chown outside.
+	pfd, name, err := safepath.OpenParent(spec.Path)
+	if err != nil {
+		return res, fmt.Errorf("checkpath: %s: %w", spec.Path, err)
+	}
+	defer unix.Close(pfd)
+	fd, openErr := openNoFollow(pfd, name)
 	switch {
 	case openErr == nil:
 	case errors.Is(openErr, unix.ENOENT):
-		if err := createPath(spec.Path, spec.Type, spec.Mode); err != nil {
+		if err := createPath(pfd, name, spec.Path, spec.Type, spec.Mode); err != nil {
 			return res, err
 		}
 		res.Created = true
 		// The new inode is opened the same way: the window between
 		// creating it and correcting its owner is the same window.
-		if fd, openErr = openNoFollow(spec.Path); openErr != nil {
+		if fd, openErr = openNoFollow(pfd, name); openErr != nil {
 			return res, fmt.Errorf("checkpath: %s: open after create: %w", spec.Path, openErr)
 		}
 	default:
@@ -123,6 +139,14 @@ func Apply(spec Spec) (Result, error) {
 	// verifyType refuses, as it refused an Lstat'd one.
 	if err := verifyType(spec.Path, fileMode(st.Mode), spec.Type); err != nil {
 		return res, err
+	}
+	// A hard link to /etc/shadow in a directory the service user owns
+	// would have root truncate, re-own or re-mode /etc/shadow. OpenRC
+	// refuses a hard-linked regular file unless fs.protected_hardlinks
+	// keeps users from making such links in the first place.
+	changes := spec.Truncate || spec.Owner.UID >= 0 || spec.Owner.GID >= 0 || spec.Mode != 0
+	if changes && st.Mode&unix.S_IFMT == unix.S_IFREG && st.Nlink > 1 && !safepath.HardlinksProtected() {
+		return res, fmt.Errorf("checkpath: %s: refusing to change a hard-linked file while fs.protected_hardlinks is off", spec.Path)
 	}
 	// /proc/self/fd/N names the opened inode, whatever the path names now.
 	inode := "/proc/self/fd/" + strconv.Itoa(fd)
@@ -190,9 +214,9 @@ func Apply(spec Spec) (Result, error) {
 // use it to swap the path in exactly the window this code must survive.
 var afterOpenHook func()
 
-// openNoFollow opens path's final component without following it.
-func openNoFollow(path string) (int, error) {
-	return unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+// openNoFollow opens name in the directory dirfd without following it.
+func openNoFollow(dirfd int, name string) (int, error) {
+	return unix.Openat(dirfd, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 }
 
 // fileMode converts a stat(2) st_mode to the os.FileMode bits verifyType
@@ -241,30 +265,31 @@ func verifyType(path string, mode os.FileMode, want PathType) error {
 	return nil
 }
 
-func createPath(path string, typ PathType, mode os.FileMode) error {
+// createPath creates name in the directory dirfd; path is for messages.
+func createPath(dirfd int, name, path string, typ PathType, mode os.FileMode) error {
 	perm := mode & os.ModePerm
 	switch typ {
 	case TypeFile:
 		if perm == 0 {
 			perm = 0o644
 		}
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, perm)
+		fd, err := unix.Openat(dirfd, name, unix.O_CREAT|unix.O_WRONLY|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(perm))
 		if err != nil {
 			return fmt.Errorf("checkpath: %s: create file: %w", path, err)
 		}
-		f.Close()
+		unix.Close(fd)
 	case TypeDir:
 		if perm == 0 {
 			perm = 0o755
 		}
-		if err := os.Mkdir(path, perm); err != nil {
+		if err := unix.Mkdirat(dirfd, name, uint32(perm)); err != nil {
 			return fmt.Errorf("checkpath: %s: mkdir: %w", path, err)
 		}
 	case TypeFifo:
 		if perm == 0 {
 			perm = 0o644
 		}
-		if err := unix.Mkfifo(path, uint32(perm)); err != nil {
+		if err := unix.Mkfifoat(dirfd, name, uint32(perm)); err != nil {
 			return fmt.Errorf("checkpath: %s: mkfifo: %w", path, err)
 		}
 	case TypeUnknown:

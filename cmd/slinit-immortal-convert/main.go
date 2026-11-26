@@ -24,6 +24,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/internal/atomicfile"
 )
 
 type warning struct {
@@ -117,7 +119,7 @@ Flags:
 			os.Stderr.Write(buf.Bytes())
 		default:
 			outPath := filepath.Join(outputDir, name)
-			if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
+			if err := atomicfile.Write(outPath, buf.Bytes(), 0o644, true); err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-immortal-convert: write %s: %v\n", outPath, err)
 				hadErrors = true
 			}

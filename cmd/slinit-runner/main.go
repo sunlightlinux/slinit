@@ -39,6 +39,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -123,6 +124,9 @@ func run() error {
 		"/proc subset= filter: pid (systemd ProcSubset=)")
 	var readOnlyPaths, readWritePaths, inaccessiblePaths stringList
 	var bindPaths, bindROPaths, tmpfsPaths stringList
+	var lateRlimits stringList
+	fs.Var(&lateRlimits, "rlimit-late",
+		"RESOURCE:SOFT:HARD (numbers) to set just before exec; slinit passes rlimit-as and rlimit-data this way (repeatable)")
 	fs.Var(&readOnlyPaths, "read-only-path",
 		"add a path to be bind-mounted read-only (repeatable)")
 	fs.Var(&readWritePaths, "read-write-path",
@@ -198,9 +202,22 @@ func run() error {
 		"set PR_SET_NO_NEW_PRIVS before exec; mirrors dinit's options=no-new-privs (run-child-proc.cc:470)")
 	securebits := fs.Int("securebits", -1,
 		"PR_SET_SECUREBITS bitmask to apply before exec; -1 = leave untouched")
+	listenPID := fs.Bool("listen-pid", false,
+		"export LISTEN_PID=<own pid> before exec, for socket-activated services (sd_listen_fds)")
+	chrootDir := fs.String("chroot", "",
+		"enter this directory with chroot(2) after the sandbox and hardening setup, before the credential drop")
+	chdirDir := fs.String("chdir", "",
+		"the service's working directory, entered after the credential drop (inside the jail with --chroot)")
 	argv0 := fs.String("argv0", "",
 		"override argv[0] presented to the exec'd target; default is args[0]")
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+	// Start gate: slinit sets nice, rlimits, affinity, scheduling, ioprio
+	// and oom_score_adj on this process from outside, after the fork.
+	// Wait until it has (it closes the pipe's other end), so neither
+	// this setup nor the service runs a moment without them.
+	if err := waitStartGate(); err != nil {
 		return err
 	}
 	args := fs.Args()
@@ -283,6 +300,21 @@ func run() error {
 		bindROPaths:         bindROPaths,
 		temporaryFilesystem: tmpfsPaths,
 	}
+	// The sandbox and the hardening mounts name host paths, and the
+	// jail is entered after them, so with chroot they would protect the
+	// host's /tmp, /etc, /proc/sys... and leave the jail's alone. Until
+	// they resolve under the jail (as systemd's RootDirectory= does), the
+	// combination is refused here as well as at load.
+	if *chrootDir != "" && (*apparmor != "" || *selinuxContext != "" || *smackLabel != "") {
+		// The LSM transitions check /sys and write /proc/self/attr after
+		// the chroot, so the jail would decide whether they happen.
+		return fmt.Errorf("chroot cannot be combined with an AppArmor, SELinux or " +
+			"SMACK label: the transition would be judged inside the jail")
+	}
+	if *chrootDir != "" && (spec.active() || (*pkTun || *pCG || *pkLog || *pkMod || *pHost)) {
+		return fmt.Errorf("chroot cannot be combined with the filesystem sandbox or " +
+			"protect-kernel-*/protect-control-groups/protect-hostname: they would apply to the host, not the jail")
+	}
 	if spec.active() {
 		if err := applySandbox(spec); err != nil {
 			return fmt.Errorf("sandbox: %w", err)
@@ -347,6 +379,25 @@ func run() error {
 	// PR_CAPBSET_DROP needs CAP_SETPCAP, which the kernel strips at the
 	// UID change. Iterate 0..cap_last_cap (the kernel rejects out-of-range
 	// numbers anyway) and drop any cap not on the keep list.
+	// chroot: slinit leaves it to the runner, since a chroot at fork
+	// would have made the kernel look this binary up inside the jail.
+	// After the sandbox and hardening mounts, which name host paths;
+	// before the bounding-set narrowing and the credential drop, which
+	// would take CAP_SYS_CHROOT away.
+	if *chrootDir != "" {
+		// Everything read from /proc or /sys after this point would come
+		// from the jail; read what is needed now.
+		primeLastCap()
+		if err := unix.Chroot(*chrootDir); err != nil {
+			return fmt.Errorf("chroot %s: %w", *chrootDir, err)
+		}
+		// Never leave the working directory outside the jail; --chdir is
+		// applied after the credential drop below.
+		if err := unix.Chdir("/"); err != nil {
+			return fmt.Errorf("chdir / (in chroot %s): %w", *chrootDir, err)
+		}
+	}
+
 	if len(boundingCaps) > 0 {
 		if err := narrowBoundingSet(boundingCaps); err != nil {
 			return err
@@ -362,6 +413,16 @@ func run() error {
 	if *runAsUID >= 0 || *runAsGID >= 0 {
 		if err := dropCredentials(*runAsUID, *runAsGID, ambientCaps, suppGIDs); err != nil {
 			return err
+		}
+	}
+
+	// The working directory, entered as the service's user (after the
+	// drop, and inside the jail when there is one), as exec.Command does
+	// for a service slinit starts directly: a directory the user cannot
+	// enter fails the start instead of being entered as root.
+	if *chdirDir != "" {
+		if err := unix.Chdir(*chdirDir); err != nil {
+			return fmt.Errorf("chdir %s: %w", *chdirDir, err)
 		}
 	}
 
@@ -453,6 +514,15 @@ func run() error {
 		}
 	}
 
+	// LISTEN_PID names the process the LISTEN_FDS are for. Only this
+	// process knows the pid the service will run as (exec keeps it),
+	// which is why slinit leaves it to the runner.
+	if *listenPID {
+		if err := os.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid())); err != nil {
+			return fmt.Errorf("LISTEN_PID: %w", err)
+		}
+	}
+
 	execArgv := args
 	if *argv0 != "" {
 		execArgv = append([]string{*argv0}, args[1:]...)
@@ -468,6 +538,20 @@ func run() error {
 	// before the service ever ran. The install also sets
 	// PR_SET_NO_NEW_PRIVS, so a service run as another user can still
 	// install it without CAP_SYS_ADMIN.
+	// A bare command name is looked up in the service's PATH, as
+	// execvp does for dinit and exec.Command does for a service slinit
+	// starts directly. Here, after the chroot and the credential drop,
+	// so it is found inside the jail and as the service's user; before
+	// the seccomp filters, which may refuse the stat calls.
+	execPath := args[0]
+	if !strings.Contains(execPath, "/") {
+		resolved, err := exec.LookPath(execPath)
+		if err != nil {
+			return fmt.Errorf("exec %s: %w", execPath, err)
+		}
+		execPath = resolved
+	}
+
 	// io_uring filters first: the system call filter below may refuse
 	// io_uring_register(), which registering them needs.
 	if err := applyIOUring(ioUringSpec{
@@ -481,18 +565,71 @@ func run() error {
 	}); err != nil {
 		return err
 	}
+	// rlimit-as and rlimit-data: set as the very last thing, once the
+	// filters are compiled, since the Go runtime cannot allocate new
+	// address space under them. Lowering a limit needs no privilege.
+	setLateRlimits := func() error {
+		for _, spec := range lateRlimits {
+			var res int
+			var soft, hard uint64
+			if _, err := fmt.Sscanf(spec, "%d:%d:%d", &res, &soft, &hard); err != nil {
+				return fmt.Errorf("--rlimit-late %q: %w", spec, err)
+			}
+			if err := unix.Setrlimit(res, &unix.Rlimit{Cur: soft, Max: hard}); err != nil {
+				return fmt.Errorf("setrlimit(%d, %d, %d): %w", res, soft, hard, err)
+			}
+		}
+		return nil
+	}
+	// Everything exec needs is built now: once setLateRlimits has
+	// lowered the address-space limit below what the Go runtime has
+	// already reserved, any further allocation may fail.
+	execEnv := os.Environ()
 	if err := installSeccomp(seccompSpec{
 		filter:    syscallFilter,
 		archs:     syscallArchs,
 		errorAct:  *syscallAction,
 		logFilter: syscallLog,
-	}); err != nil {
+	}, setLateRlimits); err != nil {
 		return err
 	}
-	if err := syscall.Exec(args[0], execArgv, os.Environ()); err != nil {
-		return fmt.Errorf("exec %s: %w", args[0], err)
+	if err := syscall.Exec(execPath, execArgv, execEnv); err != nil {
+		return fmt.Errorf("exec %s: %w", execPath, err)
 	}
 	return nil // unreachable
+}
+
+// startGateEnv is process.StartGateEnv, repeated so the runner does not
+// link pkg/process; TestStartGateEnvMatches keeps the two equal.
+const startGateEnv = "SLINIT_RUNNER_START_GATE_FD"
+
+// waitStartGate reads the fd named by SLINIT_RUNNER_START_GATE_FD to
+// EOF, closes it, and removes the variable so the service never sees it.
+func waitStartGate() error {
+	v, ok := os.LookupEnv(startGateEnv)
+	if !ok {
+		return nil
+	}
+	os.Unsetenv(startGateEnv)
+	fd, err := strconv.Atoi(v)
+	if err != nil || fd < 3 {
+		return fmt.Errorf("%s=%q: not an inherited fd", startGateEnv, v)
+	}
+	var b [64]byte
+	for {
+		n, err := syscall.Read(fd, b[:])
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			syscall.Close(fd)
+			return fmt.Errorf("start gate: %w", err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+	return syscall.Close(fd)
 }
 
 // dropCredentials lowers the runner's UID/GID and re-raises ambient

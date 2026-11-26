@@ -35,6 +35,10 @@ const (
 	filePoweroff = "poweroff"
 )
 
+// sentinelOwnerUID owns the sentinel dir and every file that may fire.
+// Root; a variable so the tests can run unprivileged.
+var sentinelOwnerUID uint32 = 0
+
 // SentinelHandler is invoked when a recognized sentinel event fires.
 // The audit fields (Requestor, MTime, Path) are captured at trigger
 // time before the file is unlinked, so a compliance log can record
@@ -79,13 +83,30 @@ type SentinelWatcher struct {
 // NewSentinelWatcher installs the inotify watch on dir. The
 // directory is created (0700) if it does not exist — sentinel files
 // are privileged control-plane input, so tight defaults protect
-// against a non-root user planting a stopit file.
+// against a non-root user planting a stopit file. A directory that
+// already exists is refused unless it is a real directory (not a
+// symlink), owned by root and not writable by group or others: whoever
+// can create a file in it can shut the machine down.
 func NewSentinelWatcher(dir string, logger SentinelLogger, handler SentinelHandler) (*SentinelWatcher, error) {
 	if dir == "" {
 		return nil, errors.New("sentinel: dir is empty")
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("sentinel: create %s: %w", dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("sentinel: %w", err)
+	}
+	st, _ := info.Sys().(*syscall.Stat_t)
+	switch {
+	case !info.IsDir():
+		return nil, fmt.Errorf("sentinel: %s is not a directory (a symlink is refused)", dir)
+	case st == nil || st.Uid != sentinelOwnerUID:
+		return nil, fmt.Errorf("sentinel: %s is not owned by uid %d; refusing it", dir, sentinelOwnerUID)
+	case info.Mode().Perm()&0o022 != 0:
+		return nil, fmt.Errorf("sentinel: %s is writable by group or others (mode %#o); refusing it",
+			dir, info.Mode().Perm())
 	}
 
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
@@ -247,7 +268,9 @@ func (w *SentinelWatcher) check(name, source string) {
 	}
 
 	path := filepath.Join(w.dir, name)
-	info, err := os.Stat(path)
+	// Lstat: a "reboot" symlink to some executable elsewhere is not an
+	// armed sentinel.
+	info, err := os.Lstat(path)
 	if err != nil {
 		// Race: file was removed between the inotify event and stat.
 		// That's fine — nothing to trigger, nothing to log.
@@ -261,13 +284,15 @@ func (w *SentinelWatcher) check(name, source string) {
 	}
 
 	st, _ := info.Sys().(*syscall.Stat_t)
-	audit := SentinelAudit{
-		Path:   path,
-		MTime:  info.ModTime(),
-		Source: source,
+	if !info.Mode().IsRegular() || st == nil || st.Uid != sentinelOwnerUID {
+		w.logger.Warn("sentinel: ignoring %s: not a regular file owned by uid %d", path, sentinelOwnerUID)
+		return
 	}
-	if st != nil {
-		audit.Requestor = st.Uid
+	audit := SentinelAudit{
+		Path:      path,
+		MTime:     info.ModTime(),
+		Source:    source,
+		Requestor: st.Uid,
 	}
 
 	// Audit line first — even if the handler / unlink fails, the

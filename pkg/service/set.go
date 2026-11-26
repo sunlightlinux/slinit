@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,12 +47,19 @@ type ServiceSet struct {
 	records        map[string]Service
 	aliases        map[string]Service // provides → service mapping
 	activeServices int
-	restartEnabled bool
+	// restartEnabled and shutdownType (a ShutdownType) are set under
+	// queueMu by StopAllServices but read without it, by control
+	// connections through IsShuttingDown.
+	restartEnabled atomic.Bool
 	// stopsLast holds the services StopAllServices pinned because they
 	// are marked stops-last; they are released once everything else has
 	// stopped (releaseStopsLastLocked).
 	stopsLast    []Service
-	shutdownType ShutdownType
+	shutdownType atomic.Uint32
+
+	// stopsLastBlocker is the service releaseStopsLastLocked last found
+	// still running; checked first on the next call. Under queueMu.
+	stopsLastBlocker Service
 
 	// queueMu protects the processing queues, console queue, and
 	// activeServices counter, plus service-state fields mutated during
@@ -98,25 +106,44 @@ type ServiceSet struct {
 	OnUtmpCreate func(id, line, mode string, pid int)
 	OnUtmpClear  func(id, line string)
 	utmpQ        utmpQueue
-	OnRWReady    func() // called when starts-rwfs service reaches STARTED
-	OnBootReady  func() // called when boot service reaches STARTED (for --ready-fd)
+	OnRWReady    func() // called when starts-rwfs service reaches STARTED; runs on utmpQ
+	// OnBootReady is called once, when the boot service reaches
+	// STARTED: the --ready-fd notification, the watchdog grace, the
+	// console mute, the system-up hooks, ifup and rc.local.
+	//
+	// It runs on its own goroutine. Started() is called with queueMu
+	// held, and the hooks and rc.local run for minutes at worst and may
+	// call slinitctl, which needs queueMu: a direct call froze the state
+	// machine for as long, and an rc.local `slinitctl start` deadlocked
+	// until the rc.local timeout. Nothing in it has to happen before the
+	// next queue pass.
+	OnBootReady func()
 
 	// Path-activation hooks. The loader invokes OnServiceLoaded after a
 	// service description has been fully applied (so StartOnPath is
-	// readable); OnServiceUnloaded fires from UnloadService. Both are
-	// wired by main.go to a pkg/pathwatch.Watcher. Keeping them as
-	// callbacks avoids importing pkg/pathwatch from pkg/service.
+	// readable); OnServiceUnloaded fires from UnloadService. A reload
+	// calls OnServiceUnloaded with the old record and configuration and
+	// then OnServiceLoaded with the new ones (the same record when it is
+	// updated in place), and neither when it fails or leaves the
+	// start-on-path-* and start-on-mount settings unchanged: loading
+	// re-arms a watch, which fires at once when its condition holds. A
+	// reload that replaces the record (a type change) with those settings
+	// unchanged calls OnServiceReplaced instead. All are wired by main.go
+	// to a pkg/pathwatch.Watcher and a pkg/mountwatch.Watcher. Keeping
+	// them as callbacks avoids importing those packages from pkg/service.
 	OnServiceLoaded   func(svc Service)
 	OnServiceUnloaded func(svc Service)
+	OnServiceReplaced func(oldSvc, newSvc Service)
 
 	// OnConsoleAcquire fires from ProcessService.BringUp just before a
 	// service that has RunsOnConsole (or StartsOnConsole) opens
-	// /dev/console. Wired by main.go to recovery.Debugger.Stop so the
+	// /dev/console. Wired by main.go to recovery.Debugger.StopOrDefer so the
 	// boot debugger releases its raw-mode grip on the tty BEFORE the
 	// child inherits it — otherwise interactive shells (bash --login)
 	// capture our raw termios as their "original" and can't ever get
 	// echo back. Called at most once per process spawn; the callback
 	// itself must be idempotent because service restarts fire it again.
+	// It runs with the scheduling lock held, so it must not block.
 	OnConsoleAcquire func()
 
 	// OnConfirmSpawn fires from ProcessService.BringUp at the very start
@@ -244,11 +271,10 @@ type ServiceSet struct {
 
 // NewServiceSet creates a new ServiceSet.
 func NewServiceSet(logger ServiceLogger) *ServiceSet {
-	return &ServiceSet{
+	ss := &ServiceSet{
 		records:        make(map[string]Service),
 		aliases:        make(map[string]Service),
 		sharedLogMuxes: make(map[string]*SharedLogMux),
-		restartEnabled: true,
 		logger:         logger,
 		readyFD:        -1,
 		// Created here, not on first InactiveCh call: the boot cascade
@@ -256,6 +282,8 @@ func NewServiceSet(logger ServiceLogger) *ServiceSet {
 		// that gap must leave its notification buffered for Run.
 		inactiveCh: make(chan struct{}, 1),
 	}
+	ss.restartEnabled.Store(true)
+	return ss
 }
 
 // SetLoader sets the service loader for this set.
@@ -296,10 +324,16 @@ func (ss *ServiceSet) LoadService(name string) (Service, error) {
 // GetLoader returns the service loader.
 func (ss *ServiceSet) GetLoader() ServiceLoader { return ss.loader }
 
-// ReplaceService atomically replaces an old service with a new one in the set.
-func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) {
+// ReplaceService atomically replaces an old service with a new one in the
+// set. It does nothing, and reports false, if oldSvc is no longer what
+// the set holds under its name: replacing it then would bring back a
+// name that was unloaded, or overwrite a newer object.
+func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) bool {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
+	if ss.records[oldSvc.Name()] != oldSvc {
+		return false
+	}
 	// Remove old alias
 	if alias := oldSvc.Record().Provides(); alias != "" {
 		delete(ss.aliases, alias)
@@ -309,6 +343,7 @@ func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) {
 	if alias := newSvc.Record().Provides(); alias != "" {
 		ss.aliases[alias] = newSvc
 	}
+	return true
 }
 
 // AddService adds a service to the set. If the service has a provides
@@ -369,15 +404,20 @@ func (ss *ServiceSet) UnloadService(svc Service) {
 	ss.unloadService(svc, nil)
 }
 
-// UnloadServiceIfLone unloads svc only if it is STOPPED and nothing but
-// ordering links refer to it (HasLoneRef), checked under the graph lock
-// that the unload itself takes, so no dependent can attach in between.
-// It reports whether the service was unloaded. This is the gate the
-// unload control command applies; a caller that skips it strips a hard
-// dependency from every dependent, which then starts without it.
-func (ss *ServiceSet) UnloadServiceIfLone(svc Service) bool {
+// UnloadServiceIfLone unloads svc only if it is STOPPED, nothing but
+// ordering links refer to it (HasLoneRef), and held, when non-nil, reports
+// no control client holding it. All three are checked under the graph
+// lock that the unload and the removal from the set take, so no
+// dependent can attach and no client can take a handle in between (a
+// client allocating one re-checks, under the same lock, that the service
+// is still in the set). It reports whether the service was unloaded.
+// This is the gate the unload control command applies; a caller that
+// skips it strips a hard dependency from every dependent, which then
+// starts without it.
+func (ss *ServiceSet) UnloadServiceIfLone(svc Service, held func(Service) bool) bool {
 	return ss.unloadService(svc, func() bool {
-		return svc.State() == StateStopped && svc.Record().HasLoneRef(0)
+		return svc.State() == StateStopped && svc.Record().HasLoneRef(0) &&
+			(held == nil || !held(svc))
 	})
 }
 
@@ -410,8 +450,9 @@ func (ss *ServiceSet) unloadService(svc Service, allowed func() bool) bool {
 		orphan.CloseOutputPipe()
 	}
 	ss.processQueuesLocked()
-	ss.queueMu.Unlock()
-
+	// Removed from the set before the lock is let go, so a lookup made
+	// under the lock sees the service either loaded or gone, never
+	// unloaded but still listed.
 	ss.RemoveService(svc)
 	if orphan != nil {
 		ss.RemoveService(orphan)
@@ -419,6 +460,8 @@ func (ss *ServiceSet) unloadService(svc Service, allowed func() bool) bool {
 	if ph != nil {
 		ss.AddService(ph)
 	}
+	ss.queueMu.Unlock()
+
 	if ss.OnServiceUnloaded != nil {
 		ss.OnServiceUnloaded(svc)
 	}
@@ -548,13 +591,61 @@ func (ss *ServiceSet) MarkRestartingService(svc Service) {
 	svc.Record().MarkRestarting()
 }
 
-// StartOnceService starts the service with auto-restart turned off
-// (`slinitctl once`).
+// SignalService sends sig to the service's process (`slinitctl signal`,
+// reload-signal), or runs its control-command-<SIG> when one is set. The
+// pid is read and signalled under queueMu, the lock its exit handler
+// clears it under, so the signal cannot reach a pid the service has
+// already let go of; a control command is run after the lock is let go,
+// since it can take up to the hook timeout. hasPID is false, and nothing
+// is sent, when the service has no process.
+func (ss *ServiceSet) SignalService(svc Service, sig syscall.Signal) (hasPID bool, err error) {
+	ss.queueMu.Lock()
+	var run func()
+	if ps, ok := svc.(*ProcessService); ok {
+		run, hasPID, err = ps.signalWithControl(sig)
+	} else if pid := svc.PID(); pid > 0 {
+		hasPID, err = true, syscall.Kill(pid, sig)
+	}
+	ss.queueMu.Unlock()
+	if run != nil {
+		run()
+	}
+	return hasPID, err
+}
+
+// PauseService stops the service's process with SIGSTOP, or runs its
+// control-command-STOP (`slinitctl pause`). It reports false if there is
+// no process or it is already paused. Locking as SignalService.
+func (ss *ServiceSet) PauseService(svc *ProcessService) bool {
+	ss.queueMu.Lock()
+	run, ok := svc.pause()
+	ss.queueMu.Unlock()
+	if run != nil {
+		run()
+	}
+	return ok
+}
+
+// ContinueService resumes a paused service with SIGCONT, or runs its
+// control-command-CONT (`slinitctl continue`). It reports false if there
+// is no process or it is not paused. Locking as SignalService.
+func (ss *ServiceSet) ContinueService(svc *ProcessService) bool {
+	ss.queueMu.Lock()
+	run, ok := svc.resume()
+	ss.queueMu.Unlock()
+	if run != nil {
+		run()
+	}
+	return ok
+}
+
+// StartOnceService starts the service for one run, not restarted when
+// it stops (`slinitctl once`). Its restart setting is left alone: the
+// next ordinary start restores it.
 func (ss *ServiceSet) StartOnceService(svc Service) {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
-	svc.Record().SetAutoRestart(RestartNever)
-	svc.Start()
+	svc.Record().StartOnce()
 	ss.processQueuesLocked()
 }
 
@@ -571,9 +662,10 @@ func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
 
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
-	ss.restartEnabled = false
-	ss.shutdownType = shutdownType
-	ss.stopsLast = nil
+	// The type first: whoever sees the shutdown sees its type.
+	ss.shutdownType.Store(uint32(shutdownType))
+	ss.restartEnabled.Store(false)
+	ss.stopsLast, ss.stopsLastBlocker = nil, nil
 	for _, svc := range snapshot {
 		rec := svc.Record()
 		if rec.Flags.StopsLast && svc.State() != StateStopped {
@@ -595,9 +687,28 @@ func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
 // releaseStopsLastLocked unpins the stops-last services once every
 // other service has stopped, so they and their dependencies stop in
 // turn. It reports whether it released anything. Caller holds queueMu.
+//
+// It runs on every queue pass of a shutdown, and the scan of every
+// record made that O(N^2) over the shutdown. So the service the last
+// scan stopped at is checked first: if it is still a record of the set,
+// not held, not dependency-pinned and not STOPPED, it is a record the
+// scan would stop at too, and the answer is the scan's (false). In
+// every other case the scan runs as before, so the result is always
+// the scan's.
 func (ss *ServiceSet) releaseStopsLastLocked() bool {
 	if len(ss.stopsLast) == 0 {
 		return false
+	}
+	if b := ss.stopsLastBlocker; b != nil {
+		rec := b.Record()
+		if !rec.deptPinnedStarted && rec.state.Load() != StateStopped && !slices.Contains(ss.stopsLast, b) {
+			ss.mu.RLock()
+			inSet := ss.records[b.Name()] == b
+			ss.mu.RUnlock()
+			if inSet {
+				return false
+			}
+		}
 	}
 	held := map[Service]bool{}
 	for _, svc := range ss.stopsLast {
@@ -611,12 +722,13 @@ func (ss *ServiceSet) releaseStopsLastLocked() bool {
 		}
 		if rec.state.Load() != StateStopped {
 			ss.mu.RUnlock()
+			ss.stopsLastBlocker = svc
 			return false
 		}
 	}
 	ss.mu.RUnlock()
 	release := ss.stopsLast
-	ss.stopsLast = nil
+	ss.stopsLast, ss.stopsLastBlocker = nil, nil
 	for _, svc := range release {
 		svc.Unpin()
 		svc.Stop(false)
@@ -776,7 +888,7 @@ func (ss *ServiceSet) InactiveCh() <-chan struct{} {
 
 // IsShuttingDown returns true if automatic restart is disabled (shutdown in progress).
 func (ss *ServiceSet) IsShuttingDown() bool {
-	return !ss.restartEnabled
+	return !ss.restartEnabled.Load()
 }
 
 // SetCrashPause flips the crash-shell freeze flag. When true, every
@@ -856,6 +968,13 @@ func (ss *ServiceSet) KillActiveServices() {
 			cleaning = append(cleaning, sc)
 			continue
 		}
+		// A hook a transition is waiting on (pre-start, pre-stop,
+		// control-command, finish-command) runs off the lock with its
+		// own process group, which the kill below does not reach. It
+		// is ended too, and its completion moves the service on.
+		if ps, ok := svc.(*ProcessService); ok {
+			ps.cancelStateHook()
+		}
 		pid := svc.PID()
 		if pid > 0 {
 			killFunc(pid, syscall.SIGKILL)
@@ -885,7 +1004,7 @@ func (ss *ServiceSet) KillActiveServices() {
 
 // GetShutdownType returns the current shutdown type.
 func (ss *ServiceSet) GetShutdownType() ShutdownType {
-	return ss.shutdownType
+	return ShutdownType(ss.shutdownType.Load())
 }
 
 // --- Boot timing ---
@@ -966,8 +1085,24 @@ func (ss *ServiceSet) OperatorGlobalEnv() []string {
 	return out
 }
 
+// ValidEnvAssignment reports whether key=value can go into a process
+// environment: a non-empty key without '=' or NUL, a value without NUL.
+// A key holding '=' cannot be told apart from its value once joined,
+// and a NUL makes every later exec fail with EINVAL.
+func ValidEnvAssignment(key, value string) bool {
+	return key != "" && !strings.ContainsAny(key, "=\x00") &&
+		!strings.ContainsRune(value, 0)
+}
+
 // GlobalSetEnv sets a global environment variable and notifies listeners.
+// An assignment ValidEnvAssignment refuses is ignored: the index below
+// is keyed by the text before the first '=', so a key containing one
+// left it pointing past the slice, and the next set of that key indexed
+// out of range in PID 1.
 func (ss *ServiceSet) GlobalSetEnv(key, value string) {
+	if !ValidEnvAssignment(key, value) {
+		return
+	}
 	ss.envMu.Lock()
 	varStr := key + "=" + value
 	override := false

@@ -123,7 +123,7 @@ func FuzzReadEnvDir(f *testing.F) {
 	f.Add(".hidden\nshould be skipped\n")
 	f.Add("KEY=WITH_EQUALS\nvalue\n")
 	f.Add("EMPTY\n")
-	f.Add("\nno name\n")
+	f.Add("NO_FINAL_NEWLINE\nvalue")
 	f.Add("TRAILING_WS\nvalue   \t\n")
 
 	f.Fuzz(func(t *testing.T, data string) {
@@ -146,10 +146,10 @@ func FuzzReadEnvDir(f *testing.F) {
 			name, content = data[:nl], data[nl+1:]
 		}
 		if name == "" || containsPathSep(name) {
-			t.Skip()
+			t.Skip("no file name to write the variable under")
 		}
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
-			t.Skip()
+			t.Skipf("cannot write the variable's file: %v", err)
 		}
 		_, _ = process.ReadEnvDir(dir)
 	})

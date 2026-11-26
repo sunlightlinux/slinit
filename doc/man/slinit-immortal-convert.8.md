@@ -100,6 +100,14 @@ for one converter.
 **-output-dir** *DIR*
 :   Batch mode: write one slinit file per input into *DIR*, named after
     the input file. Without it, the single conversion goes to stdout.
+    A file already at an output name is replaced, so a rerun
+    regenerates it; each file is written to a temporary name in *DIR*
+    and renamed into place, so an interrupted run never leaves a
+    partial file. A symbolic link at an output name is refused, never
+    written through or replaced.
+    A replaced file keeps its permission bits (and, run as root, its
+    owner and group); a new one is created with mode 0644 less the
+    umask. A hard link to the old file keeps the old content.
 
 **-dry-run**
 :   Print what would be written, to stderr, without touching the
@@ -139,7 +147,8 @@ systems share, and **slinit-check**(8) is what catches the rest:
 **1**
 :   No input, several inputs without **-output-dir**, the output
     directory could not be created, or one or more inputs could not be
-    read, parsed (no `cmd:`) or written.
+    read, parsed (no `cmd:`) or written (a symbolic link at an output
+    name counts).
 
 **2**
 :   Unknown flag.

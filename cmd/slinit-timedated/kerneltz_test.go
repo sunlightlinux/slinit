@@ -12,12 +12,11 @@ import (
 // go first so the real one never lands in that slot.
 func TestSetKernelTimezoneSealsTheWarpFirst(t *testing.T) {
 	var calls []int32
-	orig, origLocal := setKernelTZ, time.Local
+	orig := setKernelTZ
 	setKernelTZ = func(m int32) { calls = append(calls, m) }
-	time.Local = time.FixedZone("EET", 2*3600)
-	t.Cleanup(func() { setKernelTZ, time.Local = orig, origLocal })
+	t.Cleanup(func() { setKernelTZ = orig })
 
-	setKernelTimezone()
+	setKernelTimezone(time.FixedZone("EET", 2*3600))
 	if want := []int32{0, -120}; !reflect.DeepEqual(calls, want) {
 		t.Errorf("settimeofday timezones = %v, want %v (zero first)", calls, want)
 	}

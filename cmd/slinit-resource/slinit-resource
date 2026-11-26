@@ -148,6 +148,24 @@ Path to the slinitctl binary. Defaults to looking it up in PATH.
       <shortdesc lang="en">slinitctl binary</shortdesc>
       <content type="string" default="slinitctl"/>
     </parameter>
+
+    <parameter name="start_timeout" required="0" unique="0">
+      <longdesc lang="en">
+Seconds to keep polling for STARTED after slinitctl start returns while
+the service still reports STARTING.
+      </longdesc>
+      <shortdesc lang="en">start confirmation timeout</shortdesc>
+      <content type="integer" default="30"/>
+    </parameter>
+
+    <parameter name="stop_timeout" required="0" unique="0">
+      <longdesc lang="en">
+Seconds to keep polling for STOPPED after slinitctl stop returns while
+the service is not yet stopped.
+      </longdesc>
+      <shortdesc lang="en">stop confirmation timeout</shortdesc>
+      <content type="integer" default="30"/>
+    </parameter>
   </parameters>
 
   <actions>
@@ -207,17 +225,30 @@ action_monitor() {
         return $OCF_ERR_GENERIC
     fi
 
+    # OCF_NOT_RUNNING is a promise that the resource is CLEANLY stopped:
+    # on a probe Pacemaker takes 7 to mean "inactive here" and may start
+    # the resource on another node without stopping it on this one. So
+    # only STOPPED earns 7. A transitional state is not clean:
+    #   STARTING — the service is being brought up and its processes may
+    #              already run; report it active (OCF_SUCCESS) so the
+    #              cluster accounts for it here. `start` does not trust
+    #              this and waits for STARTED itself.
+    #   STOPPING — processes may still be running and it is not where the
+    #              cluster put it (or it is being stopped under us);
+    #              OCF_ERR_GENERIC makes Pacemaker recover it with a
+    #              `stop`, which waits for STOPPED.
+    # (This used to map both to OCF_NOT_RUNNING, which made `stop` of a
+    # STARTING service a no-op: split brain.)
     case "$_state" in
-        STARTED)
+        STARTED|STARTING)
             return $OCF_SUCCESS
             ;;
         STOPPED|"")
             return $OCF_NOT_RUNNING
             ;;
-        STARTING|STOPPING)
-            # Mid-transition. From the agent's perspective the resource
-            # is not yet/no longer running — Pacemaker will re-probe.
-            return $OCF_NOT_RUNNING
+        STOPPING)
+            ocf_log warn "service '$OCF_RESKEY_service' is STOPPING"
+            return $OCF_ERR_GENERIC
             ;;
         *)
             ocf_log warn "unexpected slinit state: $_state"
@@ -226,14 +257,65 @@ action_monitor() {
     esac
 }
 
+# wait_started — poll until the service is STARTED, for at most
+# OCF_RESKEY_start_timeout seconds while it is still STARTING.
+# Returns OCF_SUCCESS or OCF_ERR_GENERIC.
+wait_started() {
+    _left=$OCF_RESKEY_start_timeout
+    while :; do
+        _state=$(probe_state)
+        _rc=$?
+        if [ $_rc -eq 0 ] && [ "$_state" = STARTED ]; then
+            return $OCF_SUCCESS
+        fi
+        if [ $_rc -eq 0 ] && [ "$_state" = STARTING ] \
+                && [ "$_left" -gt 0 ] 2>/dev/null; then
+            sleep 1
+            _left=$((_left - 1))
+            continue
+        fi
+        ocf_log err "service '$OCF_RESKEY_service' did not start (state: ${_state:-unknown})"
+        return $OCF_ERR_GENERIC
+    done
+}
+
+# wait_stopped — poll until the service is stopped (STOPPED, no State
+# line, or the daemon is gone), for at most OCF_RESKEY_stop_timeout
+# seconds. Returns OCF_SUCCESS or OCF_ERR_GENERIC.
+wait_stopped() {
+    _left=$OCF_RESKEY_stop_timeout
+    while :; do
+        _state=$(probe_state)
+        _rc=$?
+        if [ $_rc -eq 2 ]; then
+            return $OCF_SUCCESS
+        fi
+        if [ $_rc -eq 0 ]; then
+            case "$_state" in
+                STOPPED|"") return $OCF_SUCCESS ;;
+            esac
+        fi
+        if [ "$_left" -gt 0 ] 2>/dev/null; then
+            sleep 1
+            _left=$((_left - 1))
+            continue
+        fi
+        ocf_log err "service '$OCF_RESKEY_service' did not stop (state: ${_state:-unknown})"
+        return $OCF_ERR_GENERIC
+    done
+}
+
 action_start() {
     require_service_param
 
     # If already running, nothing to do (OCF idempotency requirement).
-    action_monitor
-    case $? in
-        $OCF_SUCCESS) return $OCF_SUCCESS ;;
-    esac
+    # Only STARTED counts: monitor also reports a STARTING service as
+    # active, but that start may still fail, so ask slinitctl (which
+    # waits for an in-flight start) and check the outcome.
+    _state=$(probe_state)
+    if [ $? -eq 0 ] && [ "$_state" = STARTED ]; then
+        return $OCF_SUCCESS
+    fi
 
     if ! ctl start "$OCF_RESKEY_service"; then
         ocf_log err "slinitctl start '$OCF_RESKEY_service' failed"
@@ -243,32 +325,36 @@ action_start() {
     # slinitctl start blocks until STARTED unless --no-wait was passed,
     # so a successful return already implies the resource is up. Confirm
     # to be defensive against unusual states (e.g. SMOOTHRECOVERY).
-    action_monitor
+    wait_started
 }
 
 action_stop() {
     require_service_param
 
-    action_monitor
-    case $? in
-        $OCF_NOT_RUNNING) return $OCF_SUCCESS ;;
-    esac
+    # Nothing to do only when the service is exactly STOPPED, or the
+    # daemon is unreachable (nothing it supervises can be running).
+    # Every other state — STARTED, and in particular STARTING and
+    # STOPPING — gets a real stop: answering OCF_SUCCESS for a STARTING
+    # service would let Pacemaker start it on another node while it
+    # comes up here.
+    _state=$(probe_state)
+    _rc=$?
+    if [ $_rc -eq 2 ]; then
+        ocf_log debug "slinit daemon unreachable; nothing to stop"
+        return $OCF_SUCCESS
+    fi
+    if [ $_rc -eq 0 ] && [ "$_state" = STOPPED ]; then
+        return $OCF_SUCCESS
+    fi
 
     # --ignore-unstarted swallows the race where the service stopped
-    # between the monitor probe and our request.
+    # between the probe and our request.
     if ! ctl stop --ignore-unstarted "$OCF_RESKEY_service"; then
         ocf_log err "slinitctl stop '$OCF_RESKEY_service' failed"
         return $OCF_ERR_GENERIC
     fi
 
-    action_monitor
-    case $? in
-        $OCF_NOT_RUNNING) return $OCF_SUCCESS ;;
-        *)
-            ocf_log err "service '$OCF_RESKEY_service' did not stop"
-            return $OCF_ERR_GENERIC
-            ;;
-    esac
+    wait_stopped
 }
 
 #######################################################################

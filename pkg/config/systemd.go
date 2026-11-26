@@ -28,11 +28,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
+	"github.com/sunlightlinux/slinit/pkg/seccomp"
+	"golang.org/x/sys/unix"
 )
 
 // --- Data structures ---
@@ -53,10 +57,12 @@ type SystemdConfig struct {
 
 	svcType      string // process | bgprocess | scripted
 	command      string
+	argv0        string // ExecStart=@path argv0 …
 	stopCommand  string
 	preStart     string // slinit takes one; multiples get warned
 	postStart    string
 	runAs        string
+	supGroups    []string // SupplementaryGroups=
 	envFile      string
 	stopSignal   string // from ExecStop=kill -s SIG $MAINPID, if terminating
 	stopLine     string // that ExecStop= value, for the note
@@ -71,6 +77,20 @@ type SystemdConfig struct {
 	stopTimeout  string
 	closeStdin   bool
 
+	// The ExecStart= command with "-": ignoring its failure needs the
+	// type, which may come later in the unit (finishExecStart).
+	commandIgnoreFailure bool
+	commandArgv          []string // in slinit's $ syntax
+
+	// The hook had "+" (or "!" on a start hook): it is written with
+	// slinit's "+", which runs it as root rather than as run-as.
+	preStartPriv, postStartPriv, stopPriv bool
+
+	// TimeoutStartSec= / TimeoutSec=; startTimeoutSet records that the
+	// unit gave one, which a oneshot's default depends on.
+	startTimeout    string
+	startTimeoutSet bool
+
 	// rlimit-*
 	rlimitNofile string
 	rlimitCore   string
@@ -83,6 +103,17 @@ type SystemdConfig struct {
 	// their assignments; emitted once the whole unit is read.
 	capBounding capFold
 	capAmbient  capFold
+
+	// RestrictAddressFamilies=, folded across its assignments.
+	addrFamilies afFold
+
+	// SystemCallFilter= lines since the last empty one, merged once the
+	// whole unit is read.
+	syscallLines []syscallLine
+
+	// errs are confinement directives slinit cannot apply: the unit
+	// fails to convert rather than run less confined than it says.
+	errs []string
 
 	description string   // [Unit] Description=
 	mapped      []kvPair // directives translated 1:1, emitted in order
@@ -120,6 +151,75 @@ var systemdHardeningNames = map[string]string{
 	"MemoryDenyWriteExecute": "memory-deny-write-execute",
 	"RestrictSUIDSGID":       "restrict-suidsgid",
 	"ProtectKernelLogs":      "protect-kernel-logs",
+}
+
+// specifierKeys are the mapped directives and paths whose %-specifiers
+// are expanded. systemd expands them there when it loads the unit;
+// slinit has none. The Exec lines expand theirs word by word, once a
+// word is unquoted, as systemd does (parseExecLine).
+var specifierKeys = map[string]bool{
+	"ConditionPathExists": true, "ConditionPathIsDirectory": true,
+	"ConditionPathIsMountPoint": true, "ConditionFileNotEmpty": true,
+	"WorkingDirectory": true, "RootDirectory": true, "EnvironmentFile": true, "PIDFile": true,
+	"ReadOnlyPaths": true, "ReadWritePaths": true, "InaccessiblePaths": true,
+	"BindReadOnlyPaths": true, "TemporaryFileSystem": true,
+	"RuntimeDirectory": true, "StateDirectory": true, "CacheDirectory": true,
+	"LogsDirectory": true, "ConfigurationDirectory": true,
+}
+
+// expandSpecifiers expands the systemd specifiers in val that have one
+// fixed meaning for a system service that is not a template (the
+// converter refuses templates): %% %n %N %p %i and the %t %S %C %L %E
+// directories. They used to pass through literally, so a service ran
+// with "%t/%N.sock" for an argument and nothing said so. Any other
+// specifier depends on the host, the user or the running unit; it is
+// left as written with a WARN. As in systemd's specifier_printf, a %
+// before anything but a letter, a digit or % is literal.
+func expandSpecifiers(cfg *SystemdConfig, key, val string) (string, []SystemdWarning) {
+	if strings.IndexByte(val, '%') < 0 {
+		return val, nil
+	}
+	var b strings.Builder
+	var unknown []string
+	for i := 0; i < len(val); i++ {
+		if val[i] != '%' || i+1 == len(val) {
+			b.WriteByte(val[i])
+			continue
+		}
+		i++
+		switch c := val[i]; c {
+		case '%':
+			b.WriteByte('%')
+		case 'n':
+			b.WriteString(cfg.svcName + ".service")
+		case 'N', 'p':
+			b.WriteString(cfg.svcName)
+		case 'i':
+			// The instance, empty outside a template.
+		case 't':
+			b.WriteString("/run")
+		case 'S':
+			b.WriteString("/var/lib")
+		case 'C':
+			b.WriteString("/var/cache")
+		case 'L':
+			b.WriteString("/var/log")
+		case 'E':
+			b.WriteString("/etc")
+		default:
+			b.WriteByte('%')
+			b.WriteByte(c)
+			if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+				unknown = append(unknown, "%"+string(c))
+			}
+		}
+	}
+	if len(unknown) == 0 {
+		return b.String(), nil
+	}
+	return b.String(), []SystemdWarning{{"WARN", fmt.Sprintf(
+		"%s=%s: specifier %s not expanded — slinit has no equivalent; it is passed on literally, so replace it by hand",
+		key, val, strings.Join(unknown, " "))}}
 }
 
 // boolWord normalises systemd's true/false/1/0/on/off to slinit's yes/no.
@@ -170,6 +270,9 @@ func ConvertSystemdUnit(path string) (*SystemdConfig, []SystemdWarning, error) {
 	}
 
 	warns := parseSystemdUnit(cfg, string(data))
+	if len(cfg.errs) > 0 {
+		return nil, nil, fmt.Errorf("%s", strings.Join(cfg.errs, "; "))
+	}
 	cfg.comments = append([]string{
 		fmt.Sprintf("Converted from systemd unit: %s", abs),
 		"Review the notes above before enabling.",
@@ -184,6 +287,59 @@ var (
 	kvRe      = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]*)\s*=\s*(.*)$`)
 )
 
+// joinSystemdLines splits a unit into logical lines the way systemd's
+// config_parse (src/shared/conf-parser.c) does. A comment line, one
+// whose first non-blank character is '#' or ';', is skipped outright,
+// also while a continuation is open: systemd lets a unit comment out
+// one line of a continued value, and joining it in used to turn
+//
+//	ExecStart=/usr/bin/foo \
+//	#  --debug --insecure \
+//	  --bar
+//
+// into a command with "#", "--debug" and "--insecure" for arguments. A
+// comment ending in a backslash neither opens nor extends a
+// continuation. A line continues when it ends in an odd run of
+// backslashes, counted over the value joined so far, with nothing
+// after them, not even blanks; the last backslash becomes a space and
+// the next line is appended as it is. A continuation still open at the
+// end of the file is a line of its own.
+func joinSystemdLines(content string) []string {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20)
+	var joined []string
+	var cont string
+	inCont := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if l := strings.TrimLeft(line, " \t\n\r"); l != "" && (l[0] == '#' || l[0] == ';') {
+			continue
+		}
+		p := line
+		if inCont {
+			p = cont + line
+		}
+		escaped := false
+		for i := 0; i < len(p); i++ {
+			if escaped {
+				escaped = false
+			} else if p[i] == '\\' {
+				escaped = true
+			}
+		}
+		if escaped {
+			cont, inCont = p[:len(p)-1]+" ", true
+			continue
+		}
+		joined = append(joined, p)
+		cont, inCont = "", false
+	}
+	if inCont {
+		joined = append(joined, cont)
+	}
+	return joined
+}
+
 // parseSystemdUnit is a section-aware INI parser that also joins
 // backslash-continued values (systemd allows `Foo=bar \` newline
 // `continuation` as one logical assignment). Only [Unit] and
@@ -193,32 +349,7 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 	var warns []SystemdWarning
 	section := ""
 
-	// Multi-line join: iterate the raw lines, if a line ends with
-	// `\` (after trimming trailing whitespace), fuse it with the
-	// next.
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20)
-	var joined []string
-	var acc strings.Builder
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimRight(line, " \t")
-		if strings.HasSuffix(trimmed, "\\") {
-			acc.WriteString(strings.TrimSuffix(trimmed, "\\"))
-			acc.WriteByte(' ')
-			continue
-		}
-		if acc.Len() > 0 {
-			acc.WriteString(line)
-			joined = append(joined, acc.String())
-			acc.Reset()
-		} else {
-			joined = append(joined, line)
-		}
-	}
-	if acc.Len() > 0 {
-		joined = append(joined, acc.String())
-	}
+	joined := joinSystemdLines(content)
 
 	// State for the multiple-ExecStartPre check.
 	preStartCount := 0
@@ -241,10 +372,15 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		val := strings.TrimSpace(m[2])
 		// Strip surrounding double quotes if present (single-quote
 		// isn't standard here but be tolerant). Not on an Exec*= line:
-		// there quotes group words, as in slinit's command parser, and
+		// there quotes group words (parseExecLine), and
 		// "/opt/my app/run" --name "a b" would lose the first and last.
 		if !strings.HasPrefix(key, "Exec") {
 			val = trimQuotes(val)
+		}
+		if section != "Install" && specifierKeys[key] {
+			var w []SystemdWarning
+			val, w = expandSpecifiers(cfg, key, val)
+			warns = append(warns, w...)
 		}
 
 		switch section {
@@ -262,13 +398,54 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		case allCaps:
 			// No limit, as systemd leaves the set alone.
 		case 0:
-			warns = append(warns, SystemdWarning{"WARN", "CapabilityBoundingSet= leaves no capability; slinit's capability-bounding-set cannot express an empty set — not applied"})
+			cfg.errs = append(cfg.errs, "CapabilityBoundingSet= leaves no capability, and slinit's capability-bounding-set "+
+				"cannot express an empty set; the service would keep every capability")
 		default:
 			cfg.mapped = append(cfg.mapped, kvPair{"capability-bounding-set", capNames(cfg.capBounding.mask)})
 		}
 	}
+	if f := cfg.addrFamilies; f.set {
+		if f.allow {
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-address-families", strings.Join(f.fams, " ")})
+		} else if allowed, err := f.complement(); err != nil {
+			cfg.errs = append(cfg.errs, err.Error())
+		} else {
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-address-families", allowed})
+			warns = append(warns, SystemdWarning{"NOTE", "RestrictAddressFamilies=~" + strings.Join(f.fams, " ") +
+				" → restrict-address-families allowing every other family, by number"})
+		}
+	}
+	if len(cfg.syscallLines) > 0 {
+		v, note, err := mergeSyscallFilter(cfg.syscallLines)
+		if err != nil {
+			cfg.errs = append(cfg.errs, err.Error())
+		} else {
+			cfg.mapped = append(cfg.mapped, kvPair{"system-call-filter", v})
+			if note != "" {
+				warns = append(warns, SystemdWarning{"NOTE", note})
+			}
+		}
+	}
 	if cfg.capAmbient.mask != 0 {
 		cfg.mapped = append(cfg.mapped, kvPair{"capabilities", capNames(cfg.capAmbient.mask)})
+	}
+	if strings.HasPrefix(cfg.runAs, ":") {
+		// Group= without User= runs as root with that group, as in
+		// systemd; ":group" is a run-as slinit rejects.
+		cfg.runAs = "root" + cfg.runAs
+	}
+	warns = append(warns, cfg.finishExecStart()...)
+	if cfg.svcType == "scripted" && !cfg.startTimeoutSet {
+		// systemd gives a oneshot no start timeout unless the unit
+		// sets one (service_add_extras: DefaultTimeoutStartSec does not
+		// apply). slinit's 60 s default interrupted every converted
+		// oneshot that ran longer, an fsck or a firmware load.
+		cfg.startTimeout = "0"
+	}
+	if cfg.argv0 != "" && cfg.svcType == "scripted" {
+		// A scripted service takes no command-argv0.
+		warns = append(warns, warnArgv0("ExecStart", cfg.argv0)...)
+		cfg.argv0 = ""
 	}
 	warns = append(warns, applyStopSignal(cfg)...)
 	warns = append(warns, dropAliasRefs(cfg)...)
@@ -455,57 +632,8 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		default:
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Type=%s not recognised", val)})
 		}
-	case "ExecStart":
-		// A oneshot may list several, run in turn; slinit runs one
-		// command. The last is kept, so that an empty ExecStart=
-		// followed by a new one replaces it as in systemd.
-		cmd, w := stripExecPrefixes(val)
-		if cfg.command != "" && cmd != "" {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
-				"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
-					"run the steps from one script if they all matter", cfg.command)})
-		}
-		cfg.command = cmd
-		warns = append(warns, w...)
-		warns = append(warns, warnExecVars(key, cmd)...)
-	case "ExecStop":
-		cmd, w := stripExecPrefixes(val)
-		warns = append(warns, w...)
-		// slinit has no $MAINPID: it would expand to nothing. The usual
-		// `kill -s SIG $MAINPID` is what term-signal does; any other use
-		// cannot act on the right process.
-		if strings.Contains(cmd, "$MAINPID") || strings.Contains(cmd, "${MAINPID}") {
-			if sig, ok := killMainPID(cmd); ok {
-				// Decided once KillSignal=, which may follow, is known.
-				cfg.stopSignal, cfg.stopLine = sig, val
-			} else {
-				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
-					"ExecStop=%s uses $MAINPID, which slinit does not provide — dropped; slinit stops the service with its term-signal", val)})
-			}
-			break
-		}
-		cfg.stopCommand = cmd
-		warns = append(warns, warnExecVars(key, cmd)...)
-	case "ExecStartPre":
-		*preN++
-		if *preN > 1 {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("multiple ExecStartPre= — slinit takes one pre-start-command, keeping the first (dropped: %q)", val)})
-		} else {
-			cmd, w := stripExecPrefixes(val)
-			cfg.preStart = cmd
-			warns = append(warns, w...)
-			warns = append(warns, warnExecVars(key, cmd)...)
-		}
-	case "ExecStartPost":
-		*postN++
-		if *postN > 1 {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("multiple ExecStartPost= — slinit takes one post-start-command, keeping the first (dropped: %q)", val)})
-		} else {
-			cmd, w := stripExecPrefixes(val)
-			cfg.postStart = cmd
-			warns = append(warns, w...)
-			warns = append(warns, warnExecVars(key, cmd)...)
-		}
+	case "ExecStart", "ExecStop", "ExecStartPre", "ExecStartPost":
+		warns = append(warns, cfg.applyExec(key, val, preN, postN)...)
 	case "ExecStopPost":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStopPost=%s — slinit has no equivalent; wire via finish-command manually", val)})
 	case "ExecReload":
@@ -520,6 +648,13 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	case "Group":
 		user, _, _ := strings.Cut(cfg.runAs, ":")
 		cfg.runAs = user + ":" + val
+	case "SupplementaryGroups":
+		// A list; assignments add to it, an empty one resets it.
+		if g := strings.Fields(val); len(g) > 0 {
+			cfg.supGroups = append(cfg.supGroups, g...)
+		} else {
+			cfg.supGroups = nil
+		}
 	case "WorkingDirectory":
 		cfg.workingDir = val
 	case "RootDirectory":
@@ -557,11 +692,33 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		}
 	case "RestartSec":
 		cfg.restartDelay = systemdSeconds(val, "")
-	case "TimeoutStopSec", "TimeoutSec":
+	case "TimeoutStopSec", "TimeoutStartSec", "TimeoutSec":
 		// infinity disables the timeout in both; slinit spells it 0.
-		cfg.stopTimeout = systemdSeconds(val, "0")
-	case "TimeoutStartSec":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("TimeoutStartSec=%s — slinit start-timeout maps this; add manually", val)})
+		// systemd reads 0 as infinity too (parse_sec_fix_0), and 0 is
+		// slinit's "wait forever". A value that is no time span, an
+		// empty one included, systemd logs and ignores
+		// (config_parse_sec_fix_0, config_parse_service_timeout): the
+		// timeout keeps its default, and for a oneshot TimeoutStartSec=
+		// still counts as unset. It used to be passed through and fail
+		// the whole unit.
+		secs, ok := parseSystemdSeconds(val, "0")
+		if !ok {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s=%s is no time span — ignored, as systemd does", key, val)})
+			break
+		}
+		if key == "TimeoutStopSec" {
+			cfg.stopTimeout = secs
+			break
+		}
+		// Was a note only, which the converter hides without --verbose,
+		// so every converted unit got slinit's 60 s default: a unit
+		// asking for longer, or for none, was interrupted after a
+		// minute. TimeoutSec= sets both, as in systemd's
+		// config_parse_service_timeout.
+		cfg.startTimeout, cfg.startTimeoutSet = secs, true
+		if key == "TimeoutSec" {
+			cfg.stopTimeout = secs
+		}
 	case "PIDFile":
 		cfg.pidFile = val
 	case "NoNewPrivileges":
@@ -655,27 +812,37 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		// no|yes|read-only|tmpfs on both sides.
 		cfg.mapped = append(cfg.mapped, kvPair{"protect-home", strings.ToLower(trimQuotes(val))})
 	case "RestrictNamespaces":
-		// systemd also accepts a list of namespace types to deny;
-		// slinit's directive is a blanket yes/no, so a list would
-		// silently become something stricter than asked for.
-		if v := strings.ToLower(trimQuotes(val)); v == "yes" || v == "no" || v == "true" || v == "false" {
+		// systemd also takes a list of namespace types to allow, or
+		// with ~ to refuse. slinit's restrict-namespaces refuses them
+		// all, which is the stricter reading of any list; leaving the
+		// list out ran the service with no restriction at all.
+		switch v := strings.ToLower(strings.TrimSpace(trimQuotes(val))); v {
+		case "yes", "no", "true", "false", "1", "0", "on", "off":
 			cfg.mapped = append(cfg.mapped, kvPair{"restrict-namespaces", boolWord(val)})
-		} else {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("RestrictNamespaces=%s lists namespace types; slinit's restrict-namespaces is all-or-nothing — set it by hand", val)})
+		case "", "~":
+			// Empty resets; ~ with nothing refuses nothing.
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-namespaces", "no"})
+		default:
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-namespaces", "yes"})
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("RestrictNamespaces=%s lists namespace types; "+
+				"slinit's restrict-namespaces refuses every type — set to yes, stricter than the unit asks", val)})
 		}
 	case "RestrictAddressFamilies":
-		// Same AF_* token list. systemd's leading ~ inverts to a
-		// deny-list; slinit's is an allow-list only, so inverting
-		// would reverse the operator's intent.
-		if strings.HasPrefix(strings.TrimSpace(val), "~") {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("RestrictAddressFamilies=%s is a deny-list; slinit's restrict-address-families only allow-lists — invert it by hand", val)})
-		} else {
-			cfg.mapped = append(cfg.mapped, kvPair{"restrict-address-families", trimQuotes(val)})
-		}
+		// Same AF_* names. A ~ deny-list becomes the allow-list of
+		// every other family, once the whole unit is read.
+		cfg.addrFamilies.apply(val)
 	case "SystemCallFilter":
 		// Same grammar: syscall names, @groups, and a leading ~ on the
-		// first item to switch allow-list to deny-list.
-		cfg.mapped = append(cfg.mapped, kvPair{"system-call-filter", trimQuotes(val)})
+		// first item to switch allow-list to deny-list. Lines are
+		// merged once the unit is read (mergeSyscallFilter).
+		v := strings.TrimSpace(trimQuotes(val))
+		if v == "" {
+			cfg.syscallLines = nil
+			break
+		}
+		invert := strings.HasPrefix(v, "~")
+		cfg.syscallLines = append(cfg.syscallLines, syscallLine{invert,
+			strings.FieldsFunc(strings.TrimPrefix(v, "~"), func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })})
 	// The rest of the seccomp family has the same value shape on both
 	// sides. These used to be dropped with a "no slinit equivalent"
 	// note, or a "not recognised" warning, while slinit implements each:
@@ -692,16 +859,40 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		cfg.mapped = append(cfg.mapped, kvPair{"io-uring-filter", trimQuotes(val)})
 	case "ProtectHostname":
 		// systemd also has private[:name], a UTS namespace with its own
-		// hostname; slinit's protect-hostname only refuses the calls.
-		switch v := strings.ToLower(trimQuotes(val)); v {
-		case "yes", "no", "true", "false", "1", "0", "on", "off":
+		// hostname; slinit's protect-hostname refuses the calls and
+		// makes the hostname sysctl files read-only, which is stricter:
+		// the service cannot change even a hostname of its own. Left
+		// out, the service could change the host's.
+		switch v := strings.ToLower(trimQuotes(val)); {
+		case v == "yes" || v == "no" || v == "true" || v == "false" || v == "1" || v == "0" || v == "on" || v == "off":
 			cfg.mapped = append(cfg.mapped, kvPair{"protect-hostname", boolWord(val)})
+		case v == "private" || strings.HasPrefix(v, "private:"):
+			cfg.mapped = append(cfg.mapped, kvPair{"protect-hostname", "yes"})
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectHostname=%s → protect-hostname = yes; "+
+				"slinit has no private hostname, so the service cannot set one at all", val)})
 		default:
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectHostname=%s — slinit's protect-hostname is yes/no only; set it by hand", val)})
 		}
-	// No slinit equivalent — these stay notes.
-	case "PrivateDevices", "PrivateUsers":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("hardening %s=%s — no slinit equivalent; review by hand", key, val)})
+	case "PrivateDevices":
+		// slinit cannot build a private /dev. Refusing the unit, as is
+		// done for an empty CapabilityBoundingSet=, would stop a great
+		// many upstream units from loading at all, so for now this is a
+		// loud warning; whether it should refuse is an open decision.
+		if truthy(val) {
+			warns = append(warns, SystemdWarning{"WARN", "PrivateDevices=yes has no slinit " +
+				"equivalent: the service sees every device of the host"})
+		}
+	// No slinit equivalent. A WARN, not a NOTE, which the converter
+	// hides without --verbose: the service runs with less confinement
+	// than the unit asks for.
+	case "PrivateUsers":
+		// Besides yes/no, it takes self, identity and full.
+		switch strings.ToLower(trimQuotes(val)) {
+		case "", "no", "false", "0", "off":
+		default:
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("hardening %s=%s has no slinit equivalent: "+
+				"the service runs in the host's user namespace", key, val)})
+		}
 	// Same directive, same value shape: a space-separated list of names
 	// created under /run, /var/lib and so on. Deferring these was not a
 	// missing feature, and it mattered: a unit with RuntimeDirectory=
@@ -772,85 +963,226 @@ func applyInstallKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	return nil
 }
 
-// stripExecPrefixes handles the ExecStart= prefix chars:
-//
-//   - (ignore non-zero exit)
-//   - (no privilege drop)
-//     ! (no permission drop)
-//     : (no environment substitution)
-//     @ (argv[0] alias — value is command; next token is displayed argv[0])
-//
-// Any prefix generates a NOTE so the operator knows a behavioural
-// hint was in the original that isn't captured by slinit directives.
-func stripExecPrefixes(v string) (string, []SystemdWarning) {
-	var warns []SystemdWarning
-	s := v
-	seen := map[byte]bool{}
-	for len(s) > 0 {
-		c := s[0]
-		switch c {
-		case '-', '+', '!', ':', '@':
-			if seen[c] {
-				break
-			}
-			seen[c] = true
-			s = s[1:]
+// applyExec maps one ExecStart=, ExecStop=, ExecStartPre= or
+// ExecStartPost= line, each of whose commands parseExecLine has split
+// as systemd does, to slinit's command settings.
+func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []SystemdWarning {
+	if strings.TrimSpace(val) == "" {
+		// An empty assignment resets the list, as in systemd.
+		switch key {
+		case "ExecStart":
+			cfg.command, cfg.argv0, cfg.commandIgnoreFailure, cfg.commandArgv = "", "", false, nil
+		case "ExecStop":
+			cfg.stopCommand, cfg.stopPriv, cfg.stopSignal, cfg.stopLine = "", false, "", ""
+		case "ExecStartPre":
+			cfg.preStart, cfg.preStartPriv, *preN = "", false, 0
+		case "ExecStartPost":
+			cfg.postStart, cfg.postStartPriv, *postN = "", false, 0
+		}
+		return nil
+	}
+	cmds, warns, err := parseExecLine(cfg, key, val)
+	if err != nil {
+		cfg.errs = append(cfg.errs, err.Error())
+		return warns
+	}
+	for _, c := range cmds {
+		argv := c.cmd.argv
+		if c.ignoreFailure && key == "ExecStartPre" {
+			// slinit fails the start on a failing pre-start-command and
+			// has no way to say otherwise; the shell ignores it instead.
+			argv = ignoreFailureArgv(argv)
+		}
+		value, ok := slinitCommandValue(argv)
+		if !ok {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"%s=%s: an argument holds a newline, which a slinit command setting cannot — command dropped", key, val)})
 			continue
 		}
-		break
+		// slinit's "+" for the commands that take it: systemd's "+",
+		// and "!" on a start hook, which systemd runs as root, as
+		// slinit runs a "+" one (neither gets a sandbox in slinit).
+		priv := c.fullPriv || c.noSetuid && (key == "ExecStartPre" || key == "ExecStartPost")
+		if key != "ExecStart" && !priv && strings.HasPrefix(value, "+") {
+			// Written as it is, slinit would read the "+" as its
+			// prefix and run the command as root.
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"%s=%s: the program's path starts with \"+\", which slinit would read as its \"+\" prefix — command dropped", key, val)})
+			continue
+		}
+		warns = append(warns, warnExecVars(key, c.refs, c.bad)...)
+		warns = append(warns, execPrefixNotes(key, val, c.execPrefixes)...)
+		switch key {
+		case "ExecStart":
+			// A oneshot may list several, run in turn; slinit runs one
+			// command. The last is kept, so that an empty ExecStart=
+			// followed by a new one replaces it as in systemd.
+			if cfg.command != "" {
+				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+					"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
+						"run the steps from one script if they all matter", cfg.command)})
+			}
+			cfg.command, cfg.argv0 = value, ""
+			if c.cmd.hasArgv0 {
+				if v, why, ok := slinitArgv0Value(c.cmd.argv0); ok {
+					cfg.argv0 = v
+				} else {
+					warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+						"%s=%s: argv[0] %q dropped — %s; the program gets its path as argv[0]", key, val, c.cmd.argv0, why)})
+				}
+			}
+			cfg.commandIgnoreFailure, cfg.commandArgv = c.ignoreFailure, c.cmd.argv
+		case "ExecStop":
+			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
+			// slinit has no $MAINPID: it would expand to nothing. The
+			// usual `kill -s SIG $MAINPID` is what term-signal does; any
+			// other use cannot act on the right process. With ":" it is
+			// no variable but text.
+			if slices.Contains(c.refs, "$MAINPID") || slices.Contains(c.refs, "${MAINPID}") {
+				if sig, ok := killMainPID(argv); ok {
+					// Decided once KillSignal=, which may follow, is known.
+					cfg.stopSignal, cfg.stopLine = sig, val
+				} else {
+					warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+						"ExecStop=%s uses $MAINPID, which slinit does not provide — dropped; slinit stops the service with its term-signal", val)})
+				}
+				continue
+			}
+			if cfg.stopCommand != "" {
+				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+					"multiple ExecStop= — slinit takes one stop-command, keeping the last (dropped: %q)", cfg.stopCommand)})
+			}
+			cfg.stopCommand, cfg.stopPriv = value, priv
+		case "ExecStartPre", "ExecStartPost":
+			n, cur, privp, setting := preN, &cfg.preStart, &cfg.preStartPriv, "pre-start-command"
+			if key == "ExecStartPost" {
+				n, cur, privp, setting = postN, &cfg.postStart, &cfg.postStartPriv, "post-start-command"
+			}
+			*n++
+			if *n > 1 {
+				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+					"multiple %s= — slinit takes one %s, keeping the first (dropped: %q)", key, setting, value)})
+				continue
+			}
+			*cur, *privp = value, priv
+			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
+		}
 	}
-	for c := range seen {
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStart prefix %q stripped — behaviour not carried into slinit", string(c))})
-	}
-	return strings.TrimSpace(s), warns
+	return warns
 }
 
-// warnExecVars warns about the $VAR and ${VAR} references in an Exec
-// line. systemd substitutes them from Environment= and EnvironmentFile=
-// when it runs the command; slinit expands them when the file is
-// loaded, from slinit's own environment, so a variable the unit's
-// env-file sets comes out empty. $$ is a literal $ on both sides.
-func warnExecVars(key, cmd string) []SystemdWarning {
-	var refs []string
-	for i := 0; i < len(cmd); i++ {
-		if cmd[i] != '$' || i+1 >= len(cmd) {
-			continue
-		}
-		if cmd[i+1] == '$' {
-			i++
-			continue
-		}
-		j := i + 1
-		if cmd[j] == '{' {
-			if k := strings.IndexByte(cmd[j:], '}'); k >= 0 {
-				j += k + 1
-			}
-		} else {
-			for j < len(cmd) && (cmd[j] == '_' || cmd[j] >= 'A' && cmd[j] <= 'Z' ||
-				cmd[j] >= 'a' && cmd[j] <= 'z' || cmd[j] >= '0' && cmd[j] <= '9') {
-				j++
-			}
-		}
-		if j > i+1 {
-			refs = append(refs, cmd[i:j])
-		}
-		i = j - 1
+// ignoreFailureArgv runs argv through a shell that turns any failure,
+// a missing program or a signal included, into success, as systemd's
+// "-" prefix does. "$@" passes the words on untouched; like argv, it is
+// in slinit's $ syntax, where "$@" needs no doubling: @ starts no
+// variable name, and slinit leaves the $ alone.
+func ignoreFailureArgv(argv []string) []string {
+	return append([]string{"/bin/sh", "-c", `"$@" || :`, "sh"}, argv...)
+}
+
+// finishExecStart settles ExecStart= with "-" once the type is known.
+// A oneshot's failure fails the start in slinit as in systemd, so the
+// command is wrapped to ignore it; a long-running process cannot be
+// wrapped without the shell becoming the main process, and its exit
+// status keeps the meaning slinit gives it.
+func (cfg *SystemdConfig) finishExecStart() []SystemdWarning {
+	if !cfg.commandIgnoreFailure {
+		return nil
 	}
-	if len(refs) == 0 {
+	if cfg.svcType == "scripted" {
+		if v, ok := slinitCommandValue(ignoreFailureArgv(cfg.commandArgv)); ok {
+			cfg.command = v
+			return []SystemdWarning{{"NOTE", `ExecStart= "-": run through /bin/sh -c '"$@" || :' so that its failure is ignored, as in systemd`}}
+		}
+		return nil
+	}
+	return []SystemdWarning{{"WARN", fmt.Sprintf(`ExecStart= "-" (exit failure counts as success) not carried: `+
+		`slinit counts a failing %s service as failed, and restart = on-failure restarts it`, cfg.svcType)}}
+}
+
+// execPrefixNotes reports what becomes of an Exec prefix in slinit.
+// ":" is carried exactly (the $ are doubled), "-" on ExecStartPre= by
+// a shell and on ExecStart= by finishExecStart; "@" is argv0.
+func execPrefixNotes(key, val string, p execPrefixes) []SystemdWarning {
+	var warns []SystemdWarning
+	note := func(level, msg string) {
+		warns = append(warns, SystemdWarning{level, fmt.Sprintf("%s=%s: %s", key, val, msg)})
+	}
+	hook := key == "ExecStartPre" || key == "ExecStartPost"
+	if p.ignoreFailure {
+		switch key {
+		case "ExecStartPre":
+			note("NOTE", `"-" — run through /bin/sh -c '"$@" || :' so that its failure is ignored, as in systemd`)
+		case "ExecStartPost":
+			note("NOTE", `"-" — slinit only logs a failing post-start-command, which is what "-" asks`)
+		case "ExecStop":
+			note("NOTE", `"-" — a failing stop-command does not fail the stop in slinit, which is what "-" asks`)
+		}
+	}
+	if p.viaShell {
+		note("NOTE", `"|" — run with /bin/sh -c; systemd uses the login shell of User=, /bin/sh when it has none`)
+	}
+	switch {
+	case p.fullPriv && (hook || key == "ExecStop"):
+		note("NOTE", `"+" — carried as slinit's "+": run as root, without the service's run-as and sandbox`)
+	case p.fullPriv:
+		note("WARN", `"+" (full privileges, no sandbox) not carried: slinit's command takes no "+" and runs with the service's run-as and sandbox`)
+	case p.noSetuid && hook:
+		note("NOTE", `"!" (sandbox, but no User=/Group=) — written with slinit's "+": the hook runs as root, as in systemd; slinit gives a start hook no sandbox either way`)
+	case p.noSetuid:
+		note("WARN", `"!" (sandbox, but no User=/Group=) not carried: slinit runs it with the service's run-as`)
+	}
+	return warns
+}
+
+// privPrefix is slinit's "+" prefix for a command that has it.
+func privPrefix(priv bool) string {
+	if priv {
+		return "+"
+	}
+	return ""
+}
+
+// warnArgv0 warns that the argv[0] an @ gave key's command is dropped:
+// slinit's command-argv0 applies to the main command of a process or
+// bgprocess service only.
+func warnArgv0(key, argv0 string) []SystemdWarning {
+	if argv0 == "" {
 		return nil
 	}
 	return []SystemdWarning{{"WARN", fmt.Sprintf(
-		"%s= uses %s — systemd takes these from the unit's environment when it runs the command; "+
-			"slinit expands them when the file is loaded, from its own environment, not the env-file, "+
-			"so they are likely empty — write the values in, or run the command through a shell script that reads the file",
-		key, strings.Join(refs, " "))}}
+		"%s=@: argv[0] %q dropped — slinit sets argv[0] (command-argv0) only for the main command of a process or bgprocess service", key, argv0)}}
+}
+
+// warnExecVars warns about the variables systemd would substitute in
+// an Exec line: refs, the $VAR and ${VAR} references left for slinit to
+// expand, and bad, those with no valid name. systemd substitutes them
+// from Environment= and EnvironmentFile= when it runs the command;
+// slinit expands them when the file is loaded, from slinit's own
+// environment, so a variable the unit's env-file sets comes out empty.
+// Every other $, which systemd keeps as text, is written $$ and needs no
+// warning.
+func warnExecVars(key string, refs, bad []string) []SystemdWarning {
+	var warns []SystemdWarning
+	if len(refs) > 0 {
+		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+			"%s= uses %s — systemd takes these from the unit's environment when it runs the command; "+
+				"slinit expands them when the file is loaded, from its own environment, not the env-file, "+
+				"so they are likely empty — write the values in, or run the command through a shell script that reads the file",
+			key, strings.Join(refs, " "))})
+	}
+	if len(bad) > 0 {
+		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+			"%s= uses %s, no valid variable name — systemd expands it to nothing, and drops an argument that is only that; so does the conversion",
+			key, strings.Join(bad, " "))})
+	}
+	return warns
 }
 
 // killMainPID recognises `kill [-s SIG | -SIG] $MAINPID` and returns the
 // signal it sends (TERM if none is named), which slinit's term-signal
 // delivers to the main process the same way.
-func killMainPID(cmd string) (string, bool) {
-	f := strings.Fields(cmd)
+func killMainPID(f []string) (string, bool) {
 	if len(f) < 2 || filepath.Base(f[0]) != "kill" ||
 		(f[len(f)-1] != "$MAINPID" && f[len(f)-1] != "${MAINPID}") {
 		return "", false
@@ -989,9 +1321,18 @@ var systemdUnits = []struct {
 // value that is not a span is passed through for the parser to reject
 // by name.
 func systemdSeconds(v, inf string) string {
+	if s, ok := parseSystemdSeconds(v, inf); ok {
+		return s
+	}
+	return strings.TrimSpace(v)
+}
+
+// parseSystemdSeconds is systemdSeconds that reports whether v is a time
+// span (or, with inf, "infinity"); an empty v is none, as in parse_sec.
+func parseSystemdSeconds(v, inf string) (string, bool) {
 	v = strings.TrimSpace(v)
 	if v == "infinity" && inf != "" {
-		return inf
+		return inf, true
 	}
 	var usec uint64
 	p := v
@@ -1006,11 +1347,11 @@ func systemdSeconds(v, inf string) string {
 			i++
 		}
 		if i == 0 {
-			return v
+			return v, false
 		}
 		whole, err := strconv.ParseUint(p[:i], 10, 64)
 		if err != nil {
-			return v
+			return v, false
 		}
 		p = p[i:]
 		frac := ""
@@ -1020,7 +1361,7 @@ func systemdSeconds(v, inf string) string {
 				j++
 			}
 			if j == 1 {
-				return v
+				return v, false
 			}
 			frac, p = p[1:j], p[j:]
 		}
@@ -1033,7 +1374,7 @@ func systemdSeconds(v, inf string) string {
 			}
 		}
 		if whole > ^uint64(0)/mult {
-			return v
+			return v, false
 		}
 		usec += whole * mult
 		for k, m := 0, mult/10; k < len(frac) && m > 0; k, m = k+1, m/10 {
@@ -1042,13 +1383,13 @@ func systemdSeconds(v, inf string) string {
 		something = true
 	}
 	if !something {
-		return v
+		return v, false
 	}
 	s := strconv.FormatUint(usec/1e6, 10)
 	if r := usec % 1e6; r != 0 {
 		s += strings.TrimRight(fmt.Sprintf(".%06d", r), "0")
 	}
-	return s
+	return s, true
 }
 
 // setMappedList records a list directive: systemd appends each
@@ -1235,6 +1576,165 @@ func (c *capFold) apply(key, val string, initial uint64) []SystemdWarning {
 	return warns
 }
 
+// syscallLine is one SystemCallFilter= assignment.
+type syscallLine struct {
+	invert bool
+	items  []string
+}
+
+// mergeSyscallFilter turns a unit's SystemCallFilter= lines into one
+// system-call-filter value, as systemd's config_parse_syscall_filter
+// merges them: the first line says allow-list or (with ~) deny-list, a
+// later line of the same kind adds to it, one of the other kind takes
+// away. Lines of one kind join as they are. Mixed ones — the common
+//
+//	SystemCallFilter=@system-service
+//	SystemCallFilter=~@privileged @resources
+//
+// — have no slinit form with groups (slinit takes ~ on the first item
+// only), so the groups are expanded and the resulting set listed by
+// name. An allow-list always admits @default in both; one that takes
+// some of @default away cannot be written, and is an error.
+func mergeSyscallFilter(lines []syscallLine) (value, note string, err error) {
+	allow := !lines[0].invert
+	mixed := false
+	var all []string
+	for _, l := range lines {
+		mixed = mixed || l.invert == allow
+		all = append(all, l.items...)
+	}
+	if !mixed {
+		if allow {
+			return strings.Join(all, " "), "", nil
+		}
+		return "~" + strings.Join(all, " "), "", nil
+	}
+	expand := func(item string) []string {
+		if names, ok := seccomp.ExpandGroup(item); ok {
+			return names
+		}
+		return []string{item}
+	}
+	set := map[string]bool{}
+	if allow {
+		for _, n := range expand("@default") {
+			set[n] = true
+		}
+	}
+	for _, l := range lines {
+		for _, item := range l.items {
+			for _, n := range expand(item) {
+				set[n] = l.invert != allow
+			}
+		}
+	}
+	if allow {
+		for _, n := range expand("@default") {
+			if !set[n] {
+				return "", "", fmt.Errorf("SystemCallFilter= takes %s out of an allow-list, which always admits "+
+					"@default in slinit; the service would be allowed it", n)
+			}
+		}
+	}
+	var names []string
+	for n, in := range set {
+		if in {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	value = strings.Join(names, " ")
+	if !allow {
+		value = "~" + value
+	}
+	return value, "SystemCallFilter= lines that add and take away are merged into one list of syscall names", nil
+}
+
+// afFold is a systemd RestrictAddressFamilies= set built up over its
+// assignments, as parse_address_families does: the first assignment
+// (or the first after an empty one, or none) says allow or deny, a
+// later one of the same kind adds its families, one of the other kind
+// takes them away. none is an empty allow-list.
+type afFold struct {
+	set   bool     // the directive is in force
+	alloc bool     // systemd has its set: a later line keeps its kind
+	allow bool     // allow-list, else deny-list
+	fams  []string // canonical names ("AF_INET"), in order
+}
+
+func (f *afFold) apply(val string) {
+	v := strings.TrimSpace(trimQuotes(val))
+	switch v {
+	case "":
+		*f = afFold{}
+		return
+	case "none":
+		*f = afFold{set: true, allow: true}
+		return
+	}
+	invert := strings.HasPrefix(v, "~")
+	v = strings.TrimPrefix(v, "~")
+	if !f.alloc {
+		f.set, f.alloc, f.allow, f.fams = true, true, !invert, nil
+	}
+	for _, word := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		name := strings.ToUpper(word)
+		if !strings.HasPrefix(name, "AF_") {
+			name = "AF_" + name
+		}
+		i := slices.Index(f.fams, name)
+		switch {
+		case invert != f.allow && i < 0:
+			f.fams = append(f.fams, name)
+		case invert == f.allow && i >= 0:
+			f.fams = slices.Delete(f.fams, i, i+1)
+		}
+	}
+}
+
+// complement turns a deny-list into the allow-list of every other
+// family, as numbers. A family past AF_MAX is refused, where systemd's
+// deny-list would let socket(2) refuse it.
+func (f afFold) complement() (string, error) {
+	denied := map[int]bool{}
+	for _, name := range f.fams {
+		n, ok := addressFamilies[name]
+		if !ok {
+			return "", fmt.Errorf("RestrictAddressFamilies=~ names unknown family %s; "+
+				"the deny-list cannot be turned into an allow-list without it", name)
+		}
+		denied[n] = true
+	}
+	var allowed []string
+	for n := 1; n < unix.AF_MAX; n++ {
+		if !denied[n] {
+			allowed = append(allowed, strconv.Itoa(n))
+		}
+	}
+	return strings.Join(allowed, " "), nil
+}
+
+// addressFamilies maps the AF_* names systemd takes, upper-cased, onto
+// their numbers.
+var addressFamilies = map[string]int{
+	"AF_UNSPEC": unix.AF_UNSPEC, "AF_UNIX": unix.AF_UNIX, "AF_LOCAL": unix.AF_LOCAL,
+	"AF_INET": unix.AF_INET, "AF_AX25": unix.AF_AX25, "AF_IPX": unix.AF_IPX,
+	"AF_APPLETALK": unix.AF_APPLETALK, "AF_NETROM": unix.AF_NETROM, "AF_BRIDGE": unix.AF_BRIDGE,
+	"AF_ATMPVC": unix.AF_ATMPVC, "AF_X25": unix.AF_X25, "AF_INET6": unix.AF_INET6,
+	"AF_ROSE": unix.AF_ROSE, "AF_DECNET": unix.AF_DECnet, "AF_NETBEUI": unix.AF_NETBEUI,
+	"AF_SECURITY": unix.AF_SECURITY, "AF_KEY": unix.AF_KEY, "AF_NETLINK": unix.AF_NETLINK,
+	"AF_ROUTE": unix.AF_ROUTE, "AF_PACKET": unix.AF_PACKET, "AF_ASH": unix.AF_ASH,
+	"AF_ECONET": unix.AF_ECONET, "AF_ATMSVC": unix.AF_ATMSVC, "AF_RDS": unix.AF_RDS,
+	"AF_SNA": unix.AF_SNA, "AF_IRDA": unix.AF_IRDA, "AF_PPPOX": unix.AF_PPPOX,
+	"AF_WANPIPE": unix.AF_WANPIPE, "AF_LLC": unix.AF_LLC, "AF_IB": unix.AF_IB,
+	"AF_MPLS": unix.AF_MPLS, "AF_CAN": unix.AF_CAN, "AF_TIPC": unix.AF_TIPC,
+	"AF_BLUETOOTH": unix.AF_BLUETOOTH, "AF_IUCV": unix.AF_IUCV, "AF_RXRPC": unix.AF_RXRPC,
+	"AF_ISDN": unix.AF_ISDN, "AF_PHONET": unix.AF_PHONET, "AF_IEEE802154": unix.AF_IEEE802154,
+	"AF_CAIF": unix.AF_CAIF, "AF_ALG": unix.AF_ALG, "AF_NFC": unix.AF_NFC,
+	"AF_VSOCK": unix.AF_VSOCK, "AF_KCM": unix.AF_KCM, "AF_QIPCRTR": unix.AF_QIPCRTR,
+	"AF_SMC": unix.AF_SMC, "AF_XDP": unix.AF_XDP, "AF_MCTP": unix.AF_MCTP,
+}
+
 // capNames lists the capabilities in mask by name, lowest first.
 func capNames(mask uint64) string {
 	var names []string
@@ -1321,17 +1821,23 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	if c.command != "" {
 		fmt.Fprintf(w, "command = %s\n", c.command)
 	}
+	if c.argv0 != "" {
+		fmt.Fprintf(w, "command-argv0 = %s\n", c.argv0)
+	}
 	if c.stopCommand != "" {
-		fmt.Fprintf(w, "stop-command = %s\n", c.stopCommand)
+		fmt.Fprintf(w, "stop-command = %s%s\n", privPrefix(c.stopPriv), c.stopCommand)
 	}
 	if c.preStart != "" {
-		fmt.Fprintf(w, "pre-start-command = %s\n", c.preStart)
+		fmt.Fprintf(w, "pre-start-command = %s%s\n", privPrefix(c.preStartPriv), c.preStart)
 	}
 	if c.postStart != "" {
-		fmt.Fprintf(w, "post-start-command = %s\n", c.postStart)
+		fmt.Fprintf(w, "post-start-command = %s%s\n", privPrefix(c.postStartPriv), c.postStart)
 	}
 	if c.runAs != "" {
 		fmt.Fprintf(w, "run-as = %s\n", c.runAs)
+	}
+	if len(c.supGroups) > 0 {
+		fmt.Fprintf(w, "supplementary-groups = %s\n", strings.Join(c.supGroups, " "))
 	}
 	if c.envFile != "" {
 		fmt.Fprintf(w, "env-file = %s\n", c.envFile)
@@ -1372,6 +1878,9 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	}
 	if c.restartDelay != "" {
 		fmt.Fprintf(w, "restart-delay = %s\n", c.restartDelay)
+	}
+	if c.startTimeout != "" {
+		fmt.Fprintf(w, "start-timeout = %s\n", c.startTimeout)
 	}
 	if c.stopTimeout != "" {
 		fmt.Fprintf(w, "stop-timeout = %s\n", c.stopTimeout)
@@ -1433,6 +1942,21 @@ func IsSystemdUnit(path string) bool {
 	}
 	fi, err := os.Stat(path)
 	return err == nil && fi.Mode().IsRegular()
+}
+
+// systemdUnitMasked reports whether path masks its unit, as systemctl
+// mask does: a symlink to /dev/null, or an empty file. A mask ends the
+// search; the unit is not loaded from any later directory.
+func systemdUnitMasked(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if fi.Mode().IsRegular() {
+		return fi.Size() == 0
+	}
+	null, err := os.Stat("/dev/null")
+	return err == nil && os.SameFile(fi, null)
 }
 
 // SystemdUnitToServiceDescription reads a .service unit and returns the
@@ -1524,7 +2048,11 @@ func (dl *DirLoader) descriptionExists(name string) bool {
 		unitName += ".service"
 	}
 	for _, dir := range dl.systemdDirs {
-		if IsSystemdUnit(filepath.Join(dir, unitName)) {
+		p := filepath.Join(dir, unitName)
+		if systemdUnitMasked(p) {
+			return false
+		}
+		if IsSystemdUnit(p) {
 			return true
 		}
 	}

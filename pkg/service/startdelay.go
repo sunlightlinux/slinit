@@ -8,11 +8,13 @@ import "time"
 // a RE-start and nothing governed the first one.
 //
 // The nearest workaround was `pre-start-command = /bin/sleep N`, which
-// works and is the wrong shape: the synchronous hooks run inside the
-// scheduling lock, so sleeping in one stalls every other service's
-// transitions for the duration. Measured at the 5-second default, an
-// unrelated `slinitctl start` waited 4.01 seconds behind one. A delay
-// implemented as a timer holds nothing.
+// works and is the wrong shape: it spends a process and counts against
+// hook-timeout, and when start-delay was added the hooks still ran
+// inside the scheduling lock, so sleeping in one stalled every other
+// service's transitions for the duration (measured at the 5-second
+// default, an unrelated `slinitctl start` waited 4.01 seconds behind
+// one; they no longer do, see statehook.go). A delay implemented as a
+// timer holds nothing.
 //
 // The service waits in STARTING, which matters for more than looks: the
 // active-service count has already been taken by the time BringUp runs,

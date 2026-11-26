@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (268 cases)
+# Run all tests (277 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -34,6 +34,30 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 - `curl`, `cpio`, `gzip`
 - `socat` or `nc` (for virtio-serial result reading)
 - KVM recommended (falls back to software emulation)
+- `sha256sum` (coreutils): optional downloads are pinned by checksum
+- `unsquashfs` or `7z`, optional: extracts `autofs4.ko` and `efivarfs.ko`
+  from the netboot modloop for 277-slinit-mount-bind-flags and
+  222-nosystemd-efivarfs-ro, which skip without them
+- a musl build of `libslinit-mlock.so`, optional, for 125-mlockall. Any
+  one of: `musl-gcc` (Debian/Ubuntu `musl-tools`), `zig`, or just the
+  host's `cc` — with none of the first two, `build-vm.sh` fetches Alpine's
+  `musl-dev` (3.4 MB, pinned sha256) and links against the image's own
+  `ld-musl`, which is all `musl-gcc` does. The library is checked before
+  it goes in the image (musl in `DT_NEEDED`, and musl's loader runs its
+  constructor); a glibc build is refused, because in the guest it fails
+  silently.
+- OVMF, optional, for 222-nosystemd-efivarfs-ro (`.d/firmware` = `efi`).
+  Found at the usual places — `/usr/share/qemu/ovmf-x86_64-4m-*.bin`
+  (openSUSE), `/usr/share/OVMF/OVMF_{CODE,VARS}{_4M,}.fd` (Debian/Ubuntu),
+  `/usr/share/edk2/ovmf/`, `/usr/share/edk2/x64/`, `/usr/share/edk2-ovmf/`
+  — or set `SLINIT_OVMF_CODE` and `SLINIT_OVMF_VARS`. Plain builds only,
+  not secure-boot or SMM ones. The vars file is copied per run, never
+  written. Without OVMF the case is reported SKIP before booting.
+- Alpine's `vmlinuz-lts` (13 MB, pinned sha256), fetched by
+  `build-vm.sh` for 126-numa-mempolicy: `linux-virt` is built without
+  `CONFIG_NUMA`. When the mirror has moved on to a newer lts the pin no
+  longer matches, the build says so, and 126 is reported SKIP until the
+  checksum is updated. The same goes for `musl-dev` and 125.
 
 ### KVM stability caveat on hybrid CPUs and nested virt
 
@@ -55,8 +79,9 @@ unaffected.
 
 A case that finds its precondition missing calls `skip_case "<reason>"`
 and is reported **SKIP**, counted under "skipped" and not under
-"passed". Around one case in ten skips on a normal run, so the tally to
-read is all three numbers, not the first one.
+"passed". On a host with everything under Requirements few cases skip,
+and each remaining skip names a gap listed below — but the tally to read
+is still all three numbers, not the first one.
 
 It did not always work that way. A skipping case used to print `SKIP:`
 and then return 0, which the harness reported as **PASS** — a
@@ -67,17 +92,22 @@ skipped for want of cgroup v2 from the day it was written, which is how
 `slice` came to be silently dropped by the loader for the whole life of
 the directive without the suite noticing (fixed in v2.3.9).
 
-The environment the VM does *not* provide, and what skips because of
-it:
+What the VM does *not* provide, and what that leaves uncovered:
 
 | Missing | Cases affected |
 |---------|----------------|
-| cgroup v2 as the mounted hierarchy | the `cgroup`, `slice` and delegation cases |
-| `util-linux` (`chrt`) | the scheduling-policy cases |
-| `/etc/machine-id` | `condition-fraction` and the PSI cases |
-| TPM | `condition-security = measured-os` |
-| NUMA (`CONFIG_NUMA`) | `numa-mempolicy` |
-| `nc` that does not drop UDP | `log-forward-udp` |
+| TPM | `condition-security = measured-os` checks the negative path only |
+| OVMF on the host | `222-nosystemd-efivarfs-ro` SKIPs |
+| a musl build of `libslinit-mlock.so` | `125-mlockall` SKIPs |
+| the pinned `vmlinuz-lts` | `126-numa-mempolicy` SKIPs |
+| `unsquashfs`/`7z` on the host | `277-slinit-mount-bind-flags`, `222` SKIP |
+
+The last four are host-side, and the build or the harness says which is
+missing (see Requirements). cgroup v2, `chrt`, `/etc/machine-id` and a
+UDP-capable `nc`, which this table used to list, are all there now: the
+cgroup cases mount cgroup2 through their own `system-init`, and the
+others run (checked 2026-11-26: 96, 118, 135, 141, 142, 160, 164, 180,
+184, 199, 221 all PASS, none SKIP).
 
 So: when a case covers something you are actually changing, check that
 it *ran*.
@@ -195,7 +225,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 85 | slinit-sysctl | applies dotted + slashed keys to real /proc/sys/*; verbose summary reports applied/ignored/errors; `-` best-effort miss is ignored by default but escalates under `--strict`; malformed config error names file+line |
 | 86 | slinit-svc-value | file-per-key backing under `$RC_SVCDIR/options/`; symlink dispatch (service_get_value, save_options alias, etc.); empty-value delete; no trailing newline on writes; `service_export` skips already-stored keys; SLINIT_SERVICENAME env fallback |
 | 87 | slinit-start-stop-daemon | `--start --background --make-pidfile` fork against real /bin/sleep; `--status` probes pidfile-live; double-`--start` refused with exit 1 (softened to 0 under `--oknodo`); `--stop --retry TERM/2/KILL/2` terminates the child; stale pidfile yields LSB code 5 (0 with `--oknodo`) |
-| 88 | slinit-supervise-daemon | detach into supervisor loop via re-exec + SLINIT_SSD_SUPERVISOR=1; supervisor + daemon.pidfile companion both written; short-lived child respawned within budget (>=2 iterations); `--stop` tears the tree down and cleans both pidfiles; second `--stop` with missing pidfile still exits 0 |
+| 88 | slinit-supervise-daemon | detach into supervisor loop via re-exec with a private argv marker; supervisor + daemon.pidfile companion both written; short-lived child respawned within budget (>=2 iterations); `--stop` tears the tree down and cleans both pidfiles; second `--stop` with missing pidfile still exits 0 |
 | 89 | slinit-fstabinfo | fixture-driven output selectors (`--blockdevice`, `--options`, `--mountargs`, `--passno /mnt`); filters (`--fstype`, `--passno =2`); positional narrowing; `--file` seam; EINFO_QUIET suppression |
 | 90 | slinit-mountinfo | real `/proc/mounts` includes `/proc` with fstype=proc, rootfs skipped; fixture drives reverse-order output, regex filters (fstype/skip-fstype, point-regex), `--node`/`--options` selectors; `--netdev`/`--nonetdev` cross-reference `/etc/fstab` for `_netdev`; relative positional rejected |
 | 91 | slinit-einfo | argv[0] dispatch across 22 applet symlinks; einfo→stdout / ewarn+eerror→stderr; `n`-suffix suppresses newline; `v*` variants gated on EINFO_VERBOSE; EINFO_QUIET blanket suppression; eend marker + status propagation; eindent no-op; eval_ecolors emits all 6 shell vars; ewaitfile fires + times out |
@@ -232,8 +262,8 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 122 | securebits | `securebits = keep-caps,no-setuid-fixup` parses; child comes up |
 | 123 | normal-exit | `normal-exit = 42` with `restart = yes`: exit 42 runs once, a control exiting 41 is respawned |
 | 124 | success-action | two nested `slinit --user`: a clean exit with `success-action = exit` terminates its daemon, with `none` the daemon stays up |
-| 125 | mlockall | `mlockall = current+future` → service memory locked (`VmLck` > 0, via the `libslinit-mlock.so` preload) and `RLIMIT_MEMLOCK = unlimited` in `/proc/PID/limits` |
-| 126 | numa-mempolicy | `numa-mempolicy = bind` on node 0; SKIPs if CONFIG_NUMA is off |
+| 125 | mlockall | `mlockall = current+future` → service memory locked (`VmLck` > 0, via the `libslinit-mlock.so` preload) and `RLIMIT_MEMLOCK = unlimited` in `/proc/PID/limits`; SKIPs without a musl build of the library (see Requirements) |
+| 126 | numa-mempolicy | `numa-mempolicy = bind` on node 0 → every mapping of the service in `/proc/PID/numa_maps` shows `bind:0`; boots the lts kernel (virt has no CONFIG_NUMA) with two NUMA nodes |
 | 127 | state-directory-mode | `state-directory` + `state-directory-mode` creates `/var/lib/<svc>` with the requested mode |
 | 128 | cache-directory | `cache-directory` + `cache-directory-mode` (0710, not the 0755 default) at `/var/cache/<svc>` |
 | 129 | runtime-directory-preserve | `runtime-directory-preserve = yes` keeps `/run/<svc>/…` after stop |
@@ -329,7 +359,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 219 | nosystemd-clock-jump | systemd#1143 — a wall-clock step made PID 1 spin printing "Time has been changed"; the wall clock is stepped a year forward and back (`date -s @epoch`; each step checked) and PID 1 must stay responsive, idle and not churn services (v2.3.5) |
 | 220 | nosystemd-dep-failure | systemd#1312 + #6478 — a service whose hard dependency failed must stay down rather than restart-loop, and `slinitctl start` must exit non-zero when the start ends in failure (v2.3.5) |
 | 221 | nosystemd-logout-survivors | Debian #825394 — nohup'd jobs, tmux and screen must survive their session ending; the most-cited systemd complaint from users who leave work running over ssh (v2.3.5) |
-| 222 | nosystemd-efivarfs-ro | systemd#2402 — efivarfs must be mounted read-only, so a careless recursive delete cannot wipe EFI variables and brick the firmware (v2.3.5); SKIPs without EFI firmware, which is the harness's SeaBIOS default |
+| 222 | nosystemd-efivarfs-ro | systemd#2402 — efivarfs must be mounted read-only, so a careless recursive delete cannot wipe EFI variables and brick the firmware (v2.3.5); boots under OVMF with `efivarfs.ko` loaded before slinit, so the filesystem is mountable; SKIPs without OVMF on the host |
 | 223 | nosystemd-journald-restart | systemd#6620 — restarting the journal daemon must not silence already-running services; slinit's events sit in PID 1's own ring, so no service writes into a closed pipe (v2.3.5) |
 | 224 | nosystemd-numeric-username | systemd#6237 — a `run-as` value naming an account like `0day` must resolve as a *name*, not be read as UID 0 and run as root (v2.3.5) |
 | 225 | pid1-signal-survival | Not from the nosystemd list: PID 1 must not die from a signal a local root can send it. Host-driven — the harness presses the real Ctrl+Alt+Del (v2.3.6) |
@@ -376,6 +406,15 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 266 | seccomp-log-keeps-deny | a call refused by `system-call-filter` stays refused when `system-call-log` lists it too |
 | 267 | protect-home-submount | `protect-home = read-only` makes a filesystem mounted below `/home` read-only too |
 | 268 | pass-cs-fd-at-boot | `options = pass-cs-fd` works for a boot-started service (`slinitctl --use-passed-cfd`) |
+| 269 | chroot-runner | `chroot` + `no-new-privs`: a runner planted inside the jail never runs; the service runs jailed with NoNewPrivs and `working-dir` resolved in the jail |
+| 270 | postfork-attrs-first-child | a FIFO service's at-once forked child is FIFO 20 (reset-on-fork = no) and has its `rlimit-nofile`: the runner waits at a start gate until slinit has set them |
+| 271 | getty-reclaims-tty | slinit-getty (with `new-session = yes`) takes a stale tty back: root-owned, mode 0620/0600, vhangup survived, tty2 its controlling terminal |
+| 272 | runas-aux-commands | `exec-condition`, `cron-command` and `healthcheck-command` of a `run-as = nobody` service run as nobody, not root |
+| 273 | seedrng-refuses-symlinks | slinit-seedrng removes planted `seed.*` symlinks without reading or writing through them: a dangling link's target is never created |
+| 274 | hook-timeout-kills-group | a `pre-start-command` / `pre-stop-hook` killed by `hook-timeout` takes its backgrounded children with it |
+| 275 | ssd-exec-symlink | slinit-start-stop-daemon `--exec` through a symlinked dir (merged /usr) finds the daemon; an `--exec` busybox applet link matches no other busybox process |
+| 276 | systemd-exec-comment-continuation | a `#`/`;` comment line inside a backslash-continued `ExecStart=` is skipped for a directly loaded `.service` unit |
+| 277 | slinit-mount-bind-flags | an autofs `bind,ro,noexec` unit from slinit-mount gives a read-only, noexec bind (mountinfo, write and exec refused); skips without `autofs4.ko` |
 
 ## How It Works
 
@@ -387,7 +426,8 @@ green shards. Run it yourself after touching anything in `lib/`.
    injected into the initramfs as a service
 3. **Guest runner**: `lib/guest-runner.sh` runs inside the VM, waits for slinit
    to be ready, executes the test script, and writes results to a virtio-serial port
-4. **Host reader**: `run-tests.sh` reads results from the virtio-serial Unix socket
+   (a second UART on a kernel without virtio built in — see `kernel` below)
+4. **Host reader**: `run-tests.sh` reads results from the result channel's Unix socket
    and reports PASS/FAIL
 
 ## Adding Tests
@@ -442,6 +482,14 @@ A few names inside the `.d/` directory are not services:
 - `kernel-args` holds extra kernel command-line words, appended to the
   default line, `#` lines ignored. 141 and 180 ask for `psi=1`: the VM
   kernel builds PSI but leaves it off.
+- `kernel` names a kernel flavour other than `virt`; only `lts` is built
+  (126, for `CONFIG_NUMA`). lts has virtio as modules, so a case on it
+  reports over a second UART (`ttyS1`, named on the kernel command line
+  as `slinit_test.result=`) instead of virtio-serial. A flavour that was
+  not built is reported SKIP with the reason.
+- `firmware` is `bios` (the default, SeaBIOS) or `efi` (OVMF; 222).
+  Not the default for everything: per case it was 2.4 s faster under
+  KVM but 1.7 s slower under TCG, which CI runs.
 - `system-init` replaces the base one. The cgroup cases (135, 141, 160,
   164, 180, 184, 199, 221) use it to mount cgroup2 and delegate
   controllers at the root, which the base VM does not do.

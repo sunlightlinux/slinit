@@ -8,6 +8,12 @@
 /slinitctl
 /slinitctl-*
 /rc-*
+# `go build` run inside cmd/<name>/ writes the binary next to the
+# sources; two such binaries were committed by accident once.
+# cmd/slinit-resource/slinit-resource is a shell script and stays
+# tracked (already added, so this pattern does not hide it).
+/cmd/*/slinit-*
+!/cmd/*/slinit-*.*
 
 # Core dumps: slinit sends SIGABRT on the watchdog / timeout-abort
 # paths, so a crashed test child can drop one in the package dir.

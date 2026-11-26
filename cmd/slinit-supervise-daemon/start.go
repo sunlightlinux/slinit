@@ -1,16 +1,21 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // cmdStart is the top-level --start path. It re-execs the current
-// binary with runnerEnvVar set so the child instance takes the
+// binary with supervisorMarker first so the child instance takes the
 // runSupervisor() branch, then polls the pidfile until the supervisor
 // has written it. This mirrors OpenRC's double-fork daemon layout in
 // spirit — we get a detached supervisor and a synchronous signal
@@ -26,12 +31,21 @@ func cmdStart(opts Options) int {
 	}
 
 	// Already-running check: if the supervisor's pidfile is fresh and
-	// points at a live PID, refuse rather than start a second copy.
+	// points at a live supervise-daemon, refuse rather than start a
+	// second copy. A live pid running anything else is the pidfile's
+	// pid reused after a crash or reboot: stale, and it used to block
+	// --start for as long as that unrelated process lived. One we may
+	// not inspect is taken as running.
 	if pid, ok := readPIDFile(opts.PidFile); ok && processAlive(pid) {
-		if opts.Verbose {
-			fmt.Fprintf(os.Stderr, "already running (supervisor pid %d)\n", pid)
+		if super, err := isSupervisor(pid); err != nil || super {
+			if opts.Verbose {
+				fmt.Fprintf(os.Stderr, "already running (supervisor pid %d)\n", pid)
+			}
+			return exitAlready
 		}
-		return exitAlready
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "stale pidfile: pid %d is not a supervisor\n", pid)
+		}
 	}
 
 	self, err := os.Executable()
@@ -42,11 +56,10 @@ func cmdStart(opts Options) int {
 
 	// Wipe any stale pidfile so the poll loop below sees only our
 	// supervisor's write. Ignore ENOENT.
-	_ = os.Remove(opts.PidFile)
-	_ = os.Remove(opts.PidFile + ".daemon")
+	removePidfiles(opts)
 
-	cmd := exec.Command(self, os.Args[1:]...)
-	cmd.Env = append(os.Environ(), runnerEnvVar+"=1")
+	cmd := exec.Command(self, append([]string{supervisorMarker}, os.Args[1:]...)...)
+	cmd.Env = scrubEnviron(os.Environ())
 	// Detach: setsid puts the supervisor in its own session, /dev/null
 	// stdio so the caller's terminal isn't tied up.
 	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
@@ -160,25 +173,94 @@ func waitDescription(err error) string {
 	return err.Error()
 }
 
-// readPIDFile parses PATH's integer contents. ok=false on missing or
-// malformed files, same shape as start-stop-daemon uses. A file naming
-// PID 1 or this process is malformed too: --stop and --signal signal
-// what it names, and SIGTERM to PID 1 is a reboot under slinit.
+// readPIDFile parses PATH's integer contents. ok=false on missing,
+// malformed or untrusted files; readTrustedPIDFile says which.
 func readPIDFile(path string) (int, bool) {
-	buf, err := os.ReadFile(path)
+	pid, err := readTrustedPIDFile(path)
+	return pid, err == nil
+}
+
+// errBadPIDFile is a pidfile that is there but names no pid we may
+// signal: empty, not a number, or init, this process or its parent.
+var errBadPIDFile = errors.New("malformed pidfile")
+
+// readTrustedPIDFile reads a pidfile whose pid --stop or --signal is
+// about to signal, checked as slinit-start-stop-daemon checks one.
+//
+// Both files — PATH naming the supervisor, PATH.daemon naming the
+// daemon — are written by the supervisor, as the user --stop runs as,
+// and never by the daemon. So each is held to the strict check: a
+// world-writable file, or one owned (or group-writable) by anyone but
+// root or us, was written by someone who may not pick what root
+// signals. A service user who can write the pidfile directory could
+// otherwise have --stop SIGTERM/SIGKILL, and --signal send anything
+// to, any pid on the box. O_NOFOLLOW for the same reason: the
+// supervisor never writes these through a symlink, so a link is
+// planted, and Fstat would check the file it names.
+//
+// A file naming PID 1, this process or its parent is errBadPIDFile:
+// SIGTERM to PID 1 is a reboot under slinit.
+func readTrustedPIDFile(path string) (int, error) {
+	buf, err := readTrustedFile(path)
 	if err != nil {
-		return 0, false
+		return 0, err
 	}
 	// Strip whitespace / trailing newlines.
 	trimmed := trimSpace(string(buf))
 	if trimmed == "" {
-		return 0, false
+		return 0, errBadPIDFile
 	}
 	n, err := strconv.Atoi(trimmed)
-	if err != nil || n <= 1 || n == os.Getpid() {
-		return 0, false
+	if err != nil || n <= 1 || n == os.Getpid() || n == os.Getppid() {
+		return 0, errBadPIDFile
 	}
-	return n, true
+	return n, nil
+}
+
+// readTrustedFile reads one of the files the supervisor keeps next to
+// its pidfile, under the checks readTrustedPIDFile describes.
+func readTrustedFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var st syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+		return nil, err
+	}
+	if st.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		return nil, fmt.Errorf("pidfile %s is not a regular file: %w", path, errInsecurePIDFile)
+	}
+	if why := process.PIDFileInsecure(&st, os.Getuid(), os.Getgid(), true); why != "" {
+		return nil, fmt.Errorf("%s pidfile %s: %w", why, path, errInsecurePIDFile)
+	}
+	return io.ReadAll(io.LimitReader(f, 4096))
+}
+
+// errInsecurePIDFile is a pidfile someone other than root or us could
+// have written; see readTrustedPIDFile.
+var errInsecurePIDFile = errors.New("is insecure")
+
+// isSupervisor reports whether pid runs this same executable — a
+// supervise-daemon, rather than whatever a reused or forged pid names.
+// A binary replaced by a package upgrade reads "<path> (deleted)" in
+// /proc/PID/exe, so the suffix is stripped on both sides. A pid that
+// is gone reads as false; one we may not inspect is an error, since
+// we could not signal it either.
+func isSupervisor(pid int) (bool, error) {
+	self, err := os.Readlink("/proc/self/exe")
+	if err != nil {
+		return false, err
+	}
+	exe, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSuffix(exe, " (deleted)") == strings.TrimSuffix(self, " (deleted)"), nil
 }
 
 func trimSpace(s string) string {

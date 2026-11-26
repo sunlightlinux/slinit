@@ -82,6 +82,7 @@ type pending struct {
 // Watcher multiplexes a single inotify fd across N services-dirs.
 type Watcher struct {
 	fd      int
+	wakeFd  int // eventfd Close writes to, so Run's poll needs no timeout
 	logger  Logger
 	handler Handler
 	opts    Options
@@ -110,8 +111,14 @@ func New(logger Logger, handler Handler, opts Options) (*Watcher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inotify_init1: %w", err)
 	}
+	wakeFd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("eventfd: %w", err)
+	}
 	return &Watcher{
 		fd:      fd,
+		wakeFd:  wakeFd,
 		logger:  logger,
 		handler: handler,
 		opts:    opts,
@@ -257,12 +264,15 @@ func (w *Watcher) Run() {
 	defer close(w.done)
 	var buf [16 * 1024]byte
 	for {
-		select {
-		case <-w.quit:
-			return
-		default:
+		// Wake up on a timer only while a removed dir is waiting to
+		// come back; otherwise sleep until an event or Close.
+		timeout := -1
+		w.mu.Lock()
+		if len(w.lost) > 0 {
+			timeout = int(rewatchInterval / time.Millisecond)
 		}
-		n, err := readWithPoll(w.fd, buf[:], w.quit)
+		w.mu.Unlock()
+		n, err := readWithPoll(w.fd, w.wakeFd, buf[:], timeout)
 		if err != nil {
 			if errors.Is(err, errQuit) {
 				return
@@ -432,8 +442,13 @@ func (w *Watcher) Close() {
 	}
 	w.pending = map[string]*pending{}
 	w.mu.Unlock()
-	_ = unix.Close(w.fd)
+	// Wake Run's poll. The fds are closed only once Run has returned:
+	// closed under it, Run could poll or read a number the process had
+	// already reused for another file.
+	_, _ = unix.Write(w.wakeFd, []byte{1, 0, 0, 0, 0, 0, 0, 0})
 	<-w.done
+	_ = unix.Close(w.fd)
+	_ = unix.Close(w.wakeFd)
 }
 
 // isServiceFile filters out obvious non-service entries:
@@ -477,20 +492,19 @@ func key(dir, name string) string {
 	return dir + "/" + name
 }
 
-// errQuit is a sentinel from readWithPoll when quit was signalled.
+// errQuit is a sentinel from readWithPoll when Close woke it.
 var errQuit = errors.New("svcdirwatch: quit")
 
-// readWithPoll reads from fd, returning errQuit if quit closes first.
-// A poll timeout returns (0, nil), so Run gets to retry lost dirs.
-func readWithPoll(fd int, buf []byte, quit <-chan struct{}) (int, error) {
+// readWithPoll reads from fd, returning errQuit once wakeFd is
+// signalled. A poll timeout (timeout ms; -1 waits for ever) returns
+// (0, nil), so Run gets to retry lost dirs.
+func readWithPoll(fd, wakeFd int, buf []byte, timeout int) (int, error) {
 	for {
-		select {
-		case <-quit:
-			return 0, errQuit
-		default:
+		fds := []unix.PollFd{
+			{Fd: int32(fd), Events: unix.POLLIN},
+			{Fd: int32(wakeFd), Events: unix.POLLIN},
 		}
-		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-		ready, err := unix.Poll(fds, 200)
+		ready, err := unix.Poll(fds, timeout)
 		if err != nil {
 			if errors.Is(err, syscall.EINTR) {
 				continue
@@ -500,6 +514,9 @@ func readWithPoll(fd int, buf []byte, quit <-chan struct{}) (int, error) {
 		if ready == 0 {
 			return 0, nil
 		}
+		if fds[1].Revents != 0 {
+			return 0, errQuit
+		}
 		if fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) == 0 {
 			continue
 		}
@@ -507,9 +524,6 @@ func readWithPoll(fd int, buf []byte, quit <-chan struct{}) (int, error) {
 		if err != nil {
 			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
 				continue
-			}
-			if errors.Is(err, syscall.EBADF) {
-				return 0, errQuit
 			}
 			return 0, err
 		}

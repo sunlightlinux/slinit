@@ -67,6 +67,11 @@ type BGProcessService struct {
 	exitStatus   ExitStatus
 	procHandle   process.ProcessHandle
 
+	// daemonGoneDuringStop records that the daemon died while the
+	// stop-command was still running, so the stop-command's completion
+	// is what finishes the transition to STOPPED.
+	daemonGoneDuringStop bool
+
 	// Timer for start/stop/restart timeouts
 	processTimer *time.Timer
 	timerPurpose bgTimerPurpose
@@ -120,6 +125,21 @@ type BGProcessService struct {
 	// already returned and nothing would read processTimer.
 	smoothRecovTimer *time.Timer
 
+	// recoveryPoll is set while pollForPIDFile waits for the pid file of
+	// a daemon relaunched by smooth recovery: the service is STARTED
+	// then, not STARTING, and has no pid to track until the file comes.
+	recoveryPoll bool
+	// recoveryPollGen tells recovery polls apart: each one armed takes
+	// the next, and only the poll holding the current one acts. A poll
+	// left over from an earlier recovery sees recoveryPoll set again by
+	// a later one, and would otherwise act on its behalf.
+	recoveryPollGen uint64
+
+	// lastDaemonPID is the daemon that last died while tracked. A smooth
+	// recovery that reads it back from the pid file is reading the file
+	// that daemon left behind, not one the new daemon has written.
+	lastDaemonPID int
+
 	// Log output
 	logType      LogType
 	logBufMax    int
@@ -170,7 +190,7 @@ func (s *BGProcessService) signalProcessOnly(pid int) bool {
 
 // killCgroupTree sends a signal to all processes in the service's cgroup.
 func (s *BGProcessService) killCgroupTree(sig syscall.Signal) {
-	cgPath := s.EffectiveCgroupPath()
+	cgPath := s.OwnCgroupPath()
 	if cgPath == "" {
 		return
 	}
@@ -555,6 +575,17 @@ func (s *BGProcessService) BringDown() {
 	if pid <= 0 {
 		pid = s.launcherPID
 	}
+	if pid <= 0 && s.recoveryPoll {
+		// A smooth recovery's launcher has exited but its daemon has
+		// not written the pid file yet. Stopping now would leave that
+		// daemon running unsupervised: wait for it as the stop of an
+		// interrupted start does, and bring it down.
+		s.recoveryPoll = false
+		s.cancelTimer()
+		s.interruptedStopBy = time.Time{}
+		s.pollForForkedDaemon()
+		return
+	}
 	if pid <= 0 {
 		s.cancelTimer()
 		s.Stopped()
@@ -617,6 +648,9 @@ func (s *BGProcessService) execStopCommand() bool {
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
+	if s.privHooks.Stop {
+		params.FullyPrivileged()
+	}
 	// Use the credentials the main command was started with; the
 	// service's stop removes them.
 	params.ReuseCredentials = true
@@ -631,20 +665,71 @@ func (s *BGProcessService) execStopCommand() bool {
 	s.stopPID = pid
 	s.services.logger.Info("Service '%s': stop-command started (pid %d)", s.serviceName, pid)
 
+	// The daemon this stop is for. When the stop-command finishes, only
+	// that process is signalled, and only while the service is still
+	// STOPPING with it: reading s.daemonPID then instead signalled
+	// whatever daemon had been started since, if the old one had died
+	// and the service had already been restarted.
+	target := s.daemonPID
+	if target <= 0 {
+		target = s.launcherPID
+	}
+
+	// Monitor the stop-command. It takes queueMu for the state it shares
+	// with the state machine (stopPID was written here with no lock), and
+	// signals outside it, as ProcessService.execStopCommand does.
 	go func() {
-		exit := <-exitCh
-		s.stopPID = 0
+		// The stop-command's own timeout: the stop-timeout armed by
+		// BringDown is read only by monitorDaemon, which returns when
+		// the daemon dies — the usual first act of a stop-command — and
+		// the stop then waits for this command to finish.
+		var timeoutCh <-chan time.Time
+		if s.stopTimeout > 0 {
+			t := time.NewTimer(s.stopTimeout)
+			defer t.Stop()
+			timeoutCh = t.C
+		}
+
+		var exit process.ChildExit
+		select {
+		case exit = <-exitCh:
+		case <-timeoutCh:
+			s.services.logger.Error(
+				"Service '%s': stop-command exceeded stop-timeout, killing (pid %d)",
+				s.serviceName, pid)
+			process.SignalProcess(pid, syscall.SIGKILL, false)
+			exit = <-exitCh
+		}
 		process.KillProcessGroup(exit.PID)
+
+		s.services.queueMu.Lock()
+		if s.stopPID == pid {
+			s.stopPID = 0
+		}
+		daemonGone := s.daemonGoneDuringStop
+		if daemonGone {
+			// The daemon died while this command ran, so its death
+			// could not finish the stop: finish it here.
+			s.daemonGoneDuringStop = false
+			if s.state.Load() == StateStopping {
+				s.stopIssued = false
+				s.Stopped()
+				s.services.processQueuesLocked()
+			}
+		}
+		current := s.daemonPID
+		if current <= 0 {
+			current = s.launcherPID
+		}
+		signal := !daemonGone && target > 0 && current == target &&
+			s.state.Load() == StateStopping
+		s.services.queueMu.Unlock()
 
 		if exit.Exited() && exit.Status.ExitStatus() == 0 {
 			s.services.logger.Info("Service '%s': stop-command completed successfully",
 				s.serviceName)
 			// Stop-command succeeded — now send term signal to daemon process
-			daemonPID := s.daemonPID
-			if daemonPID <= 0 {
-				daemonPID = s.launcherPID
-			}
-			if daemonPID > 0 {
+			if signal {
 				// SIGTERM, deliberately, and both branches below agree.
 				//
 				// This fell back to SIGKILL for a while (e96e761,
@@ -676,24 +761,20 @@ func (s *BGProcessService) execStopCommand() bool {
 					sig = syscall.SIGTERM
 				}
 				s.services.logger.Info("Service '%s': sending %s to the daemon group (pid %d)",
-					s.serviceName, signalName(sig), daemonPID)
-				process.SignalDaemonGroup(daemonPID, sig, s.signalProcessOnly(daemonPID))
+					s.serviceName, signalName(sig), target)
+				process.SignalDaemonGroup(target, sig, s.signalProcessOnly(target))
 			}
 		} else {
 			s.services.logger.Error("Service '%s': stop-command failed (%s)",
 				s.serviceName, exitDetail(exit))
-			daemonPID := s.daemonPID
-			if daemonPID <= 0 {
-				daemonPID = s.launcherPID
-			}
-			if daemonPID > 0 {
+			if signal {
 				sig := s.termSignal
 				if sig == 0 {
 					sig = syscall.SIGTERM
 				}
 				s.services.logger.Info("Service '%s': sending %s to the daemon group (pid %d)",
-					s.serviceName, signalName(sig), daemonPID)
-				process.SignalDaemonGroup(daemonPID, sig, s.signalProcessOnly(daemonPID))
+					s.serviceName, signalName(sig), target)
+				process.SignalDaemonGroup(target, sig, s.signalProcessOnly(target))
 			}
 		}
 	}()
@@ -772,6 +853,7 @@ func (s *BGProcessService) CheckRestart() bool {
 // the PID file and starts monitoring the daemon.
 func (s *BGProcessService) monitorLauncher(exitCh <-chan process.ChildExit) {
 	for {
+		timer := s.getTimer()
 		select {
 		case exit, ok := <-exitCh:
 			if !ok {
@@ -780,8 +862,8 @@ func (s *BGProcessService) monitorLauncher(exitCh <-chan process.ChildExit) {
 			s.handleLauncherExit(exit)
 			return
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			continue
@@ -864,7 +946,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 					return
 				}
 			} else if s.Record().GuessMainPID() {
-				if pid, err := guessMainPIDFromCgroup(s.EffectiveCgroupPath()); err == nil {
+				if pid, err := guessMainPIDFromCgroup(s.OwnCgroupPath()); err == nil {
 					s.bringDownForkedDaemonLocked(pid)
 					return
 				}
@@ -878,6 +960,10 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	if exit.ExecErr != nil {
 		s.services.logger.Error("Service '%s': launcher exec failed: %v",
 			s.serviceName, exit.ExecErr)
+		if s.state.Load() == StateStarted {
+			s.failSmoothRecoveryLocked()
+			return
+		}
 		s.cancelTimer()
 		s.stopReason = ReasonExecFailed
 		s.state.Store(StateStopping)
@@ -893,6 +979,10 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		}
 		s.services.logger.Error("Service '%s': launcher exited with code %d",
 			s.serviceName, exitCode)
+		if s.state.Load() == StateStarted {
+			s.failSmoothRecoveryLocked()
+			return
+		}
 		s.cancelTimer()
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, true)
@@ -925,7 +1015,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 			return
 		}
 	} else if s.Record().GuessMainPID() {
-		pid, err = guessMainPIDFromCgroup(s.EffectiveCgroupPath())
+		pid, err = guessMainPIDFromCgroup(s.OwnCgroupPath())
 		if err != nil {
 			result = process.PIDResultFailed
 		} else {
@@ -937,6 +1027,16 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		return
 	}
 
+	if result == process.PIDResultTerminated && s.state.Load() == StateStarted {
+		if pid == s.lastDaemonPID {
+			// The file the dead daemon left: wait for the new one's.
+			s.pollForPIDFile(s.pidFile, fmt.Errorf(
+				"pid file still names the daemon being replaced (PID %d)", pid))
+		} else {
+			s.recoveredDaemonDiedLocked(pid)
+		}
+		return
+	}
 	if result == process.PIDResultTerminated {
 		s.failPIDDiscoveryLocked(fmt.Errorf("daemon (PID %d) already terminated", pid))
 		return
@@ -976,6 +1076,7 @@ func (s *BGProcessService) adoptFollowedPID() bool {
 // PID is known. Shared by the immediate read and the polling path so the
 // two cannot drift apart. Caller holds queueMu.
 func (s *BGProcessService) finishPIDDiscoveryLocked(pid int) {
+	s.recoveryPoll = false
 	s.daemonPID = pid
 	s.publishPID()
 
@@ -995,11 +1096,44 @@ func (s *BGProcessService) finishPIDDiscoveryLocked(pid int) {
 // failPIDDiscoveryLocked aborts the start when the daemon's PID cannot be
 // established. Caller holds queueMu.
 func (s *BGProcessService) failPIDDiscoveryLocked(err error) {
+	s.recoveryPoll = false
 	s.services.logger.Error("Service '%s': %v", s.serviceName, err)
+	if s.state.Load() == StateStarted {
+		s.failSmoothRecoveryLocked()
+		return
+	}
 	s.cancelTimer()
 	s.stopReason = ReasonFailed
 	s.failedToStart(false, true)
 	s.services.processQueuesLocked()
+}
+
+// failSmoothRecoveryLocked ends a smooth recovery that could not bring a
+// daemon back: its launcher failed, or its pid file could not be read.
+// The service is STARTED, so this is not a failed start — failedToStart
+// would leave its hard dependents STARTED on top of nothing. As dinit's
+// hard_failure does, stop it and its dependents for good. Caller holds
+// queueMu.
+func (s *BGProcessService) failSmoothRecoveryLocked() {
+	s.recoveryPoll = false
+	s.cancelTimer()
+	s.stopReason = ReasonFailed
+	s.UnrecoverableStop()
+	s.services.processQueuesLocked()
+}
+
+// recoveredDaemonDiedLocked handles a smooth recovery whose pid file names
+// a new daemon that is no longer running: it died as soon as it started.
+// That is a daemon death like any other (dinit: goto begin in
+// bgproc_service::handle_exit_status). Caller holds queueMu.
+func (s *BGProcessService) recoveredDaemonDiedLocked(pid int) {
+	s.recoveryPoll = false
+	s.cancelTimer()
+	s.services.logger.Error("Service '%s': daemon process %d terminated",
+		s.serviceName, pid)
+	s.exitStatus = ExitStatus{Vanished: true}
+	s.lastDaemonPID = pid
+	s.daemonDiedLocked()
 }
 
 // pidFileStillComing reports whether a failed read looks like a daemon
@@ -1019,7 +1153,27 @@ func pidFileStillComing(err error) bool {
 // (bgTimerStartTimeout reads launcherPID, then daemonPID), and here both
 // are zero — the launcher has exited and the daemon is not identified yet.
 // Relying on it would leave the service wedged in STARTING forever.
+//
+// A smooth recovery reaches here too, with the service STARTED: the
+// relaunched daemon writes its pid file late just as a first start's
+// does, and until it is read the service tracks no process at all.
+// recoveryPoll marks that case. Caller holds queueMu.
 func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
+	pollState := StateStarting
+	var gen uint64
+	if s.state.Load() == StateStarted {
+		pollState = StateStarted
+		s.recoveryPoll = true
+		s.recoveryPollGen++
+		gen = s.recoveryPollGen
+	}
+	// polling reports, under queueMu, whether this poll still owns the
+	// service: a stop or a failure elsewhere means there is nothing left
+	// to finish, and a later recovery's poll owns it instead.
+	polling := func() bool {
+		return s.state.Load() == pollState &&
+			(pollState == StateStarting || (s.recoveryPoll && s.recoveryPollGen == gen))
+	}
 	deadline := s.startTimeout
 	if deadline <= 0 {
 		// start-timeout=0 means "no timeout" for the launcher, but a pid
@@ -1040,7 +1194,7 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 			// Cheap unlocked pre-check: a stop or a failure elsewhere
 			// means there is nothing left to finish. Re-checked under
 			// the lock before acting on it.
-			if s.state.Load() != StateStarting {
+			if s.state.Load() != pollState {
 				return
 			}
 
@@ -1051,7 +1205,7 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 					// Present but unparseable: that will not fix itself,
 					// so fail now rather than sit out the whole deadline.
 					s.services.queueMu.Lock()
-					if s.state.Load() == StateStarting {
+					if polling() {
 						s.failPIDDiscoveryLocked(fmt.Errorf("failed to discover daemon pid: %w", err))
 					}
 					s.services.queueMu.Unlock()
@@ -1059,7 +1213,7 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 				}
 				if time.Now().After(expiry) {
 					s.services.queueMu.Lock()
-					if s.state.Load() == StateStarting {
+					if polling() {
 						s.failPIDDiscoveryLocked(fmt.Errorf(
 							"failed to discover daemon pid within %s: %w", deadline, lastErr))
 					}
@@ -1070,18 +1224,20 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 			}
 
 			s.services.queueMu.Lock()
-			if s.state.Load() != StateStarting {
+			if !polling() {
 				s.services.queueMu.Unlock()
 				return
 			}
-			if result == process.PIDResultTerminated && s.followPID == "" {
-				s.failPIDDiscoveryLocked(fmt.Errorf("daemon (PID %d) already terminated", pid))
-			} else if result == process.PIDResultTerminated {
-				// Following: the file is stale, or names a process that
-				// has not started yet. Keep waiting rather than failing
-				// on somebody else's leftover file.
+			// Following, the file is stale or names a process that has
+			// not started yet; in a smooth recovery it may still be the
+			// one the dead daemon left.
+			stale := result == process.PIDResultTerminated &&
+				(s.followPID != "" || (pollState == StateStarted && pid == s.lastDaemonPID))
+			switch {
+			case stale:
+				// Keep waiting rather than failing on a leftover file.
 				if time.Now().After(expiry) {
-					if s.state.Load() == StateStarting {
+					if polling() {
 						s.failPIDDiscoveryLocked(fmt.Errorf(
 							"pid file %s still names a process that is not running (PID %d) after %s",
 							pidFile, pid, deadline))
@@ -1091,7 +1247,11 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 				}
 				s.services.queueMu.Unlock()
 				continue
-			} else {
+			case result == process.PIDResultTerminated && pollState == StateStarted:
+				s.recoveredDaemonDiedLocked(pid)
+			case result == process.PIDResultTerminated:
+				s.failPIDDiscoveryLocked(fmt.Errorf("daemon (PID %d) already terminated", pid))
+			default:
 				s.finishPIDDiscoveryLocked(pid)
 			}
 			s.services.queueMu.Unlock()
@@ -1118,7 +1278,12 @@ func (s *BGProcessService) bringDownForkedDaemonLocked(pid int) {
 // Wait for the file as a start would, but no longer than the stop-timeout
 // armed by the interrupt, so the stop cannot hang on a file that never
 // comes.
+//
+// A file that names the daemon which last died is the one it left behind,
+// not one the new daemon has written: keep waiting on it as on an absent
+// file (pollForPIDFile does the same in a smooth recovery).
 func (s *BGProcessService) pollForForkedDaemon() {
+	stalePID := s.lastDaemonPID
 	deadline := s.startTimeout
 	if deadline <= 0 {
 		deadline = defaultStartTimeout
@@ -1138,8 +1303,9 @@ func (s *BGProcessService) pollForForkedDaemon() {
 				return
 			}
 			pid, result, err := process.ReadPIDFile(pidFile)
-			if result == process.PIDResultFailed && pidFileStillComing(err) &&
-				time.Now().Before(expiry) {
+			pending := (result == process.PIDResultFailed && pidFileStillComing(err)) ||
+				(result == process.PIDResultTerminated && stalePID > 0 && pid == stalePID)
+			if pending && time.Now().Before(expiry) {
 				continue
 			}
 
@@ -1176,6 +1342,7 @@ func (s *BGProcessService) monitorDaemon() {
 	defer ticker.Stop()
 
 	for {
+		timer := s.getTimer()
 		select {
 		case <-ticker.C:
 			if s.daemonPID <= 0 {
@@ -1202,8 +1369,8 @@ func (s *BGProcessService) monitorDaemon() {
 				}
 			}
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			continue
@@ -1247,23 +1414,52 @@ func (s *BGProcessService) handleDaemonTermination() {
 	// is actually true.
 	s.exitStatus = ExitStatus{Vanished: true}
 
+	s.lastDaemonPID = s.daemonPID
 	s.daemonPID = 0
 	s.publishPID()
 	s.cancelTimer()
 
 	switch state {
 	case StateStopping:
+		// A stop-command still running is commonly still cleaning up
+		// after killing the daemon: its exit finishes the stop, as for
+		// ProcessService (dinit: stopped() only if stop_pid == -1).
+		if s.stopPID > 0 {
+			s.daemonGoneDuringStop = true
+			s.services.logger.Info(
+				"Service '%s': daemon gone, waiting for stop-command (pid %d)",
+				s.serviceName, s.stopPID)
+			s.services.processQueuesLocked()
+			return
+		}
+		// Waiting for a hard dependent: as for a process service, do
+		// not go STOPPED underneath it (see dispatchAfterExitLocked).
+		if s.waitingForDeps {
+			if s.desired.Load() == StateStarted && !s.pinnedStopped && !s.restartLimitExhausted {
+				s.stopReason = ReasonTerminated
+				s.Stopped()
+			}
+			s.services.processQueuesLocked()
+			return
+		}
 		s.stopIssued = false
 		s.Stopped()
 		s.services.processQueuesLocked()
 
 	case StateStarted:
-		if s.smoothRecovery && s.CheckRestart() {
-			s.doingSmoothRecov = true
-			s.doSmoothRecovery()
-		} else {
-			s.handleUnexpectedTerminationLocked()
-		}
+		s.daemonDiedLocked()
+	}
+}
+
+// daemonDiedLocked handles the death of a STARTED service's daemon: a
+// smooth recovery where allowed, otherwise an unexpected termination.
+// Caller must hold queueMu.
+func (s *BGProcessService) daemonDiedLocked() {
+	if s.smoothRecovery && s.CheckRestart() {
+		s.doingSmoothRecov = true
+		s.doSmoothRecovery()
+	} else {
+		s.handleUnexpectedTerminationLocked()
 	}
 }
 
@@ -1276,8 +1472,11 @@ func (s *BGProcessService) handleUnexpectedTerminationLocked() {
 	s.doStop(false)
 	s.services.processQueuesLocked()
 
-	if s.state.Load() == StateStopping && s.desired.Load() == StateStarted && !s.IsStartPinned() {
-		s.initiateStart()
+	// Waiting for a hard dependent: restart through Stopped(), as dinit
+	// does (see ProcessService.handleTerminationLocked).
+	if s.state.Load() == StateStopping && s.waitingForDeps &&
+		s.desired.Load() == StateStarted && !s.pinnedStopped && !s.restartLimitExhausted {
+		s.Stopped()
 		s.services.processQueuesLocked()
 	}
 }
@@ -1349,9 +1548,16 @@ func (s *BGProcessService) cancelSmoothRecovery() {
 
 // handleTimerExpired processes a timer expiration.
 // Runs in a monitor goroutine; acquires queueMu.
-func (s *BGProcessService) handleTimerExpired() {
+func (s *BGProcessService) handleTimerExpired(timer *time.Timer) {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
+
+	// A tick received just before a stop or restart re-armed the timer
+	// belongs to the timer it replaced: acting on it would give the new
+	// purpose its deadline early (a stop escalated to SIGKILL at once).
+	if timer != s.processTimer {
+		return
+	}
 
 	purpose := s.timerPurpose
 	s.timerPurpose = bgTimerNone
@@ -1432,13 +1638,12 @@ func (s *BGProcessService) cancelTimer() {
 	s.timerPurpose = bgTimerNone
 }
 
-func (s *BGProcessService) getTimerChan() <-chan time.Time {
+// getTimer returns the armed timer, or nil. The monitor hands it to
+// handleTimerExpired with its tick.
+func (s *BGProcessService) getTimer() *time.Timer {
 	s.services.queueMu.RLock()
 	defer s.services.queueMu.RUnlock()
-	if s.processTimer != nil {
-		return s.processTimer.C
-	}
-	return nil
+	return s.processTimer
 }
 
 // readProcStartTime reads field 22 (starttime) from /proc/PID/stat.

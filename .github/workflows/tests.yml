@@ -95,10 +95,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ovmf: 222-nosystemd-efivarfs-ro boots under UEFI (its .d/firmware
+      # says efi); run-tests.sh finds /usr/share/OVMF/OVMF_CODE_4M.fd and
+      # reports the case SKIP before booting when it is absent.
       - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 socat
+          sudo apt-get install -y qemu-system-x86 socat ovmf
 
       - name: Report virtualisation support
         run: |

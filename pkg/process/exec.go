@@ -151,7 +151,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	}
 
 	command := params.Command
-	wrapped := needsRunnerWrap(params) && params.RunnerPath != ""
+	// A service with attributes slinit sets from outside after the fork
+	// (nice, rlimits, affinity, scheduling, ioprio, oom_score_adj) also
+	// goes through the runner, which waits at a start gate until they
+	// are in place; see startGate below.
+	wrapped := (needsRunnerWrap(params) || hasPostForkAttrs(params)) && params.RunnerPath != ""
 
 	// Without the runner, everything it would have applied is silently
 	// skipped — and this used to be literally silent: no error, no log, a
@@ -176,11 +180,23 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 		fmt.Fprintf(os.Stderr,
 			"slinit: %s: slinit-runner not found — mlockall/NUMA/THP/debug "+
-				"options were skipped; the service starts without them\n",
+				"options and LISTEN_PID were skipped; the service starts without them\n",
 			params.ServiceName)
 	}
 
 	if wrapped {
+		// AS and DATA go to the runner, which sets them just before its
+		// exec; the rest are still applied from outside behind the start
+		// gate.
+		var outside []Rlimit
+		for _, rl := range params.Rlimits {
+			if runnerRlimit(rl.Resource) {
+				params.runnerRlimits = append(params.runnerRlimits, rl)
+			} else {
+				outside = append(outside, rl)
+			}
+		}
+		params.Rlimits = outside
 		command = wrapWithRunner(params)
 	}
 
@@ -193,27 +209,19 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Args[0] = params.Argv0
 	}
 
-	// Working directory
-	if params.WorkingDir != "" {
+	// Working directory. Under the runner, the runner changes into it
+	// after the credential drop (see wrapWithRunner).
+	if params.WorkingDir != "" && !wrapped {
 		cmd.Dir = params.WorkingDir
 	}
 
-	// Environment: cache os.Environ() once, reuse for all env additions
-	baseEnv := os.Environ()
-	if params.InheritEnv != nil {
-		kept := make([]string, 0, len(baseEnv))
-		for _, kv := range baseEnv {
-			if eq := strings.IndexByte(kv, '='); eq > 0 && params.InheritEnv(kv[:eq]) {
-				kept = append(kept, kv)
-			}
-		}
-		baseEnv = kept
-	}
+	// Environment: slinit's own (filtered by InheritEnv), then the
+	// service's. Nil leaves exec to inherit everything; baseEnv is that
+	// everything, for the additions below to start from.
 	if len(params.Env) > 0 || params.InheritEnv != nil {
-		cmd.Env = make([]string, 0, len(baseEnv)+len(params.Env)+3)
-		cmd.Env = append(cmd.Env, baseEnv...)
-		cmd.Env = append(cmd.Env, params.Env...)
+		cmd.Env = InheritedEnv(params.Env, params.InheritEnv)
 	}
+	baseEnv := os.Environ()
 
 	// Set process group so we can signal the group later
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -232,7 +240,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// --run-as-uid/--run-as-gid/--ambient-cap flags so the runner does
 	// the drop after setup, keeping AmbientCaps preserved via
 	// PR_SET_KEEPCAPS + a fresh PR_CAP_AMBIENT_RAISE.
-	deferRunAsToRunner := needsRunnerWrap(params) && params.RunnerPath != "" &&
+	deferRunAsToRunner := wrapped &&
 		(params.RunAsUID != 0 || params.RunAsGID != 0)
 	if !deferRunAsToRunner && (params.RunAsUID != 0 || params.RunAsGID != 0) {
 		cmd.SysProcAttr.Credential = &syscall.Credential{
@@ -250,8 +258,12 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.SysProcAttr.AmbientCaps = params.AmbientCaps
 	}
 
-	// Chroot support
-	if params.Chroot != "" {
+	// Chroot support. Under the runner it is the runner that enters the
+	// jail: chrooting at fork made the kernel resolve the runner's own
+	// path inside the jail, so the service either failed to start or ran
+	// whatever binary the jail held at that path, as root and with none
+	// of the confinement it asked for.
+	if params.Chroot != "" && !wrapped {
 		cmd.SysProcAttr.Chroot = params.Chroot
 	}
 
@@ -484,7 +496,8 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			}
 			cmd.Env = append(cmd.Env, "LISTEN_FDNAMES="+strings.Join(listenNames, ":"))
 		}
-		// LISTEN_PID will be set after cmd.Start() (see below)
+		// LISTEN_PID is exported by slinit-runner (--listen-pid), which
+		// is the only code that runs as the service's pid before exec.
 	}
 
 	// $NOTIFY_SOCKET for sd_notify FDSTORE=1 messages.
@@ -549,6 +562,38 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		// vocabularies see the same fd number.
 		cmd.Env = append(cmd.Env, fmt.Sprintf("DINIT_CS_FD=%d", csFD))
 	}
+
+	// Start gate. The attributes applyPostForkAttrs sets act on the
+	// child from outside, after cmd.Start, and the child is already
+	// running then: whatever a service forked in its first moments ran
+	// without them (a FIFO service's first child was SCHED_OTHER even
+	// with sched-reset-on-fork = no). The runner reads this pipe to EOF
+	// before anything else, and slinit closes the write end only once
+	// the attributes are set, so nothing of the service runs before.
+	// The fd number travels in the environment because the runner's
+	// argv is built before the extra fds are laid out; the runner
+	// removes it before its exec.
+	var gateW *os.File
+	if wrapped && hasPostForkAttrs(params) {
+		gateR, w, err := os.Pipe()
+		if err != nil {
+			return 0, nil, &ExecError{Stage: StageArrangeFDs, Err: err}
+		}
+		gateW = w
+		undo = append(undo, func() { gateR.Close(); w.Close() })
+		openedForClose = append(openedForClose, gateR)
+		cmd.ExtraFiles = append(cmd.ExtraFiles, gateR)
+		if cmd.Env == nil {
+			cmd.Env = make([]string, len(baseEnv), len(baseEnv)+1)
+			copy(cmd.Env, baseEnv)
+		}
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%d", StartGateEnv, 3+len(cmd.ExtraFiles)-1))
+	}
+	defer func() {
+		if gateW != nil {
+			gateW.Close()
+		}
+	}()
 
 	// Cgroup pre-attach: open the target cgroup as a directory fd and
 	// route fork through clone3+CLONE_INTO_CGROUP. Without this, the
@@ -654,6 +699,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		for _, err := range errs {
 			fmt.Fprintf(os.Stderr, "slinit: pid %d: post-fork attr warning: %v\n", pid, err)
 		}
+	}
+	// Open the start gate: the runner may go on to exec the service.
+	if gateW != nil {
+		gateW.Close()
+		gateW = nil
 	}
 
 	exitCh := make(chan ChildExit, 1)
@@ -893,7 +943,16 @@ func openServiceDir(path string, mode os.FileMode) (int, error) {
 		last := i == len(comps)-1
 		nfd, err := unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err == unix.ENOENT {
-			if err = unix.Mkdirat(fd, c, uint32(mode.Perm())); err == nil || err == unix.EEXIST {
+			// Only the leaf gets the configured mode (and, in the
+			// caller, the owner). A missing parent is 0755 as in
+			// systemd: given the leaf's 0700 it was root's and
+			// closed, and a run-as service could not reach
+			// "myapp/data".
+			perm := uint32(0o755)
+			if last {
+				perm = uint32(mode.Perm())
+			}
+			if err = unix.Mkdirat(fd, c, perm); err == nil || err == unix.EEXIST {
 				nfd, err = unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			}
 		}
@@ -999,8 +1058,33 @@ func runnerSecurityFeatures(p ExecParams) []string {
 	return missing
 }
 
+// StartGateEnv names the environment variable that tells slinit-runner
+// which fd to read to EOF before it does anything else.
+const StartGateEnv = "SLINIT_RUNNER_START_GATE_FD"
+
+// hasPostForkAttrs reports whether applyPostForkAttrs has a process
+// attribute to set on the child, from outside and after the fork.
+func hasPostForkAttrs(p ExecParams) bool {
+	return p.Nice != nil || p.OOMScoreAdj != nil || len(p.Rlimits) > 0 ||
+		p.IOPrioClass > 0 || len(p.CPUAffinity) > 0 || p.SchedPolicy != 0
+}
+
+// passesListenFDs reports whether the child gets LISTEN_FDS: sockets,
+// stored fds or OpenFile= entries.
+func passesListenFDs(p ExecParams) bool {
+	if p.SocketFD != nil || len(p.OpenFiles) > 0 {
+		return true
+	}
+	for _, e := range p.StoredFDs {
+		if e.File != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func needsRunnerWrap(p ExecParams) bool {
-	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
+	return passesListenFDs(p) || p.MlockallFlags != 0 || p.NumaMempolicySet ||
 		p.AppArmorProfile != "" || p.SELinuxContext != "" ||
 		p.SMACKProcessLabel != "" ||
 		p.DebugStop || p.MemoryTHP != "" ||
@@ -1243,6 +1327,25 @@ func wrapWithRunner(p ExecParams) []string {
 	if p.Argv0 != "" {
 		args = append(args, "--argv0="+p.Argv0)
 	}
+	for _, rl := range p.runnerRlimits {
+		args = append(args, fmt.Sprintf("--rlimit-late=%d:%d:%d", rl.Resource, rl.Soft, rl.Hard))
+	}
+	// LISTEN_PID must be the service's own pid, which exists only after
+	// the fork, so the runner exports it just before its exec (its pid
+	// is the service's). sd_listen_fds() ignores LISTEN_FDS without it.
+	if passesListenFDs(p) {
+		args = append(args, "--listen-pid")
+	}
+	// chroot is entered by the runner, not at fork: a chroot at fork
+	// would make the kernel look the runner up inside the jail.
+	if p.Chroot != "" {
+		args = append(args, "--chroot="+p.Chroot)
+	}
+	// The working directory too: the runner enters it after dropping to
+	// the service's user (and inside the jail), as a direct start does.
+	if p.WorkingDir != "" {
+		args = append(args, "--chdir="+p.WorkingDir)
+	}
 	args = append(args, "--")
 	args = append(args, p.Command...)
 	return args
@@ -1271,4 +1374,24 @@ func formatNodeList(nodes []uint) string {
 		parts[i] = strconv.FormatUint(uint64(n), 10)
 	}
 	return strings.Join(parts, ",")
+}
+
+// InheritedEnv returns the environment a service's process gets: the
+// variables slinit itself has, less those keep rejects (nil keeps all),
+// followed by env, so that env wins a name both have (os/exec keeps the
+// last of duplicate names). Commands slinit
+// runs for a service besides its process (hooks, checks) use it too, so
+// they see what the process sees.
+func InheritedEnv(env []string, keep func(name string) bool) []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+len(env)+3)
+	for _, kv := range base {
+		if keep != nil {
+			if eq := strings.IndexByte(kv, '='); eq <= 0 || !keep(kv[:eq]) {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	return append(out, env...)
 }

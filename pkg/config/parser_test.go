@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"syscall"
@@ -222,6 +224,19 @@ command = /usr/bin/myservice "hello world" --flag
 	}
 }
 
+// TestParseByteSizeOverflow: 8388608T is 2^63 bytes, and n * mult wrapped
+// it negative instead of failing.
+func TestParseByteSizeOverflow(t *testing.T) {
+	if n, err := parseByteSize("8388607T"); err != nil || n != 8388607<<40 {
+		t.Errorf("parseByteSize(8388607T) = %d, %v", n, err)
+	}
+	for _, s := range []string{"8388608T", "9223372036854775807K", "9007199254740992M"} {
+		if n, err := parseByteSize(s); err == nil {
+			t.Errorf("parseByteSize(%s) = %d, want an overflow error", s, n)
+		}
+	}
+}
+
 func TestParseSignal(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -242,6 +257,28 @@ term-signal = 15`, ""},
 		_, err := Parse(strings.NewReader(tt.input), "test", "test-file")
 		if tt.expected == "" && err != nil {
 			t.Errorf("unexpected error for input %q: %v", tt.input, err)
+		}
+	}
+}
+
+// TestParseSignalNamesAndRange: the name table held 9 signals, so SIGABRT
+// (watchdog-signal's documented default), SIGWINCH and SIGPWR were refused,
+// while any integer was taken as a signal, -9 and 4096 included.
+func TestParseSignalNamesAndRange(t *testing.T) {
+	for in, want := range map[string]syscall.Signal{
+		"SIGABRT": syscall.SIGABRT, "abrt": syscall.SIGABRT,
+		"SIGWINCH": syscall.SIGWINCH, "winch": syscall.SIGWINCH,
+		"SIGPWR": syscall.SIGPWR, "sigterm": syscall.SIGTERM,
+		"HUP": syscall.SIGHUP, "15": syscall.SIGTERM, "64": 64,
+		"none": 0, "0": 0,
+	} {
+		if got, err := parseSignal(in); err != nil || got != want {
+			t.Errorf("parseSignal(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"-9", "65", "4096", "SIGBOGUS", "SIG", ""} {
+		if got, err := parseSignal(in); err == nil {
+			t.Errorf("parseSignal(%q) = %v, want an error", in, got)
 		}
 	}
 }
@@ -488,6 +525,11 @@ func TestSplitCommand(t *testing.T) {
 		{`/usr/bin/foo 'hello world'`, []string{"/usr/bin/foo", "hello world"}},
 		{`/usr/bin/foo hello\ world`, []string{"/usr/bin/foo", "hello world"}},
 		{"", nil},
+		// An empty quote is an empty argument, as in dinit.
+		{`/usr/bin/foo "" bar`, []string{"/usr/bin/foo", "", "bar"}},
+		{`/usr/bin/foo '' ""`, []string{"/usr/bin/foo", "", ""}},
+		{`/usr/bin/foo a"" ""b`, []string{"/usr/bin/foo", "a", "b"}},
+		{`/usr/bin/foo  "\\" "\""`, []string{"/usr/bin/foo", `\`, `"`}},
 	}
 
 	for _, tt := range tests {
@@ -1224,6 +1266,38 @@ func TestIncludeNested(t *testing.T) {
 	}
 	if desc.Description != "deep" {
 		t.Errorf("expected 'deep', got %q", desc.Description)
+	}
+}
+
+// TestIncludeFileBudget: depth is capped, but each file may include the
+// next several times, so the work grows as k^depth (k=4 took about a
+// second, under the loader lock). The total number of includes is capped.
+func TestIncludeFileBudget(t *testing.T) {
+	dir := t.TempDir()
+	// Level i includes level i+1 three times: 3+9+...+729 = 1092 includes.
+	os.WriteFile(filepath.Join(dir, "l6.conf"), []byte("description = leaf\n"), 0644)
+	for i := 5; i >= 0; i-- {
+		next := fmt.Sprintf("@include l%d.conf\n", i+1)
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("l%d.conf", i)), []byte(strings.Repeat(next, 3)), 0644)
+	}
+	mainPath := filepath.Join(dir, "svc")
+	parse := func(content string) error {
+		os.WriteFile(mainPath, []byte(content), 0644)
+		f, err := os.Open(mainPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		_, err = Parse(f, "svc", mainPath)
+		return err
+	}
+
+	if err := parse("type = internal\n@include l0.conf\n"); err == nil || !strings.Contains(err.Error(), "includes") {
+		t.Fatalf("1092 includes: err = %v, want the include budget error", err)
+	}
+	// 1 + 3 + 9 + 27 + 81 = 121 includes stays within it.
+	if err := parse("type = internal\n@include l2.conf\n"); err != nil {
+		t.Fatalf("121 includes: %v", err)
 	}
 }
 
@@ -2244,6 +2318,30 @@ func TestParseSharedLoggerLossyRejectsInvalid(t *testing.T) {
 		_, err := Parse(strings.NewReader(input), "svc", "test")
 		if err == nil {
 			t.Errorf("shared-logger-queue-size=%q: expected error, got nil", val)
+		}
+	}
+}
+
+// TestParseLogBufferSizesBounded: both sizes are allocated up front at
+// service start (make([]byte, 0, n) and make(chan []byte, n)). A huge value
+// loaded fine and then panicked PID 1 with "makeslice: cap out of range"
+// when the service started.
+func TestParseLogBufferSizesBounded(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		ok   bool
+	}{
+		{"log-buffer-size = 67108864", true},
+		{"log-buffer-size = 67108865", false},
+		{"log-buffer-size = 4611686018427387904", false},
+		{"shared-logger-queue-size = 1048576", true},
+		{"shared-logger-queue-size = 1048577", false},
+		{"shared-logger-queue-size = 4611686018427387904", false},
+	} {
+		input := "type = process\ncommand = /bin/true\n" + tc.line + "\n"
+		_, err := Parse(strings.NewReader(input), "svc", "test")
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok=%v", tc.line, err, tc.ok)
 		}
 	}
 }

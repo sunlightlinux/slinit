@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
@@ -24,6 +26,13 @@ import (
 // Matches the historical hardcoded value; large enough to consume a
 // typical burst of structured log lines in one Read() syscall.
 const defaultReadBufferSize = 4096
+
+// rotatorMaxLine bounds the line readLoop buffers when log-max-line-length
+// is not set; a longer line goes out in pieces this size. Without it,
+// output that never contains a newline grew the line buffer for as long
+// as the service kept writing, all of it held in PID 1. The journal's own
+// message cap, so a piece is never cut again on its way there.
+const rotatorMaxLine = journal.MaxMessageLen
 
 // LogRotator manages logfile writing with rotation, filtering, and post-rotate processing.
 // Inspired by runit's svlogd but using dinit-compatible config keys.
@@ -42,6 +51,10 @@ type LogRotator struct {
 	processor []string      // command to run on rotated file
 	includes  []*regexp.Regexp
 	excludes  []*regexp.Regexp
+
+	// run-as, working-dir and environment for processor; nil = slinit's own
+	prepareProc func(context.Context, *exec.Cmd) bool
+
 	// s6-log-style regex selection chain. Each entry carries a
 	// polarity (+ = include, - = exclude) and a compiled regex.
 	// Evaluated left-to-right per line; the LAST-MATCHED verdict
@@ -129,6 +142,11 @@ type LogRotator struct {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
 	}
+
+	// journalPID/journalPIDStr cache getPID's last value as the
+	// SLINIT_TARGET_PID string of journal line events. Under mu.
+	journalPID    int
+	journalPIDStr string
 }
 
 // LogRotatorConfig holds configuration for a LogRotator.
@@ -206,6 +224,12 @@ type LogRotatorConfig struct {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
 	}
+
+	// PrepareProcessor gives the log-processor command the service's
+	// run-as, working directory and environment (prepareHookCmd); it ran
+	// as root. False: ctx ended before it could, do not run it. Nil
+	// leaves the command as slinit's own.
+	PrepareProcessor func(context.Context, *exec.Cmd) bool
 }
 
 // NewLogRotator creates a new LogRotator with the given configuration.
@@ -220,6 +244,7 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 		minFiles:     cfg.MinFiles,
 		rotateInt:    cfg.RotateTime,
 		processor:    cfg.Processor,
+		prepareProc:  cfg.PrepareProcessor,
 		serviceName:  cfg.ServiceName,
 		getPID:       cfg.GetPID,
 		logger:       cfg.Logger,
@@ -227,12 +252,6 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 		rateInterval: cfg.RateInterval,
 		rateBurst:    cfg.RateBurst,
 		levelMax:     cfg.LogLevelMax,
-	}
-	if lr.levelMax == 0 && cfg.LogLevelMax == 0 {
-		// Zero means "disabled" externally; internally we store -1 so
-		// 0 (emerg) remains a usable threshold for callers that
-		// explicitly request it via SetLogLevelMax.
-		lr.levelMax = -1
 	}
 	if cfg.RateInterval > 0 && cfg.RateBurst > 0 {
 		lr.rateTokens = float64(cfg.RateBurst)
@@ -426,6 +445,22 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 				}
 
 				idx := bytes.IndexByte(data, '\n')
+				if lr.maxLineLen <= 0 {
+					// No log-max-line-length: pass an over-long line
+					// on in pieces of rotatorMaxLine bytes, as
+					// readLines does, rather than buffering it whole.
+					end := len(data)
+					if idx >= 0 {
+						end = idx
+					}
+					if room := rotatorMaxLine - len(lineBuf); end > room {
+						lineBuf = append(lineBuf, data[:room]...)
+						lr.processLine(lineBuf)
+						lineBuf = lineBuf[:0]
+						data = data[room:]
+						continue
+					}
+				}
 				if idx >= 0 {
 					lineBuf = append(lineBuf, data[:idx+1]...)
 					lr.processLine(lr.capLine(lineBuf))
@@ -576,6 +611,20 @@ func (lr *LogRotator) processLine(line []byte) {
 		out = lr.decorateLine(line)
 	}
 
+	// The journal emit runs after mu is released (defers run last-in
+	// first-out): it is a socket send, and it held up rotation and
+	// every other user of mu for each line. Only this rotator's reader
+	// goroutine calls processLine, so its lines still reach the journal
+	// in the order they reach the file.
+	emitLine := false
+	var emitLevel int
+	var emitPID string
+	defer func() {
+		if emitLine {
+			emitJournalLogLinePID(lr.serviceName, emitLevel, matchLine, emitPID)
+		}
+	}()
+
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
 
@@ -645,7 +694,13 @@ func (lr *LogRotator) processLine(line []byte) {
 		if lr.getPID != nil {
 			pid = lr.getPID()
 		}
-		emitJournalLogLine(lr.serviceName, lineLevel, matchLine, pid)
+		if pid != lr.journalPID {
+			lr.journalPID, lr.journalPIDStr = pid, ""
+			if pid > 0 {
+				lr.journalPIDStr = strconv.Itoa(pid)
+			}
+		}
+		emitLine, emitLevel, emitPID = true, lineLevel, lr.journalPIDStr
 	}
 
 	n, err := lr.file.Write(out)
@@ -966,6 +1021,13 @@ func (lr *LogRotator) runProcessor(rotatedFile string) {
 	args = append(args, rotatedFile)
 
 	cmd := exec.CommandContext(ctx, lr.processor[0], args...)
+	if lr.prepareProc != nil && !lr.prepareProc(ctx, cmd) {
+		if lr.logger != nil {
+			lr.logger.Error("Service '%s': log-processor not run on %s: %v",
+				lr.serviceName, rotatedFile, ctx.Err())
+		}
+		return
+	}
 	if lr.logger != nil {
 		lr.logger.Info("Service '%s': running log-processor on %s", lr.serviceName, rotatedFile)
 	}

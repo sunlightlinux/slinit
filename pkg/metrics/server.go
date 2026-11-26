@@ -62,6 +62,13 @@ const (
 	maxRequestLine = 8 << 10
 	maxHeaders     = 100
 	maxConns       = 16
+
+	// requestTimeout is how long a client has to send its request line
+	// and headers; responseTimeout bounds writing the reply. A scraper
+	// sends its request at once, and with a long first deadline
+	// maxConns idle connections kept every scrape out for its length.
+	requestTimeout  = 2 * time.Second
+	responseTimeout = 10 * time.Second
 )
 
 // readLine returns one line of at most maxRequestLine bytes.
@@ -79,7 +86,7 @@ func readLine(r *bufio.Reader) (string, error) {
 var errLineTooLong = errors.New("line too long")
 
 func handle(conn net.Conn, ss *service.ServiceSet, version string) error {
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
 
 	r := bufio.NewReaderSize(conn, maxRequestLine)
 	line, err := readLine(r)
@@ -115,6 +122,8 @@ func handle(conn net.Conn, ss *service.ServiceSet, version string) error {
 			break
 		}
 	}
+
+	_ = conn.SetDeadline(time.Now().Add(responseTimeout))
 
 	if method != "GET" && method != "HEAD" {
 		return respond(conn, "405 Method Not Allowed", "text/plain", "only GET\n")

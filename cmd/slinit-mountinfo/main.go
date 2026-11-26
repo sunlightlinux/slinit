@@ -55,6 +55,11 @@ type options struct {
 	// _netdev via /etc/fstab.
 	netdev netFilter
 
+	// quiet is set by -q; an EINFO_QUIET inherited from the
+	// environment silences output too (OpenRC's mountinfo.c, unlike
+	// fstabinfo.c, does not unset it).
+	quiet bool
+
 	// Positional list of mountpoints. When non-empty, only entries
 	// whose fs_file matches one of these are printed.
 	mountpoints []string
@@ -102,7 +107,7 @@ func run(opts options) int {
 		}
 	}
 
-	quiet := isTruthy(os.Getenv("EINFO_QUIET"))
+	quiet := opts.quiet || isTruthy(os.Getenv("EINFO_QUIET"))
 	matched := 0
 	// Reverse iteration matches OpenRC: init.d scripts want the
 	// deepest / most-recent mount first for umount sequencing.
@@ -132,17 +137,23 @@ func accept(e fstab.Entry, opts options, fstabEntries []fstab.Entry) bool {
 		return false
 	}
 
-	// Netdev filter short-circuits the other regexen (matches
-	// OpenRC's if/else structure).
+	// The netdev test, exactly as process_mount() in OpenRC's
+	// mountinfo.c: it applies only when the mountpoint is in fstab or
+	// positional mountpoints were given; then it alone decides and the
+	// node/fstype/options regexen are skipped. A mount absent from fstab
+	// with no positional arguments falls through to the regexen, so
+	// `mountinfo -e` also lists every mount fstab does not know about.
+	status := mounts.NetdevUnknown
 	if opts.netdev != netIgnore {
-		status := mounts.LookupNetdev(fstabEntries, e.File)
-		if status == mounts.NetdevUnknown {
+		status = mounts.LookupNetdev(fstabEntries, e.File)
+	}
+	netdevApplies := status != mounts.NetdevUnknown || len(opts.mountpoints) > 0
+	if opts.netdev == netYes && netdevApplies {
+		if status != mounts.NetdevYes {
 			return false
 		}
-		if opts.netdev == netYes && status != mounts.NetdevYes {
-			return false
-		}
-		if opts.netdev == netNo && status != mounts.NetdevNo {
+	} else if opts.netdev == netNo && netdevApplies {
+		if status != mounts.NetdevNo {
 			return false
 		}
 	} else {
@@ -188,17 +199,47 @@ func accept(e fstab.Entry, opts options, fstabEntries []fstab.Entry) bool {
 	return true
 }
 
+// printField prints one field the way OpenRC does: the raw
+// /proc/mounts text. fstab.Parse decodes the octal escapes in the spec
+// and mountpoint (\040 space, \011 tab, \012 newline, \134
+// backslash) so matching works on real paths; they are re-encoded
+// here, or a mountpoint with a space would print as two words and a
+// newline would split one entry into two lines.
 func printField(e fstab.Entry, f outputField) {
 	switch f {
 	case fieldMountPoint:
-		fmt.Println(e.File)
+		fmt.Println(escapeMountField(e.File, pathEscapes))
 	case fieldOptions:
 		fmt.Println(e.MntOps)
 	case fieldFstype:
 		fmt.Println(e.VFSType)
 	case fieldNode:
-		fmt.Println(e.Spec)
+		fmt.Println(escapeMountField(e.Spec, devnameEscapes))
 	}
+}
+
+// The bytes the kernel escapes in /proc/mounts (fs/proc_namespace.c):
+// seq_path_root() for the mountpoint, mangle() for the device name.
+const (
+	pathEscapes    = " \t\n\\"
+	devnameEscapes = " \t\n\\#"
+)
+
+// escapeMountField encodes every byte of s found in set as \ooo, the
+// inverse of fstab.Parse's decoding.
+func escapeMountField(s, set string) string {
+	if !strings.ContainsAny(s, set) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; strings.IndexByte(set, c) >= 0 {
+			fmt.Fprintf(&b, "\\%03o", c)
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 func isTruthy(v string) bool {

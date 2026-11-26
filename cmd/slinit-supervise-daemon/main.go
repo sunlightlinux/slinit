@@ -7,8 +7,9 @@
 //
 // Model (mirrors OpenRC):
 //
-//   - --start: the top-level process re-exec's itself with the
-//     runnerEnvVar set. That inner instance becomes the detached
+//   - --start: the top-level process re-exec's itself with the private
+//     supervisorMarker as its first argument. That inner instance
+//     becomes the detached
 //     supervisor, writes its own pidfile, forks the daemon, and loops.
 //     The top-level waits for the pidfile to appear (or a timeout),
 //     then exits so the caller's `start()` init.d function returns.
@@ -31,13 +32,21 @@ import (
 var version = "dev"
 
 func main() {
-	// Re-exec branch: the top-level process detaches by exec'ing itself
-	// with SLINIT_SSD_SUPERVISOR=1. That inner instance parses args
-	// exactly the same way but jumps straight into the supervisor loop
-	// after the parser returns.
-	inSupervisor := os.Getenv(runnerEnvVar) == "1"
+	// Re-exec branch: cmdStart detaches by exec'ing itself with
+	// supervisorMarker as the first argument. That inner instance parses
+	// the remaining args exactly the same way but jumps straight into the
+	// supervisor loop after the parser returns.
+	inSupervisor, args := splitSupervisorMarker(os.Args[1:])
+	// The mode switch used to be the environment variable itself, which
+	// the supervisor passed on to the daemon and the daemon to everything
+	// it started. Any --stop run from a shell, cron job or login under a
+	// supervised daemon then became a supervisor: it overwrote and
+	// deleted svc.pid / svc.pid.daemon and left the real supervisor and
+	// daemon running untracked. Drop it so nothing started from here
+	// carries it, whatever an older supervisor left in our environment.
+	_ = os.Unsetenv(legacySupervisorEnvVar)
 
-	opts, err := parseArgs(os.Args[1:])
+	opts, err := parseArgs(args)
 	if err != nil {
 		switch err {
 		case errHelp:
@@ -57,6 +66,11 @@ func main() {
 	}
 
 	if inSupervisor {
+		// Only cmdStart re-execs with the marker, and only for --start.
+		if opts.Mode != "start" {
+			fmt.Fprintf(os.Stderr, "%s is only valid with --start\n", supervisorMarker)
+			os.Exit(exitBadUsage)
+		}
 		os.Exit(runSupervisor(opts))
 	}
 
@@ -129,4 +143,16 @@ Common:
 Exit codes: 0=ok  1=already-{running,stopped}  2=usage  3=unsupported
             4=insufficient-privs  5=stale-pidfile
 `)
+}
+
+// splitSupervisorMarker reports whether args start with the private
+// supervisorMarker cmdStart re-execs with, and returns the arguments
+// after it. An argument vector is not inherited: unlike an environment
+// variable it cannot leak from the supervisor into the daemon and on
+// into whatever the daemon runs.
+func splitSupervisorMarker(args []string) (bool, []string) {
+	if len(args) > 0 && args[0] == supervisorMarker {
+		return true, args[1:]
+	}
+	return false, args
 }

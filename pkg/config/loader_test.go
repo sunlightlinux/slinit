@@ -193,3 +193,100 @@ func TestSocketAcceptParsesBothWays(t *testing.T) {
 		}
 	}
 }
+
+// A cycle through a dependency that starts its target used to load without
+// error: the service is in the set before its dependencies load, so the
+// recursive load found it there and returned it, and the "circular
+// dependency" check never ran. Started, both services then waited on each
+// other in STARTING forever. dinit refuses these at load time.
+func TestLoadRejectsDependencyCycle(t *testing.T) {
+	for _, kw := range []string{"depends-on", "depends-ms", "waits-for", "prepared-by"} {
+		t.Run(kw, func(t *testing.T) {
+			dir := t.TempDir()
+			ss := service.NewServiceSet(&testReloadLogger{})
+			loader := NewDirLoader(ss, []string{dir})
+			ss.SetLoader(loader)
+			writeServiceFile(t, dir, "a", "type = internal\n"+kw+": b\n")
+			writeServiceFile(t, dir, "b", "type = internal\n"+kw+": a\n")
+
+			if _, err := loader.LoadService("a"); err == nil || !strings.Contains(err.Error(), "cyclic dependency") {
+				t.Fatalf("LoadService(a) = %v, want a cyclic dependency error", err)
+			}
+			for _, n := range []string{"a", "b"} {
+				if ss.FindService(n, true) != nil {
+					t.Errorf("%s left in the set after a failed load", n)
+				}
+			}
+		})
+	}
+
+	t.Run("self", func(t *testing.T) {
+		dir := t.TempDir()
+		ss := service.NewServiceSet(&testReloadLogger{})
+		loader := NewDirLoader(ss, []string{dir})
+		writeServiceFile(t, dir, "a", "type = internal\ndepends-on: a\n")
+		if _, err := loader.LoadService("a"); err == nil {
+			t.Fatal("a service depending on itself loaded")
+		}
+	})
+
+	t.Run("dir", func(t *testing.T) {
+		dir := t.TempDir()
+		ss := service.NewServiceSet(&testReloadLogger{})
+		loader := NewDirLoader(ss, []string{dir})
+		if err := os.Mkdir(filepath.Join(dir, "c.d"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		writeServiceFile(t, filepath.Join(dir, "c.d"), "a", "")
+		writeServiceFile(t, dir, "a", "type = internal\ndepends-on: b\n")
+		writeServiceFile(t, dir, "b", "type = internal\nwaits-for: c\n")
+		writeServiceFile(t, dir, "c", "type = internal\ndepends-on.d: c.d\n")
+		if _, err := loader.LoadService("a"); err == nil || !strings.Contains(err.Error(), "cyclic dependency") {
+			t.Fatalf("LoadService(a) = %v, want a cyclic dependency error", err)
+		}
+		for _, n := range []string{"a", "b", "c"} {
+			if ss.FindService(n, true) != nil {
+				t.Errorf("%s left in the set after a failed load", n)
+			}
+		}
+	})
+}
+
+// Ordering is not a cycle: a after b and b before a say the same thing, and
+// loading one loads the other while the first is still loading.
+func TestLoadAllowsBeforeAfterPair(t *testing.T) {
+	dir := t.TempDir()
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	writeServiceFile(t, dir, "a", "type = internal\nafter: b\n")
+	writeServiceFile(t, dir, "b", "type = internal\nbefore: a\n")
+	if _, err := loader.LoadService("a"); err != nil {
+		t.Fatalf("LoadService(a): %v", err)
+	}
+}
+
+// The load-time cycle check kept a service marked "loading" while it
+// set up shared-logger and consumer-of, which load the other service.
+// A logger that depends on its producer, the usual shared-logger setup,
+// then failed as a cycle and the producer did not load.
+func TestLoadSharedLoggerAndConsumerAreNotCycles(t *testing.T) {
+	dir := t.TempDir()
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	writeConsumerServiceFile(t, dir, "app", "type = process\ncommand = /bin/app\nshared-logger = my-logger\n")
+	writeConsumerServiceFile(t, dir, "my-logger", "type = process\ncommand = /bin/logd\ndepends-on: app\n")
+	if _, err := loader.LoadService("app"); err != nil {
+		t.Errorf("app with a logger that depends on it: %v", err)
+	}
+
+	dir2 := t.TempDir()
+	ss2 := service.NewServiceSet(&testConsumerLogger{})
+	loader2 := NewDirLoader(ss2, []string{dir2})
+	ss2.SetLoader(loader2)
+	writeConsumerServiceFile(t, dir2, "app", "type = process\ncommand = /bin/app\nlog-type = pipe\nwaits-for: app-log\n")
+	writeConsumerServiceFile(t, dir2, "app-log", "type = process\ncommand = /bin/logd\nconsumer-of = app\n")
+	if _, err := loader2.LoadService("app-log"); err != nil {
+		t.Errorf("consumer whose producer waits for it: %v", err)
+	}
+}

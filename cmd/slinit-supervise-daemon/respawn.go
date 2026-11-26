@@ -57,3 +57,19 @@ func backoffDelay(opts Options, respawn int) time.Duration {
 	}
 	return total
 }
+
+// nextRespawn is the respawn count backoffDelay steps by after a daemon
+// that ran for uptime exits. It used to grow for the supervisor's whole
+// life, so a daemon crashing now and then eventually waited the full
+// --respawn-delay-cap on every restart. Like OpenRC, which resets its
+// count once --respawn-period has passed, a daemon that stayed up for
+// a whole period starts the stepping again.
+func nextRespawn(prev int, uptime, period time.Duration) int {
+	if period <= 0 {
+		period = defaultRespawnPeriod
+	}
+	if uptime >= period {
+		return 1
+	}
+	return prev + 1
+}

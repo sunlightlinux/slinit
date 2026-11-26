@@ -77,6 +77,10 @@ func TestApplyDirAndFileEndToEnd(t *testing.T) {
 func TestApplyWriteAndRemove(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "written")
+	// w writes into an existing file only, as in systemd.
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := apply(entry{kind: "w", path: file, arg: "hello world"}); err != nil {
 		t.Fatalf("apply w: %v", err)
 	}
@@ -222,6 +226,9 @@ func TestApplyFileDashArgumentIsEmpty(t *testing.T) {
 // for w as well), so a sysfs knob can be given a newline-terminated value.
 func TestApplyWriteUnescapesArgument(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "knob")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	e, err := parseLine(`w ` + path + ` - - - - on\n`)
 	if err != nil {
 		t.Fatal(err)

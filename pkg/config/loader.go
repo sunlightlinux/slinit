@@ -28,6 +28,66 @@ var ErrServiceNotFound = errors.New("service description not found")
 // Default init.d directories to search as fallback.
 var DefaultInitDDirs = []string{"/etc/init.d", "/etc/rc.d"}
 
+// chrootMountConflicts lists the options set in desc that slinit-runner
+// applies as mounts on host paths before it enters a chroot.
+func chrootMountConflicts(desc *ServiceDescription) []string {
+	var opts []string
+	add := func(on bool, name string) {
+		if on {
+			opts = append(opts, name)
+		}
+	}
+	add(desc.PrivateTmp, "private-tmp")
+	add(desc.ProtectSystem != "" && desc.ProtectSystem != "no", "protect-system")
+	add(desc.ProtectHome != "" && desc.ProtectHome != "no", "protect-home")
+	add(len(desc.ReadOnlyPaths) > 0, "read-only-paths")
+	add(len(desc.ReadWritePaths) > 0, "read-write-paths")
+	add(len(desc.InaccessiblePaths) > 0, "inaccessible-paths")
+	add(desc.ProtectProc != "" && desc.ProtectProc != "default", "protect-proc")
+	add(desc.ProcSubset != "" && desc.ProcSubset != "all", "proc-subset")
+	add(len(desc.BindPaths) > 0, "bind-paths")
+	add(len(desc.BindReadOnlyPaths) > 0, "bind-read-only-paths")
+	add(len(desc.TemporaryFileSystem) > 0, "temporary-filesystem")
+	add(desc.ProtectKernelTunables, "protect-kernel-tunables")
+	add(desc.ProtectKernelModules, "protect-kernel-modules")
+	add(desc.ProtectKernelLogs, "protect-kernel-logs")
+	add(desc.ProtectControlGroups, "protect-control-groups")
+	// Not mounts, but read through /proc and /sys after the chroot, so
+	// the jail would decide whether the transition happens.
+	add(desc.AppArmorSwitch != "", "apparmor-switch")
+	add(desc.SELinuxContext != "", "selinux-context")
+	add(desc.SMACKProcessLabel != "", "smack-process-label")
+	add(desc.ProtectHostname, "protect-hostname")
+	return opts
+}
+
+// EnableDefaultFallbackDirs turns on the init.d and systemd .service
+// fallbacks for those of DefaultInitDDirs and DefaultSystemdDirs that
+// exist, as PID 1 does. init.d scripts are auto-detected; systemd units
+// are searched last, after native descriptions and init.d scripts, and
+// only for a name something already asked for: a unit directory is never
+// enumerated, so nothing is pulled into the boot graph just by being
+// installed. slinit-check calls it too, so it judges a configuration as
+// the daemon's loader will.
+func (dl *DirLoader) EnableDefaultFallbackDirs() {
+	if d := existingDirs(DefaultInitDDirs); len(d) > 0 {
+		dl.SetInitDDirs(d)
+	}
+	if d := existingDirs(DefaultSystemdDirs); len(d) > 0 {
+		dl.SetSystemdDirs(d)
+	}
+}
+
+func existingDirs(dirs []string) []string {
+	var out []string
+	for _, d := range dirs {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // DirLoader loads service descriptions from one or more directories.
 //
 // The `loading` map and `curDepth` counter are per-instance mutable
@@ -159,6 +219,27 @@ func (dl *DirLoader) ReloadService(svc service.Service) (service.Service, error)
 	if err != nil {
 		return nil, err
 	}
+	// The same checks and rewrites a fresh load applies. Skipping them
+	// let a reload install what a load refuses (chroot on a scripted
+	// service, which then ran outside the jail) and turned a bundle into
+	// an empty type = process, since bundle-of sets its type and deps here.
+	if err := dl.validateDesc(name, desc); err != nil {
+		return nil, err
+	}
+
+	// A hook the service's transition waits on runs off the
+	// scheduling lock and reads the service's settings while it does
+	// (a pre-start-command of an on-demand service, a smooth recovery's
+	// env-generator: the service is STARTED). It is bounded by
+	// hook-timeout; reload once it is done.
+	if h, ok := svc.(interface{ RunningStateHook() string }); ok {
+		if hook := h.RunningStateHook(); hook != "" {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message:     fmt.Sprintf("cannot reload service while its %s runs", hook),
+			}
+		}
+	}
 
 	state := svc.State()
 	switch state {
@@ -179,20 +260,57 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 	typeChanged := desc.Type != svc.Type()
 
 	if typeChanged {
+		// Everything that can fail runs before an edge moves. A failure
+		// after the dependents had been handed over left them pointing at
+		// a record no longer in the set, and the old record stripped.
+		if err := dl.checkCycle(svc, desc); err != nil {
+			return nil, err
+		}
+
 		// Create new service record of the new type
 		newSvc := dl.createService(svc.Name(), desc)
+		newSvc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
+		newSvc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
 		recordSource(newSvc, desc, filePath)
 
 		// Load dependencies for the new service
 		dl.loading[svc.Name()] = true
 		defer delete(dl.loading, svc.Name())
 
-		if err := dl.loadDependencies(newSvc, desc, filePath); err != nil {
+		deps, err := dl.resolveDependencies(newSvc, desc, filePath)
+		if err != nil {
 			return nil, err
+		}
+		// As in loadServiceImpl: the shared-logger and consumer-of
+		// lookups below are not dependencies and must not see a cycle.
+		delete(dl.loading, svc.Name())
+
+		if desc.SharedLogger != "" {
+			if err := dl.setupSharedLogger(newSvc, desc); err != nil {
+				return nil, err
+			}
+		}
+
+		// Set up consumer-of for the new service. Last of the checks: on
+		// success it links the producer to newSvc. A producer link the
+		// old record already has is moved by transferConsumerOf instead,
+		// as updateInPlace leaves an existing one in place.
+		if desc.ConsumerOf != "" && svc.Record().ConsumerFor() == nil {
+			if err := dl.setupConsumerOf(newSvc, desc); err != nil {
+				return nil, err
+			}
+		}
+
+		// Nothing below can fail.
+		for _, d := range deps {
+			newSvc.Record().AddDep(d.to, d.depType)
 		}
 
 		// Apply common settings
 		applyToService(newSvc, desc)
+		applyLoadOptions(newSvc, desc)
+		newSvc.Record().SetProfiles(desc.Profiles)
+		newSvc.Record().SetBundleMembers(desc.BundleMembers)
 
 		// Transfer pipe fds and consumer links from old to new
 		dl.transferConsumerOf(svc, newSvc)
@@ -203,15 +321,23 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 		// Remove old deps
 		dl.removeDependencies(svc)
 
-		// Set up consumer-of for new service
-		if desc.ConsumerOf != "" {
-			if err := dl.setupConsumerOf(newSvc, desc); err != nil {
-				return nil, err
-			}
+		// Replace in set. The watches the hooks keep move with it: the
+		// old record is reported unloaded and the new one loaded, or a
+		// path trigger went on starting the record no longer in the set.
+		// With the watches unchanged it is only reported replaced:
+		// loading re-arms them, and a watch whose condition already
+		// holds fires on arm, starting a service the operator stopped.
+		changed := activationChanged(svc, desc)
+		if changed && dl.set.OnServiceUnloaded != nil {
+			dl.set.OnServiceUnloaded(svc)
 		}
-
-		// Replace in set
 		dl.set.ReplaceService(svc, newSvc)
+		switch {
+		case changed && dl.set.OnServiceLoaded != nil:
+			dl.set.OnServiceLoaded(newSvc)
+		case !changed && dl.set.OnServiceReplaced != nil:
+			dl.set.OnServiceReplaced(svc, newSvc)
+		}
 
 		return newSvc, nil
 	}
@@ -269,9 +395,49 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 		return nil, err
 	}
 
-	// Update dependencies first — this can fail (e.g. missing dep) and has rollback
+	// The consumer-of and shared-logger links can fail, so they are made
+	// before the dependency diff and undone if it fails: made after it, a
+	// failure left the new dependencies installed on the old settings.
+	rec := svc.Record()
+	newConsumer := false
+	if desc.ConsumerOf != "" && rec.ConsumerFor() == nil {
+		if err := dl.setupConsumerOf(svc, desc); err != nil {
+			return nil, err
+		}
+		newConsumer = true
+	}
+	undoConsumer := func() {
+		if newConsumer {
+			rec.ConsumerFor().Record().SetLogConsumer(nil)
+			rec.SetConsumerFor(nil)
+		}
+	}
+	newLogger := false
+	if desc.SharedLogger != "" && rec.SharedLoggerName() == "" {
+		if err := dl.setupSharedLogger(svc, desc); err != nil {
+			undoConsumer()
+			return nil, err
+		}
+		newLogger = true
+	}
+
+	// Update dependencies — this can fail (e.g. missing dep) and has rollback
 	if err := dl.updateDependencies(svc, desc, filePath); err != nil {
+		undoConsumer()
+		if newLogger {
+			rec.SetSharedLoggerName("")
+		}
 		return nil, err
+	}
+
+	// Nothing below can fail. The hooks see the old configuration
+	// unloaded and the new one loaded, so a watch on a changed
+	// start-on-path-* or start-on-mount follows it. Only a changed one:
+	// loading re-arms the watch, and one whose condition already holds
+	// fires on arm, so an unchanged reload started a stopped service.
+	changed := activationChanged(svc, desc)
+	if changed && dl.set.OnServiceUnloaded != nil {
+		dl.set.OnServiceUnloaded(svc)
 	}
 
 	// Update type-specific fields (command, timeouts, etc.)
@@ -289,19 +455,7 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 		}
 	}
 
-	// Update consumer-of relationship
-	if desc.ConsumerOf != "" && svc.Record().ConsumerFor() == nil {
-		if err := dl.setupConsumerOf(svc, desc); err != nil {
-			return nil, err
-		}
-	}
-
-	// Update shared-logger relationship
-	if desc.SharedLogger != "" && svc.Record().SharedLoggerName() == "" {
-		if err := dl.setupSharedLogger(svc, desc); err != nil {
-			return nil, err
-		}
-	}
+	applyLoadOptions(svc, desc)
 
 	// A service that IS a shared-logger sink records its lossy /
 	// queue-size on its own record; the loader reads them back when a
@@ -312,7 +466,20 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	svc.Record().SetBundleMembers(desc.BundleMembers)
 	recordModTime(svc, filePath)
 
+	if changed && dl.set.OnServiceLoaded != nil {
+		dl.set.OnServiceLoaded(svc)
+	}
+
 	return svc, nil
+}
+
+// activationChanged reports whether desc changes what the
+// OnServiceLoaded / OnServiceUnloaded hooks wire for svc: its
+// start-on-path-* and start-on-mount watches.
+func activationChanged(svc service.Service, desc *ServiceDescription) bool {
+	path, trigger := svc.Record().StartOnPath()
+	return path != desc.StartOnPath || trigger != desc.StartOnPathTrigger ||
+		svc.Record().StartOnMount() != desc.StartOnMount
 }
 
 // cronTarget is a service type that can carry a cron task.
@@ -362,6 +529,7 @@ func recordModTime(svc service.Service, filePath string) {
 func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *ServiceDescription) {
 	dl.applyRunAs(svc, desc)
 	dl.applySupplementaryGroups(svc, desc)
+	svc.Record().SetPrivilegedHooks(desc.Privileged)
 	switch s := svc.(type) {
 	case *service.InternalService:
 		applyCron(s, desc)
@@ -774,310 +942,8 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		return nil, err
 	}
 
-	// Platform keyword filtering: skip services that declare keywords
-	// matching the detected platform (e.g. "keyword -docker -lxc")
-	if dl.platformSys != platform.None && platform.ShouldSkip(desc.Keywords, dl.platformSys) {
-		return nil, &ServiceLoadError{
-			ServiceName: name,
-			Message:     fmt.Sprintf("service disabled on platform %q (keyword match)", dl.platformSys),
-		}
-	}
-
-	// Bundle desugaring — must run BEFORE type/dep validation so the
-	// synthesised depends-on entries are seen by every downstream
-	// check. A bundle is an internal service whose only job is to
-	// hold references to its members; hard depends-on means stopping
-	// the bundle propagates a stop to any member no other holder is
-	// keeping alive.
-	// log-select is mutually exclusive with the classic include/exclude
-	// pair: mixing them at parse time is almost certainly an operator
-	// mistake, and the two evaluation models produce different outputs
-	// for the same input (chain: last-match-wins vs. classic: AND).
-	if len(desc.LogSelect) > 0 &&
-		(len(desc.LogInclude) > 0 || len(desc.LogExclude) > 0) {
-		return nil, &ServiceLoadError{
-			ServiceName: name,
-			Message: "log-select is mutually exclusive with " +
-				"log-include / log-exclude",
-		}
-	}
-
-	// alert-level without alert-file is a config typo — no sink is
-	// declared, so the threshold has nothing to route to. alert-file
-	// alone falls back to a default of warn (see resolveAlertLevel);
-	// alert-level alone must be rejected explicitly.
-	if desc.AlertFile == "" && desc.AlertLevel >= 0 {
-		return nil, &ServiceLoadError{
-			ServiceName: name,
-			Message: "alert-level set without alert-file — " +
-				"no sink for the routed lines",
-		}
-	}
-
-	if len(desc.BundleMembers) > 0 {
-		// Reject only an EXPLICIT non-internal type — an unspecified
-		// type defaults to TypeProcess in NewServiceDescription but
-		// bundle-of should treat that as "no user intent yet" and
-		// overwrite it. TypeExplicit disambiguates the two.
-		if desc.TypeExplicit && desc.Type != service.TypeInternal {
-			return nil, &ServiceLoadError{
-				ServiceName: name,
-				Message: "bundle-of requires type=internal " +
-					"(or no explicit type)",
-			}
-		}
-		desc.Type = service.TypeInternal
-		for _, m := range desc.BundleMembers {
-			// Guard against redundant listing that would double the
-			// dep and inflate requiredBy — no-op skip on duplicates.
-			seen := false
-			for _, existing := range desc.DependsOn {
-				if existing == m {
-					seen = true
-					break
-				}
-			}
-			if !seen {
-				desc.DependsOn = append(desc.DependsOn, m)
-			}
-		}
-	}
-
-	// Validate: ready-notification not supported for bgprocess
-	if desc.Type == service.TypeBGProcess && (desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "") {
-		return nil, &ServiceLoadError{
-			ServiceName: name,
-			Message:     "ready-notification is not supported for bgprocess services",
-		}
-	}
-
-	// Validate: chroot is implemented for type = process only. Every
-	// other type ignored it, so a scripted or bgprocess service
-	// configured into a jail ran outside it — a confinement the
-	// configuration claimed and did not have. That fails closed now, as
-	// missing confinement does elsewhere.
-	if desc.Type != service.TypeProcess {
-		if desc.Chroot != "" {
-			return nil, &ServiceLoadError{
-				ServiceName: name,
-				Message: fmt.Sprintf("chroot is only supported for type = process "+
-					"(type = %s would run outside the jail)", desc.Type),
-			}
-		}
-		// The rest are ignored on other types too, but nothing is
-		// confined by them, so a config that loads today keeps loading
-		// and is told: lock-file's one-instance guarantee does not
-		// hold there.
-		if desc.LockFile != "" || desc.NewSession || desc.CloseStdin || desc.CloseStdout || desc.CloseStderr {
-			fmt.Fprintf(os.Stderr, "slinit: service %q: lock-file/new-session/close-stdin/"+
-				"close-stdout/close-stderr are only supported for type = process; "+
-				"ignored for type = %s\n", name, desc.Type)
-		}
-	}
-
-	// Validate: watchdog-timeout piggybacks on the ready-notification pipe.
-	// Without one configured the service has no channel through which to
-	// send keepalives, so the watchdog would fire as soon as it armed.
-	if desc.WatchdogTimeout > 0 && desc.ReadyNotifyFD < 0 && desc.ReadyNotifyVar == "" {
-		return nil, &ServiceLoadError{
-			ServiceName: name,
-			Message: "watchdog-timeout requires ready-notification to be set " +
-				"(the service uses the same pipe to send keepalives)",
-		}
-	}
-	if desc.WatchdogTimeout > 0 && desc.Type != service.TypeProcess {
-		return nil, &ServiceLoadError{
-			ServiceName: name,
-			Message:     "watchdog-timeout is only supported for type=process services",
-		}
-	}
-
-	// Validate: scheduling-policy cross-fields
-	if desc.SchedPolicySet {
-		switch desc.SchedPolicy {
-		case unix.SCHED_FIFO, unix.SCHED_RR:
-			if desc.SchedPriority == 0 {
-				return nil, &ServiceLoadError{
-					ServiceName: name,
-					Message:     "sched-priority is required for SCHED_FIFO / SCHED_RR (1..99)",
-				}
-			}
-		case unix.SCHED_DEADLINE:
-			if desc.SchedRuntime == 0 || desc.SchedDeadline == 0 || desc.SchedPeriod == 0 {
-				return nil, &ServiceLoadError{
-					ServiceName: name,
-					Message:     "SCHED_DEADLINE requires sched-runtime, sched-deadline AND sched-period",
-				}
-			}
-			if desc.SchedRuntime > desc.SchedDeadline || desc.SchedDeadline > desc.SchedPeriod {
-				return nil, &ServiceLoadError{
-					ServiceName: name,
-					Message:     "SCHED_DEADLINE invariant: runtime ≤ deadline ≤ period",
-				}
-			}
-			if desc.SchedPriority != 0 {
-				return nil, &ServiceLoadError{
-					ServiceName: name,
-					Message:     "sched-priority has no meaning under SCHED_DEADLINE — drop it or switch to sched-policy=fifo|rr",
-				}
-			}
-		default:
-			if desc.SchedPriority != 0 {
-				return nil, &ServiceLoadError{
-					ServiceName: name,
-					Message:     "sched-priority is only meaningful with sched-policy=fifo or rr",
-				}
-			}
-			if desc.SchedRuntime != 0 || desc.SchedDeadline != 0 || desc.SchedPeriod != 0 {
-				return nil, &ServiceLoadError{
-					ServiceName: name,
-					Message:     "sched-runtime / sched-deadline / sched-period are only meaningful with sched-policy=deadline",
-				}
-			}
-		}
-	} else if desc.SchedPriority != 0 || desc.SchedRuntime != 0 ||
-		desc.SchedDeadline != 0 || desc.SchedPeriod != 0 {
-		return nil, &ServiceLoadError{
-			ServiceName: name,
-			Message:     "sched-priority / sched-runtime / sched-deadline / sched-period set without sched-policy",
-		}
-	}
-
-	// Validate: three ways to fill fd 0, one descriptor. Refused rather
-	// than resolved by precedence, because a silent winner among them is
-	// how an operator ends up debugging the input they did not get.
-	if desc.StandardInputFile != "" {
-		if desc.StandardInputSet {
-			return nil, &ServiceLoadError{
-				ServiceName: name,
-				Message: "standard-input-file and standard-input-text/-data both fill " +
-					"stdin — pick one",
-			}
-		}
-		if desc.ConsumerOf != "" {
-			return nil, &ServiceLoadError{
-				ServiceName: name,
-				Message: "standard-input-file and consumer-of both fill stdin: " +
-					"consumer-of wires another service's output to it, so the file " +
-					"would be ignored",
-			}
-		}
-	}
-
-	// Validate: the stderr rotation overrides need a stderr file to
-	// rotate. Without one they would be parsed, stored and never read —
-	// the shape of defect this suite has spent a release finding, so it
-	// is refused rather than ignored.
-	if desc.StderrLogFile == "" &&
-		(desc.StderrMaxSize != 0 || desc.StderrMaxFiles != 0 || desc.StderrRotateTime != 0) {
-		return nil, &ServiceLoadError{
-			ServiceName: name,
-			Message: "stderr-logfile-max-size / -max-files / -rotate-time have no effect " +
-				"without stderr-logfile",
-		}
-	}
-
-	// Validate: a multicast membership can only be added to a datagram
-	// socket, so the directive needs a udp listener to act on. launchd
-	// leaves the mismatched cases "undefined"; refusing is better here
-	// because an unjoined socket is indistinguishable from a working one
-	// — it binds, the service starts, and traffic simply never arrives.
-	if desc.SocketMulticastGroup != "" {
-		hasUDP := false
-		for _, p := range desc.SocketPaths {
-			if strings.HasPrefix(p, "udp:") || strings.HasPrefix(p, "udp4:") ||
-				strings.HasPrefix(p, "udp6:") {
-				hasUDP = true
-				break
-			}
-		}
-		if !hasUDP {
-			return nil, &ServiceLoadError{
-				ServiceName: name,
-				Message: "socket-multicast-group requires a udp: socket-listen " +
-					"(a multicast group can only be joined on a datagram socket)",
-			}
-		}
-	}
-
-	// Validate: socket-accept needs a socket that can accept. Every
-	// socket-listen form except udp: is a stream socket; a datagram one
-	// has no accept call at all, so the directive could never fire and
-	// the service would run as if it had never been set.
-	if desc.SocketAccept {
-		if len(desc.SocketPaths) == 0 {
-			return nil, &ServiceLoadError{
-				ServiceName: name,
-				Message:     "socket-accept requires a socket-listen",
-			}
-		}
-		for _, p := range desc.SocketPaths {
-			if strings.HasPrefix(p, "udp:") || strings.HasPrefix(p, "udp4:") ||
-				strings.HasPrefix(p, "udp6:") {
-				return nil, &ServiceLoadError{
-					ServiceName: name,
-					Message: "socket-accept cannot be used with a udp: socket-listen " +
-						"(a datagram socket has no accept; drop socket-accept and let " +
-						"the service read the socket it is passed)",
-				}
-			}
-		}
-	}
-
-	// Validate: follow-pid adopts a process slinit did not start, so the
-	// directives that describe starting one have nothing to act on.
-	if desc.FollowPID != "" {
-		if desc.Type != service.TypeBGProcess {
-			return nil, &ServiceLoadError{
-				ServiceName: name,
-				Message:     "follow-pid is only meaningful for type = bgprocess",
-			}
-		}
-		if len(desc.Command) > 0 {
-			return nil, &ServiceLoadError{
-				ServiceName: name,
-				Message: "follow-pid and command are mutually exclusive — follow-pid adopts a " +
-					"process started elsewhere; use pid-file if slinit should launch it",
-			}
-		}
-		if desc.PIDFile != "" {
-			return nil, &ServiceLoadError{
-				ServiceName: name,
-				Message: "follow-pid and pid-file are mutually exclusive — both name the file the " +
-					"daemon's pid is read from, and only follow-pid means slinit must not start it",
-			}
-		}
-	}
-
-	// Validate: NUMA policy + nodes cross-fields
-	if desc.NumaMempolicySet {
-		switch desc.NumaMempolicy {
-		case unix.MPOL_BIND, unix.MPOL_INTERLEAVE, unix.MPOL_PREFERRED,
-			mpolPreferredMany, mpolWeightedInterleave:
-			// systemd's numa_policy_is_valid() exempts only DEFAULT,
-			// LOCAL and PREFERRED from needing a nodemask, so the two
-			// newer modes belong here with bind and interleave rather
-			// than with default and local.
-			if len(desc.NumaNodes) == 0 {
-				return nil, &ServiceLoadError{
-					ServiceName: name,
-					Message: "numa-mempolicy=bind|interleave|preferred|preferred-many|" +
-						"weighted-interleave requires numa-nodes",
-				}
-			}
-		case unix.MPOL_DEFAULT, unix.MPOL_LOCAL:
-			if len(desc.NumaNodes) > 0 {
-				return nil, &ServiceLoadError{
-					ServiceName: name,
-					Message:     "numa-mempolicy=default|local does not accept numa-nodes",
-				}
-			}
-		}
-	} else if len(desc.NumaNodes) > 0 {
-		return nil, &ServiceLoadError{
-			ServiceName: name,
-			Message:     "numa-nodes set without numa-mempolicy",
-		}
+	if err := dl.validateDesc(name, desc); err != nil {
+		return nil, err
 	}
 
 	// Create the service based on type
@@ -1126,6 +992,12 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		dl.set.RemoveService(svc)
 		return nil, err
 	}
+	// The dependencies are in: this service is no longer "loading" for
+	// the cycle check. consumer-of and shared-logger below load the
+	// other service, which commonly depends on or waits for this one
+	// (a logger depends on its producer); those links are not
+	// dependencies, and keeping the mark made them a false cycle.
+	delete(dl.loading, name)
 
 	// Calculate dependency depth
 	svc.Record().SetDepDepth(calcServiceDepth(svc))
@@ -1185,6 +1057,342 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	}
 
 	return svc, nil
+}
+
+// validateDesc runs the checks and rewrites a description gets before
+// any record is built from it: the bundle-of desugaring and every cross-
+// field rule. Load and reload both call it, so a reload cannot install a
+// description a fresh load would refuse.
+func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
+	// Platform keyword filtering: skip services that declare keywords
+	// matching the detected platform (e.g. "keyword -docker -lxc")
+	if dl.platformSys != platform.None && platform.ShouldSkip(desc.Keywords, dl.platformSys) {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message:     fmt.Sprintf("service disabled on platform %q (keyword match)", dl.platformSys),
+		}
+	}
+
+	// Bundle desugaring — must run BEFORE type/dep validation so the
+	// synthesised depends-on entries are seen by every downstream
+	// check. A bundle is an internal service whose only job is to
+	// hold references to its members; hard depends-on means stopping
+	// the bundle propagates a stop to any member no other holder is
+	// keeping alive.
+	// log-select is mutually exclusive with the classic include/exclude
+	// pair: mixing them at parse time is almost certainly an operator
+	// mistake, and the two evaluation models produce different outputs
+	// for the same input (chain: last-match-wins vs. classic: AND).
+	if len(desc.LogSelect) > 0 &&
+		(len(desc.LogInclude) > 0 || len(desc.LogExclude) > 0) {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message: "log-select is mutually exclusive with " +
+				"log-include / log-exclude",
+		}
+	}
+
+	// alert-level without alert-file is a config typo — no sink is
+	// declared, so the threshold has nothing to route to. alert-file
+	// alone falls back to a default of warn (see resolveAlertLevel);
+	// alert-level alone must be rejected explicitly.
+	if desc.AlertFile == "" && desc.AlertLevel >= 0 {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message: "alert-level set without alert-file — " +
+				"no sink for the routed lines",
+		}
+	}
+
+	if len(desc.BundleMembers) > 0 {
+		// Reject only an EXPLICIT non-internal type — an unspecified
+		// type defaults to TypeProcess in NewServiceDescription but
+		// bundle-of should treat that as "no user intent yet" and
+		// overwrite it. TypeExplicit disambiguates the two.
+		if desc.TypeExplicit && desc.Type != service.TypeInternal {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: "bundle-of requires type=internal " +
+					"(or no explicit type)",
+			}
+		}
+		desc.Type = service.TypeInternal
+		for _, m := range desc.BundleMembers {
+			// Guard against redundant listing that would double the
+			// dep and inflate requiredBy — no-op skip on duplicates.
+			seen := false
+			for _, existing := range desc.DependsOn {
+				if existing == m {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				desc.DependsOn = append(desc.DependsOn, m)
+			}
+		}
+	}
+
+	// Validate: ready-notification not supported for bgprocess
+	if desc.Type == service.TypeBGProcess && (desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "") {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message:     "ready-notification is not supported for bgprocess services",
+		}
+	}
+
+	// Validate: chroot is implemented for type = process only. Every
+	// other type ignored it, so a scripted or bgprocess service
+	// configured into a jail ran outside it — a confinement the
+	// configuration claimed and did not have. That fails closed now, as
+	// missing confinement does elsewhere.
+	if desc.Type != service.TypeProcess {
+		if desc.Chroot != "" {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: fmt.Sprintf("chroot is only supported for type = process "+
+					"(type = %s would run outside the jail)", desc.Type),
+			}
+		}
+		// The rest are ignored on other types too, but nothing is
+		// confined by them, so a config that loads today keeps loading
+		// and is told: lock-file's one-instance guarantee does not
+		// hold there.
+		if desc.LockFile != "" || desc.NewSession || desc.CloseStdin || desc.CloseStdout || desc.CloseStderr {
+			fmt.Fprintf(os.Stderr, "slinit: service %q: lock-file/new-session/close-stdin/"+
+				"close-stdout/close-stderr are only supported for type = process; "+
+				"ignored for type = %s\n", name, desc.Type)
+		}
+		// The start hooks are wired into process services only; on
+		// any other type they never ran, without a word. A converted
+		// Type=oneshot with ExecStartPre= lost its hook that way.
+		if len(desc.PreStartCommand) > 0 || len(desc.PostStartCommand) > 0 {
+			fmt.Fprintf(os.Stderr, "slinit: service %q: pre-start-command/post-start-command "+
+				"are only supported for type = process; ignored for type = %s\n", name, desc.Type)
+		}
+	}
+
+	// chroot is entered by slinit-runner after its filesystem sandbox and
+	// hardening mounts, which name host paths: combined, they would make
+	// the host's /tmp private and its /etc read-only and leave the jail's
+	// untouched. Refused until they resolve under the jail, as systemd's
+	// RootDirectory= does.
+	if desc.Chroot != "" {
+		if opts := chrootMountConflicts(desc); len(opts) > 0 {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: fmt.Sprintf("chroot cannot be combined with %s: they would "+
+					"apply to the host, not the jail", strings.Join(opts, ", ")),
+			}
+		}
+	}
+
+	// Validate: watchdog-timeout piggybacks on the ready-notification pipe.
+	// Without one configured the service has no channel through which to
+	// send keepalives, so the watchdog would fire as soon as it armed.
+	if desc.WatchdogTimeout > 0 && desc.ReadyNotifyFD < 0 && desc.ReadyNotifyVar == "" {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message: "watchdog-timeout requires ready-notification to be set " +
+				"(the service uses the same pipe to send keepalives)",
+		}
+	}
+	if desc.WatchdogTimeout > 0 && desc.Type != service.TypeProcess {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message:     "watchdog-timeout is only supported for type=process services",
+		}
+	}
+
+	// Validate: scheduling-policy cross-fields
+	if desc.SchedPolicySet {
+		switch desc.SchedPolicy {
+		case unix.SCHED_FIFO, unix.SCHED_RR:
+			if desc.SchedPriority == 0 {
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message:     "sched-priority is required for SCHED_FIFO / SCHED_RR (1..99)",
+				}
+			}
+		case unix.SCHED_DEADLINE:
+			if desc.SchedRuntime == 0 || desc.SchedDeadline == 0 || desc.SchedPeriod == 0 {
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message:     "SCHED_DEADLINE requires sched-runtime, sched-deadline AND sched-period",
+				}
+			}
+			if desc.SchedRuntime > desc.SchedDeadline || desc.SchedDeadline > desc.SchedPeriod {
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message:     "SCHED_DEADLINE invariant: runtime ≤ deadline ≤ period",
+				}
+			}
+			if desc.SchedPriority != 0 {
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message:     "sched-priority has no meaning under SCHED_DEADLINE — drop it or switch to sched-policy=fifo|rr",
+				}
+			}
+		default:
+			if desc.SchedPriority != 0 {
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message:     "sched-priority is only meaningful with sched-policy=fifo or rr",
+				}
+			}
+			if desc.SchedRuntime != 0 || desc.SchedDeadline != 0 || desc.SchedPeriod != 0 {
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message:     "sched-runtime / sched-deadline / sched-period are only meaningful with sched-policy=deadline",
+				}
+			}
+		}
+	} else if desc.SchedPriority != 0 || desc.SchedRuntime != 0 ||
+		desc.SchedDeadline != 0 || desc.SchedPeriod != 0 {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message:     "sched-priority / sched-runtime / sched-deadline / sched-period set without sched-policy",
+		}
+	}
+
+	// Validate: three ways to fill fd 0, one descriptor. Refused rather
+	// than resolved by precedence, because a silent winner among them is
+	// how an operator ends up debugging the input they did not get.
+	if desc.StandardInputFile != "" {
+		if desc.StandardInputSet {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: "standard-input-file and standard-input-text/-data both fill " +
+					"stdin — pick one",
+			}
+		}
+		if desc.ConsumerOf != "" {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: "standard-input-file and consumer-of both fill stdin: " +
+					"consumer-of wires another service's output to it, so the file " +
+					"would be ignored",
+			}
+		}
+	}
+
+	// Validate: the stderr rotation overrides need a stderr file to
+	// rotate. Without one they would be parsed, stored and never read —
+	// the shape of defect this suite has spent a release finding, so it
+	// is refused rather than ignored.
+	if desc.StderrLogFile == "" &&
+		(desc.StderrMaxSize != 0 || desc.StderrMaxFiles != 0 || desc.StderrRotateTime != 0) {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message: "stderr-logfile-max-size / -max-files / -rotate-time have no effect " +
+				"without stderr-logfile",
+		}
+	}
+
+	// Validate: a multicast membership can only be added to a datagram
+	// socket, so the directive needs a udp listener to act on. launchd
+	// leaves the mismatched cases "undefined"; refusing is better here
+	// because an unjoined socket is indistinguishable from a working one
+	// — it binds, the service starts, and traffic simply never arrives.
+	if desc.SocketMulticastGroup != "" {
+		hasUDP := false
+		for _, p := range desc.SocketPaths {
+			if strings.HasPrefix(p, "udp:") || strings.HasPrefix(p, "udp4:") ||
+				strings.HasPrefix(p, "udp6:") {
+				hasUDP = true
+				break
+			}
+		}
+		if !hasUDP {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: "socket-multicast-group requires a udp: socket-listen " +
+					"(a multicast group can only be joined on a datagram socket)",
+			}
+		}
+	}
+
+	// Validate: socket-accept needs a socket that can accept. Every
+	// socket-listen form except udp: is a stream socket; a datagram one
+	// has no accept call at all, so the directive could never fire and
+	// the service would run as if it had never been set.
+	if desc.SocketAccept {
+		if len(desc.SocketPaths) == 0 {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message:     "socket-accept requires a socket-listen",
+			}
+		}
+		for _, p := range desc.SocketPaths {
+			if strings.HasPrefix(p, "udp:") || strings.HasPrefix(p, "udp4:") ||
+				strings.HasPrefix(p, "udp6:") {
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message: "socket-accept cannot be used with a udp: socket-listen " +
+						"(a datagram socket has no accept; drop socket-accept and let " +
+						"the service read the socket it is passed)",
+				}
+			}
+		}
+	}
+
+	// Validate: follow-pid adopts a process slinit did not start, so the
+	// directives that describe starting one have nothing to act on.
+	if desc.FollowPID != "" {
+		if desc.Type != service.TypeBGProcess {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message:     "follow-pid is only meaningful for type = bgprocess",
+			}
+		}
+		if len(desc.Command) > 0 {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: "follow-pid and command are mutually exclusive — follow-pid adopts a " +
+					"process started elsewhere; use pid-file if slinit should launch it",
+			}
+		}
+		if desc.PIDFile != "" {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: "follow-pid and pid-file are mutually exclusive — both name the file the " +
+					"daemon's pid is read from, and only follow-pid means slinit must not start it",
+			}
+		}
+	}
+
+	// Validate: NUMA policy + nodes cross-fields
+	if desc.NumaMempolicySet {
+		switch desc.NumaMempolicy {
+		case unix.MPOL_BIND, unix.MPOL_INTERLEAVE, unix.MPOL_PREFERRED,
+			mpolPreferredMany, mpolWeightedInterleave:
+			// systemd's numa_policy_is_valid() exempts only DEFAULT,
+			// LOCAL and PREFERRED from needing a nodemask, so the two
+			// newer modes belong here with bind and interleave rather
+			// than with default and local.
+			if len(desc.NumaNodes) == 0 {
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message: "numa-mempolicy=bind|interleave|preferred|preferred-many|" +
+						"weighted-interleave requires numa-nodes",
+				}
+			}
+		case unix.MPOL_DEFAULT, unix.MPOL_LOCAL:
+			if len(desc.NumaNodes) > 0 {
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message:     "numa-mempolicy=default|local does not accept numa-nodes",
+				}
+			}
+		}
+	} else if len(desc.NumaNodes) > 0 {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message:     "numa-nodes set without numa-mempolicy",
+		}
+	}
+
+	return nil
 }
 
 // canFeedConsumer reports whether svc can be a log consumer's producer:
@@ -1296,6 +1504,13 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 		}
 		for _, dir := range dl.systemdDirs {
 			path := filepath.Join(dir, unitName)
+			if systemdUnitMasked(path) {
+				return nil, "", &ServiceLoadError{
+					ServiceName: name,
+					Message:     fmt.Sprintf("systemd unit %s is masked", path),
+					Err:         ErrServiceNotFound,
+				}
+			}
 			if IsSystemdUnit(path) {
 				desc, err := SystemdUnitToServiceDescription(path, name)
 				if err != nil {
@@ -1528,6 +1743,9 @@ func (dl *DirLoader) resolveDependencies(svc service.Service, desc *ServiceDescr
 				return nil, fmt.Errorf("loading dependency '%s' for service '%s': %w",
 					depName, svc.Name(), err)
 			}
+			if err := dl.checkLoadingCycle(svc, depSvc, spec.depType); err != nil {
+				return nil, err
+			}
 			out = append(out, resolvedDep{depSvc, spec.depType})
 		}
 	}
@@ -1558,6 +1776,24 @@ func (dl *DirLoader) resolveDependencies(svc service.Service, desc *ServiceDescr
 	}
 
 	return out, nil
+}
+
+// checkLoadingCycle refuses a dependency on a service that is still being
+// loaded further up this load: the edge would close a cycle. A service is
+// in the set before its dependencies load, so loadServiceLocked hands the
+// half-loaded one back instead of reaching loadServiceImpl's check; a
+// cycle used to load, and once started, every service on it sat in
+// STARTING waiting for the next. As in dinit, every type that waits for
+// its target counts. before and after only order, and a pair of them
+// naming each other is how one ordering is written from both ends.
+func (dl *DirLoader) checkLoadingCycle(svc, dep service.Service, depType service.DependencyType) error {
+	if depType == service.DepBefore || depType == service.DepAfter || !dl.loading[dep.Name()] {
+		return nil
+	}
+	return &ServiceLoadError{
+		ServiceName: svc.Name(),
+		Message:     fmt.Sprintf("cyclic dependency on '%s'", dep.Name()),
+	}
 }
 
 func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescription, filePath string) error {
@@ -1603,6 +1839,9 @@ func (dl *DirLoader) resolveDepsFromDir(svc service.Service, dir string, depType
 			}
 			return nil, fmt.Errorf("loading dependency '%s' from directory '%s': %w",
 				depName, dir, err)
+		}
+		if err := dl.checkLoadingCycle(svc, depSvc, depType); err != nil {
+			return nil, err
 		}
 		out = append(out, resolvedDep{depSvc, depType})
 	}
@@ -1771,6 +2010,12 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	// both are set, so the precedence is unchanged.
 	rec.SetSlice(desc.Slice)
 	rec.SetDelegate(desc.Delegate, desc.DelegateControllers)
+	if desc.Delegate && desc.CgroupPath == "" && desc.Slice == "" {
+		// Only a cgroup of the service's own can be handed over; the
+		// daemon's default one is shared with other services.
+		fmt.Fprintf(os.Stderr, "slinit: service %q: delegate = yes needs cgroup = or "+
+			"slice =; without one nothing is delegated\n", svc.Name())
+	}
 	// Cgroup settings: user-declared cgroup-setting entries + Bucket C
 	// cpuset-partition + startup-allowed-cpus/mems. The Startup values
 	// win over the steady-state cgroup-cpuset-cpus at cgroup creation
@@ -2010,17 +2255,19 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 		rec.SetHardening(service.HardeningConfig{})
 	} else {
 		rec.SetHardening(hardeningCfg)
-		// Four of the knobs need mount operations
+		// Five of the knobs need mount operations
 		// (protect-kernel-tunables → /proc/sys, /sys and other /proc
 		// knobs, protect-control-groups → /sys/fs/cgroup,
 		// protect-kernel-logs → /dev/kmsg and /proc/kmsg,
-		// protect-kernel-modules → /usr/lib/modules). Auto-imply
-		// CLONE_NEWNS so the runner has a private mount namespace
-		// to apply them in without touching the host fs.
+		// protect-kernel-modules → /usr/lib/modules,
+		// protect-hostname → /proc/sys/kernel/{host,domain}name).
+		// Auto-imply CLONE_NEWNS so the runner has a private mount
+		// namespace to apply them in without touching the host fs.
 		if hardeningCfg.ProtectKernelTunables ||
 			hardeningCfg.ProtectControlGroups ||
 			hardeningCfg.ProtectKernelLogs ||
-			hardeningCfg.ProtectKernelModules {
+			hardeningCfg.ProtectKernelModules ||
+			hardeningCfg.ProtectHostname {
 			cloneflags |= syscall.CLONE_NEWNS
 		}
 	}
@@ -2167,20 +2414,23 @@ func (dl *DirLoader) setupSharedLogger(producer service.Service, desc *ServiceDe
 	return nil
 }
 
-// applyLoadOptions processes load-options flags (export-passwd-vars, export-service-name).
+// applyLoadOptions processes load-options flags (export-passwd-vars,
+// export-service-name). The variables replace the ones an earlier call
+// set, which is what keeps a reload from leaving stale ones behind.
 func applyLoadOptions(svc service.Service, desc *ServiceDescription) {
 	rec := svc.Record()
+	vars := make(map[string]string)
 
 	if desc.ExportServiceName {
-		rec.SetEnvVar("DINIT_SERVICENAME", svc.Name())
+		vars["DINIT_SERVICENAME"] = svc.Name()
 		// DINIT_SERVICE is the canonical variable documented in
 		// dinit-service.5 (dinit/src/load-service.cc:566). Set it
 		// alongside DINIT_SERVICENAME so a service script ported from
 		// dinit with `case "$DINIT_SERVICE" in …` finds the value it
 		// expects. Both names carry the same string.
-		rec.SetEnvVar("DINIT_SERVICE", svc.Name())
+		vars["DINIT_SERVICE"] = svc.Name()
 		if rec.ServiceDir() != "" {
-			rec.SetEnvVar("DINIT_SERVICEDSCDIR", rec.ServiceDir())
+			vars["DINIT_SERVICEDSCDIR"] = rec.ServiceDir()
 		}
 	}
 
@@ -2197,17 +2447,19 @@ func applyLoadOptions(svc service.Service, desc *ServiceDescription) {
 			u, err = user.LookupId(fmt.Sprintf("%d", os.Getuid()))
 		}
 		if err == nil {
-			rec.SetEnvVar("USER", u.Username)
-			rec.SetEnvVar("LOGNAME", u.Username)
-			rec.SetEnvVar("HOME", u.HomeDir)
-			rec.SetEnvVar("UID", u.Uid)
-			rec.SetEnvVar("GID", u.Gid)
+			vars["USER"] = u.Username
+			vars["LOGNAME"] = u.Username
+			vars["HOME"] = u.HomeDir
+			vars["UID"] = u.Uid
+			vars["GID"] = u.Gid
 			// Shell: os/user doesn't expose shell, read from /etc/passwd
 			if shell := lookupShell(u.Uid); shell != "" {
-				rec.SetEnvVar("SHELL", shell)
+				vars["SHELL"] = shell
 			}
 		}
 	}
+
+	rec.SetLoadEnv(vars)
 }
 
 // resolveRunAs decodes a `run-as = <user>[:<group>]` value into the

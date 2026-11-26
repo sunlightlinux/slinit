@@ -3,11 +3,19 @@
 package eventloop
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"runtime"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/shutdown"
 )
 
 // SIGPWR has to be claimed or it is never seen. Unlike the shutdown set
@@ -57,14 +65,130 @@ func TestSIGPWRDoesNotShutDown(t *testing.T) {
 // While a shutdown is already running, SIGPWR must not consume the status
 // file: the hook may still be mid-flight and there is nothing left to
 // decide anyway.
+//
+// The shutdown state is set the way initiateShutdown sets it:
+// isShuttingDown reads shutdownSignals, not shutdownInitiated. The hook
+// is a stand-in so a failure cannot consume a real /run/powerstatus.
 func TestSIGPWRIgnoredWhileShuttingDown(t *testing.T) {
 	logger := logging.New(logging.LevelDebug)
+	var buf strings.Builder
+	logger.SetOutput(&buf)
 	set := service.NewServiceSet(logger)
 	el := New(set, logger)
 	el.SetPID1Mode(true)
+	var runs atomic.Int32
+	el.powerHook = func(*logging.Logger) shutdown.PowerState {
+		runs.Add(1)
+		return shutdown.PowerFailing
+	}
 	el.shutdownInitiated = true
+	el.shutdownSignals.Store(1)
 
 	if el.handleSignal(syscall.SIGPWR) {
 		t.Error("handleSignal(SIGPWR) returned true during shutdown")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := runs.Load(); n != 0 {
+		t.Errorf("power hook ran %d times during shutdown, want 0", n)
+	}
+	if !strings.Contains(buf.String(), "Received SIGPWR while shutting down, ignoring") {
+		t.Errorf("SIGPWR was not ignored at the signal; log:\n%s", buf.String())
+	}
+}
+
+// The power hook is the operator's program and may take as long as it
+// likes. Run on the event loop goroutine it stalled orphan reaping,
+// Ctrl+Alt+Del and SIGTERM, and even the `slinitctl poweroff` the hook
+// itself sends. It runs on its own goroutine now, one run at a time, and
+// SIGPWRs that arrive meanwhile collapse into one more run.
+func TestSIGPWRHookDoesNotBlockTheLoop(t *testing.T) {
+	release := make(chan struct{})
+	var running, runs, overlap atomic.Int32
+	logger := logging.New(logging.LevelError)
+	el := New(service.NewServiceSet(logger), logger)
+	el.SetPID1Mode(true)
+	el.powerHook = func(*logging.Logger) shutdown.PowerState {
+		if running.Add(1) > 1 {
+			overlap.Store(1)
+		}
+		runs.Add(1)
+		<-release
+		running.Add(-1)
+		return shutdown.PowerFailing
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		el.handleSignal(syscall.SIGPWR)
+		for running.Load() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		// Two more while the first run is still going.
+		el.handleSignal(syscall.SIGPWR)
+		el.handleSignal(syscall.SIGPWR)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("handleSignal(SIGPWR) waited for the power hook")
+	}
+
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for runs.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := runs.Load(); n != 2 {
+		t.Errorf("hook ran %d times, want 2: the one running and one for the signals that came meanwhile", n)
+	}
+	if overlap.Load() != 0 {
+		t.Error("two power hooks ran at once")
+	}
+}
+
+// The SIGPWR worker ranged over a channel nothing ever closed, so every
+// loop that saw a SIGPWR left one goroutine behind when Run returned: one
+// more per remain or boot-failure retry.
+func TestSIGPWRWorkerEndsWithRun(t *testing.T) {
+	logger := logging.New(logging.LevelError)
+	el := New(service.NewServiceSet(logger), logger)
+	el.sigCh = make(chan os.Signal, 4)
+	ran := make(chan struct{}, 1)
+	el.powerHook = func(*logging.Logger) shutdown.PowerState {
+		ran <- struct{}{}
+		return shutdown.PowerOK
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- el.Run(context.Background()) }()
+	el.sigCh <- syscall.SIGPWR
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the power hook never ran")
+	}
+	el.InitiateShutdown(service.ShutdownRemain)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+
+	// This loop's worker: the traceback prints the receiver first, and
+	// other tests leave workers of their own behind.
+	frame := fmt.Sprintf("runPowerHooks(%p", el)
+	buf := make([]byte, 1<<20)
+	for deadline := time.Now().Add(time.Second); ; {
+		n := runtime.Stack(buf, true)
+		if !strings.Contains(string(buf[:n]), frame) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the SIGPWR worker outlived Run")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -308,3 +308,21 @@ func TestServiceSet_ConcurrentTransitionQueues(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// GlobalSetEnv ignores what cannot be an environment entry: a key with
+// '=' left the index pointing past the slice after an unset, and the
+// next set of that key panicked PID 1.
+func TestGlobalSetEnvIgnoresUnusableAssignments(t *testing.T) {
+	set, _ := newTestSet()
+	set.GlobalSetEnv("X", "1")
+	set.GlobalSetEnv("A=B", "C")
+	set.GlobalSetEnv("", "v")
+	set.GlobalSetEnv("K", "v\x00w")
+	set.GlobalUnsetEnv("X")
+	set.GlobalSetEnv("A=B", "D") // panicked here
+	set.GlobalSetEnv("Y", "2")
+	got := set.GlobalEnv()
+	if len(got) != 1 || got[0] != "Y=2" {
+		t.Errorf("global env = %q, want [Y=2]", got)
+	}
+}

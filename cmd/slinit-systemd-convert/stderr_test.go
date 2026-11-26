@@ -51,7 +51,7 @@ func checkWarnsByDefault(t *testing.T, args ...string) {
 func TestWarningsPrintByDefault(t *testing.T) {
 	dir := t.TempDir()
 	unit := dir + "/w.service"
-	// Environment= is a WARN (dropped), PrivateDevices= a NOTE.
-	os.WriteFile(unit, []byte("[Service]\nExecStart=/usr/bin/w\nEnvironment=A=b\nPrivateDevices=yes\n"), 0o644)
+	// Environment= is a WARN (dropped), ExecReload= a NOTE.
+	os.WriteFile(unit, []byte("[Service]\nExecStart=/usr/bin/w\nEnvironment=A=b\nExecReload=/bin/kill -HUP $MAINPID\n"), 0o644)
 	checkWarnsByDefault(t, "--output-dir", dir+"/out", unit)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -58,8 +59,8 @@ func TestTranslate_ExistsFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
-	if len(out) != 2 || out[0] != "is-started" {
-		t.Errorf("got %v, want [is-started nginx]", out)
+	if len(out) != 2 || out[0] != "query-name" {
+		t.Errorf("got %v, want [query-name nginx]", out)
 	}
 
 	if _, err := translate([]string{"--exists"}); err == nil {
@@ -145,5 +146,57 @@ func TestStatusExitCodeFollowsState(t *testing.T) {
 		if got := run([]string{"svc", "status"}, devnull, devnull); got != want {
 			t.Errorf("status of a %s service exits %d, want %d", state, got, want)
 		}
+	}
+}
+
+// OpenRC's -e exits 0 for any service that resolves, in any state, and
+// prints nothing. It was mapped to is-started, which exits 1 for a
+// stopped service and prints the state.
+func TestExistsSucceedsForStoppedServiceSilently(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "slinitctl")
+	// The stub behaves as slinitctl does for a loadable but STOPPED
+	// service: is-started prints the state and exits 1, query-name
+	// prints the name and exits 0; an unknown service fails both.
+	script := "#!/bin/sh\n[ \"$2\" = svc ] || { echo \"service '$2' not found\" >&2; exit 1; }\n" +
+		"case $1 in\nis-started) echo STOPPED; exit 1;;\nquery-name) echo \"$2\";;\n*) exit 9;;\nesac\n"
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	origBin, origExec := slinitctlBin, execFunc
+	t.Cleanup(func() { slinitctlBin, execFunc = origBin, origExec })
+	slinitctlBin = stub
+	// Run the translated command the way exec would, so the old
+	// exec path is measured too; its stdout lands in the file.
+	outPath := filepath.Join(dir, "stdout")
+	stdout, err := os.Create(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	execFunc = func(bin string, argv, _ []string) error {
+		cmd := exec.Command(bin, argv[1:]...)
+		cmd.Stdout = stdout
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+		return nil
+	}
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+
+	for _, flag := range []string{"-e", "--exists"} {
+		if got := run([]string{flag, "svc"}, stdout, devnull); got != 0 {
+			t.Errorf("%s on a stopped service exits %d, want 0", flag, got)
+		}
+		if got := run([]string{flag, "nosuch"}, stdout, devnull); got == 0 {
+			t.Errorf("%s on a missing service exits 0", flag)
+		}
+	}
+	if b, _ := os.ReadFile(outPath); len(b) != 0 {
+		t.Errorf("--exists printed %q, want nothing", b)
 	}
 }

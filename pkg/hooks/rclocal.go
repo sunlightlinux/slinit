@@ -68,9 +68,15 @@ func RunRcLocal(logger *logging.Logger) (ran, failed int) {
 			names = append(names, e.Name())
 		}
 		sort.Strings(names)
+		if len(names) > 0 {
+			if err := checkTrustedDir(rcLocalDPath); err != nil {
+				logger.Warn("rc.local.d: %v", err)
+				names = nil
+			}
+		}
 		for _, name := range names {
 			path := filepath.Join(rcLocalDPath, name)
-			if !isExecutableFile(path) {
+			if !isTrustedExecutable(path, os.Lstat, logger) {
 				continue
 			}
 			ran++
@@ -84,7 +90,9 @@ func RunRcLocal(logger *logging.Logger) (ran, failed int) {
 	}
 
 	// Then the classic monolithic script.
-	if isExecutableFile(rcLocalPath) {
+	// Stat, not Lstat: /etc/rc.local is a symlink into /etc/rc.d on
+	// some distributions, and what the link names is what runs.
+	if isTrustedExecutable(rcLocalPath, os.Stat, logger) {
 		ran++
 		if err := runRcLocalScript(rcLocalPath, logger); err != nil {
 			logger.Warn("rc.local: %s failed: %v", rcLocalPath, err)
@@ -94,15 +102,28 @@ func RunRcLocal(logger *logging.Logger) (ran, failed int) {
 	return ran, failed
 }
 
-// isExecutableFile is true when path is a regular file with any
-// execute bit set. Silent-skip for missing paths keeps the "no
-// config needed" contract.
-func isExecutableFile(path string) bool {
-	st, err := os.Stat(path)
+// isTrustedExecutable is true when path is a regular file with any
+// execute bit set that passes checkTrusted; one that fails the check
+// is skipped with a warning. Silent-skip for missing paths keeps the
+// "no config needed" contract.
+//
+// The check and the exec are separate path lookups. Replacing the
+// file in between needs write access to its directory, which for
+// rc.local.d is checked as well; running the script from an fd
+// instead (/proc/self/fd/N) would hand a #! script that path as $0.
+func isTrustedExecutable(path string, stat func(string) (os.FileInfo, error), logger *logging.Logger) bool {
+	st, err := stat(path)
 	if err != nil {
 		return false
 	}
-	return st.Mode().IsRegular() && st.Mode()&0o111 != 0
+	if !st.Mode().IsRegular() || st.Mode()&0o111 == 0 {
+		return false
+	}
+	if err := checkTrusted(path, st); err != nil {
+		logger.Warn("rc.local: %v", err)
+		return false
+	}
+	return true
 }
 
 // runRcLocalScript executes a single rc.local-shaped script under

@@ -85,12 +85,16 @@ Then applies /etc/sysctl.conf if it exists.
 Line format:
   key.dotted.or/slashed = value       # regular
   -key.dotted = value                 # ignore write errors (best-effort)
+  net.ipv4.conf.*.rp_filter = 2       # glob: every matching key
+  -net.ipv4.conf.all.rp_filter        # exclude a key from the globs
   ; or # in column 0                  # comment
 
-Wildcards ('*'/'?') in keys are NOT supported and reject the line.
+A bad line is reported with file:line and skipped; the rest applies.
+A missing tunable or a refused write (EROFS/EACCES/EPERM) is ignored
+unless --strict.
 
 Options:
-  -s, --strict     ignore the '-' prefix; every failure is an error
+  -s, --strict     every failed write is an error ('-' prefix included)
   -v, --verbose    print a summary line to stderr; log skipped writes
       --root DIR   prefix DIR onto every hardcoded path (test seam)
   -h, --help       this help

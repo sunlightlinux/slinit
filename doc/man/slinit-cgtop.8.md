@@ -28,7 +28,9 @@ equivalent, scoped to what a slinit-managed system needs:
 
 - **Rate-based fields** (CPU%, IO bytes/sec) are computed as a
   delta over the sampling interval, so a cold snapshot lands in one
-  **\--delay** cycle.
+  **\--delay** cycle. The interval is measured per cgroup, between its
+  two reads: walking a large tree can take longer than **\--delay**,
+  and dividing by the nominal delay would inflate the rates.
 
 - **kernfs virtual files** always report `st_size = 0`; the tool
   counts lines in **cgroup.procs** instead of relying on stat.
@@ -36,6 +38,12 @@ equivalent, scoped to what a slinit-managed system needs:
 - **Idle-cgroup filter** by default hides cgroups with 0 processes +
   0 memory + 0% CPU so the output stays scannable. **\--all** disables
   the filter for capacity planning runs.
+
+- **Cgroup names are escaped** before printing: control characters,
+  other non-printable characters and invalid UTF-8 appear as
+  **\\x**\ *NN* per byte, and a backslash as **\\\\**. Whoever owns
+  a delegated subtree names its cgroups, and a raw escape sequence in
+  a name would drive the viewer's terminal.
 
 Typical use is triage: "which service is eating the machine right
 now" without opening a full monitoring stack.

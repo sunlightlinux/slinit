@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"os"
 	"syscall"
 	"time"
@@ -139,15 +140,49 @@ func (s *ProcessService) activateOnDemandLocked() {
 	}
 	s.services.logger.Info("Service '%s': socket activity, launching process", s.serviceName)
 
-	if len(s.preStartCommand) > 0 {
-		if err := s.runHookCommand(s.preStartCommand, "pre-start-command"); err != nil {
-			s.services.logger.Error("Service '%s': pre-start-command failed: %v",
-				s.serviceName, err)
-			s.rearmOnDemandLocked()
-			return
-		}
+	// The pre-start-command, and the env-generator, run off the lock as
+	// for any start (BringUp); the service stays STARTED, listening for
+	// nothing, meanwhile.
+	if len(s.preStartCommand) > 0 || s.envGenerator != "" {
+		argv := s.preStartCommand
+		cred := s.hookCredential(s.privHooks.PreStart)
+		gen := s.demandGen
+		s.startStateHookLocked(hookPreStart,
+			func(ctx context.Context) func() error {
+				return func() error {
+					s.prepareStartEnvCtx(ctx)
+					if len(argv) == 0 || ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return s.runHookCommandCtx(ctx, argv, "pre-start-command", cred)
+				}
+			},
+			func(err error, cancelled bool) {
+				switch {
+				case s.state.Load() == StateStopping:
+					// Stopped meanwhile; the stop waited for us.
+					s.discardStartEnv()
+					s.services.AddTransitionQueue(s)
+				case cancelled || s.demandGen != gen || !s.onDemandListening() || s.pid > 0:
+					s.discardStartEnv()
+				case err != nil:
+					s.services.logger.Error("Service '%s': pre-start-command failed: %v",
+						s.serviceName, err)
+					s.discardStartEnv()
+					s.rearmOnDemandLocked()
+				default:
+					s.launchOnDemandLocked()
+				}
+			})
+		return
 	}
+	s.launchOnDemandLocked()
+}
 
+// launchOnDemandLocked is the launch for the first client once the
+// pre-start-command has run: start-delay, fork/exec, post-start command.
+// Caller must hold queueMu.
+func (s *ProcessService) launchOnDemandLocked() {
 	launch := func() {
 		if err := s.startProcess(); err != nil {
 			s.services.logger.Error("Service '%s': failed to start: %v", s.serviceName, err)

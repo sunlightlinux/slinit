@@ -119,7 +119,11 @@ func (c *Connection) handleJournalQuery(payload []byte) error {
 		}
 	}
 
-	events, _ := buf.Query(req.ToFilter(), req.Limit)
+	filter := req.ToFilter()
+	if err := filter.CompileGrep(); err != nil {
+		return c.writePacket(RplyJournalErr, []byte(fmt.Sprintf("journal: bad grep pattern: %v", err)))
+	}
+	events, _ := buf.Query(filter, req.Limit)
 	for _, evt := range events {
 		data, err := evt.MarshalJSONL()
 		if err != nil {
@@ -154,6 +158,9 @@ func (c *Connection) handleJournalSubscribe(payload []byte) error {
 		}
 	}
 	filter := req.ToFilter()
+	if err := filter.CompileGrep(); err != nil {
+		return c.writePacket(RplyJournalErr, []byte(fmt.Sprintf("journal: bad grep pattern: %v", err)))
+	}
 
 	// Clear the read deadline set by (*Connection).serve. The
 	// dispatch loop stamps a 30s read deadline before every

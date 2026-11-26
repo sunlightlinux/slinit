@@ -75,16 +75,23 @@ TTY-ness and can be forced off with **EINFO_COLOR=no**.
     wrappers manage the variable themselves; downstream applets
     honour whatever level they find.
 
-**esyslog** *LEVEL*[.**FACILITY**] *TAG* *MSG*...
+**esyslog** [*FACILITY*.]*LEVEL* *TAG* *MSG*...
 
-**elog** *LEVEL*[.**FACILITY**] *TAG* *MSG*...
-:   Emit *MSG* via **syslog**(3) with the given priority. *LEVEL*
-    accepts syslog severity names (**info**, **notice**, **warning**,
-    **err**, **crit**, **alert**, **emerg**, **debug**) or a numeric
-    priority. *FACILITY* defaults to **user** and accepts the standard
-    names (**daemon**, **auth**, **cron**, **local0**-**local7**, …).
+**elog** [*FACILITY*.]*LEVEL* *TAG* *MSG*...
+:   Emit *MSG* via **syslog**(3) with the given priority, written
+    *FACILITY*.*LEVEL* as for OpenRC's **esyslog** and **logger**(1)
+    **-p** (**daemon.notice**). *FACILITY* accepts the standard names
+    (**user**, **daemon**, **auth**, **authpriv**, **cron**, **mail**,
+    **local0**-**local7**, …); *LEVEL* accepts the severity names
+    (**emerg**, **alert**, **crit**, **err**, **warning**, **notice**,
+    **info**, **debug**, plus **error**, **warn**, **panic**) or a
+    number 0-7. A bare *LEVEL* logs to facility **user**, and a bare
+    integer is used as the whole priority. For compatibility with older
+    slinit releases the reversed *LEVEL*.*FACILITY* order
+    (**notice.daemon**) is also accepted; facility and level names never
+    overlap, so the two orders cannot be confused.
     Falls back to printing "*TAG*: *MSG*" on stderr when **/dev/log** is
-    unreachable. Fewer than three arguments, or an unknown severity or
+    unreachable. Fewer than three arguments, or an unknown level or
     facility, is an error (exit 1).
 
 **ewaitfile** *TIMEOUT* *PATH*...
@@ -164,7 +171,7 @@ ewaitfile 10 /run/foo.sock
 Syslog a warning line to the daemon facility:
 
 ```
-esyslog warning.daemon myservice "config file was regenerated"
+esyslog daemon.warning myservice "config file was regenerated"
 ```
 
 # SEE ALSO

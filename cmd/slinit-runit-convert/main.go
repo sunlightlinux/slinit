@@ -25,6 +25,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/internal/atomicfile"
 )
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -127,7 +129,7 @@ Flags:
 					fmt.Fprintf(os.Stderr, "--- would write %s ---\n", outPath)
 					os.Stderr.Write(o.buf.Bytes())
 				} else {
-					if err := os.WriteFile(outPath, o.buf.Bytes(), 0o644); err != nil {
+					if err := atomicfile.Write(outPath, o.buf.Bytes(), 0o644, true); err != nil {
 						fmt.Fprintf(os.Stderr, "slinit-runit-convert: write %s: %v\n", outPath, err)
 						hadErrors = true
 					}
@@ -191,7 +193,9 @@ type slinitConfig struct {
 	command    string
 	argv0      string
 	runAs      string
+	supGroups  []string // chpst -u user:group:group2...
 	envFile    string
+	envDir     string // chpst -e (runit envdir)
 	workingDir string
 	chroot     string
 
@@ -291,6 +295,12 @@ func convertService(dir string) (*slinitConfig, []warning, error) {
 		if _, err := os.Stat(cfg.envFile); err != nil {
 			cfg.envFile = ""
 		}
+	}
+	// chpst runs from the svdir (runsv chdirs there), so a relative
+	// `chpst -e ./env` names a directory inside it. slinit resolves
+	// env-dir against its own cwd, not working-dir — anchor it.
+	if cfg.envDir != "" && !filepath.IsAbs(cfg.envDir) {
+		cfg.envDir = filepath.Join(absDir, cfg.envDir)
 	}
 
 	// log/run → companion `<name>-log` service. Recursively convert
@@ -554,94 +564,107 @@ func parseChpst(cfg *slinitConfig, args []string) []warning {
 			cfg.command = joinCommand(args[i:])
 			return warns
 		}
-		// Multi-char flag like `-uUSER` or standalone `-P`.
+		// Flags group like getopt allows: `-P0` is -P then -0, and
+		// a value-taking flag ends the group, taking the rest of it
+		// (`-Pu daemon` is -P then -u daemon, `-uUSER` is -u USER).
+		// Reading only the first letter dropped -0 from `-P0`.
 		flag := a[1:]
-		if len(flag) == 0 {
-			// Weird bare `-`; skip.
-			i++
-			continue
-		}
-		flagChar := flag[0]
-		var val string
-		// -A joined the takesValue set in runit 2025-08 (chpst
-		// commit 45b7fde). Add it here so `chpst -A 30 daemon` parses
-		// as (-A 30) + daemon rather than treating "30" as the
-		// command name.
-		takesValue := strings.ContainsRune("uUbemdopfcrtCnlLA/", rune(flagChar))
-		if takesValue {
-			if len(flag) > 1 {
-				val = flag[1:]
-				i++
-			} else if i+1 < len(args) {
-				val = args[i+1]
-				i += 2
-			} else {
-				warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -%c missing value", flagChar)})
-				i++
-				continue
+		i++
+		for j := 0; j < len(flag); j++ {
+			flagChar := flag[j]
+			var val string
+			// -A joined the takesValue set in runit 2025-08 (chpst
+			// commit 45b7fde). Add it here so `chpst -A 30 daemon` parses
+			// as (-A 30) + daemon rather than treating "30" as the
+			// command name.
+			takesValue := strings.ContainsRune("uUbemdopfcrtCnlLA/", rune(flagChar))
+			if takesValue {
+				if j+1 < len(flag) {
+					val = flag[j+1:]
+				} else if i < len(args) {
+					val = args[i]
+					i++
+				} else {
+					warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -%c missing value", flagChar)})
+					break
+				}
+				j = len(flag)
 			}
-		} else {
-			i++
-		}
-		switch flagChar {
-		case 'u':
-			cfg.runAs = val
-		case 'U':
-			// Sets USER/UID/GID env vars only, not real uid. No
-			// direct slinit equivalent; user can hand-craft an
-			// env-file.
-			warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -U %s (env-only user) not mapped — set USER/UID/GID via env-file manually", val)})
-		case 'b':
-			cfg.argv0 = val
-		case 'e':
-			// runit envdir → slinit env-file is a rough
-			// approximation (envdir is dir-of-files, env-file is
-			// KEY=VALUE lines). Warn.
-			cfg.envFile = val
-			warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -e %s is an envdir; slinit env-file expects KEY=VALUE lines — you may need to convert the dir to a single file", val)})
-		case 'm':
-			cfg.rlimitData = val
-			warns = append(warns, warning{"WARN", "chpst -m sets data+stack+locked+memlock; slinit rlimit-data maps only the data segment — review whether that's enough"})
-		case 'd':
-			cfg.rlimitData = val
-		case 'o':
-			cfg.rlimitNofile = val
-		case 'c':
-			cfg.rlimitCore = val
-		case 'p', 'f', 'r', 't':
-			warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -%c %s not mapped (slinit lacks rlimit-%s in the config grammar)", flagChar, val, chpstFlagToRlimit(flagChar))})
-		case '/':
-			cfg.chroot = val
-		case 'C':
-			cfg.workingDir = val
-		case 'n':
-			warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -n %s (nice level) not mapped", val)})
-		case 'A':
-			// runit 2025-08 (chpst commit 45b7fde) added -A N as
-			// a SIGALRM timer set before newpid1. Slinit has no
-			// runtime alarm primitive — `stop-timeout` is the
-			// closest analogue but different semantics (deadline
-			// on stop, not on the whole process lifetime). Warn
-			// so the operator picks the right rewrite manually.
-			warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -A %s (SIGALRM timer) not mapped — slinit has no runtime alarm; consider stop-timeout if you meant a stop deadline", val)})
-		case 'l', 'L':
-			cfg.lockFile = val
-		case 'P':
-			cfg.newSession = true
-		case '0':
-			cfg.closeStdin = true
-		case '1':
-			cfg.closeStdout = true
-		case '2':
-			cfg.closeStderr = true
-		case 'N':
-			cfg.closeStdin, cfg.closeStdout, cfg.closeStderr = true, true, true
-		case 'F', 'I':
-			warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -%c (PID namespace) not mapped — consider slinit's namespace-pid directive", flagChar)})
-		case 'v', 'V':
-			// verbose / version — irrelevant to the converted svc.
-		default:
-			warns = append(warns, warning{"WARN", fmt.Sprintf("unknown chpst flag -%c", flagChar)})
+			switch flagChar {
+			case 'u':
+				// user[:group[:group...]]: the gid is the first group,
+				// the groups every group listed. run-as takes user:group
+				// only; a longer spec is one ResolveRunAs rejects, and the
+				// service never started.
+				parts := strings.Split(val, ":")
+				cfg.runAs = strings.Join(parts[:min(len(parts), 2)], ":")
+				cfg.supGroups = nil
+				if len(parts) > 2 {
+					cfg.supGroups = parts[2:]
+				}
+				if strings.HasPrefix(val, ":") {
+					warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -u %s takes numeric ids without "+
+						"consulting /etc/passwd; slinit's run-as looks them up — rewrite it as user:group", val)})
+				}
+			case 'U':
+				// Sets USER/UID/GID env vars only, not real uid. No
+				// direct slinit equivalent; user can hand-craft an
+				// env-file.
+				warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -U %s (env-only user) not mapped — set USER/UID/GID via env-file manually", val)})
+			case 'b':
+				cfg.argv0 = val
+			case 'e':
+				// runit envdir → slinit env-dir, which reads the same
+				// one-file-per-variable layout (first line, NULs to
+				// newlines, empty file unsets). Emitting env-file
+				// pointed a KEY=VALUE reader at a directory: the read
+				// failed, was only logged, and the service started
+				// without the variables.
+				cfg.envDir = val
+			case 'm':
+				cfg.rlimitData = val
+				warns = append(warns, warning{"WARN", "chpst -m sets data+stack+locked+memlock; slinit rlimit-data maps only the data segment — review whether that's enough"})
+			case 'd':
+				cfg.rlimitData = val
+			case 'o':
+				cfg.rlimitNofile = val
+			case 'c':
+				cfg.rlimitCore = val
+			case 'p', 'f', 'r', 't':
+				warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -%c %s not mapped (slinit lacks rlimit-%s in the config grammar)", flagChar, val, chpstFlagToRlimit(flagChar))})
+			case '/':
+				cfg.chroot = val
+			case 'C':
+				cfg.workingDir = val
+			case 'n':
+				warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -n %s (nice level) not mapped", val)})
+			case 'A':
+				// runit 2025-08 (chpst commit 45b7fde) added -A N as
+				// a SIGALRM timer set before newpid1. Slinit has no
+				// runtime alarm primitive — `stop-timeout` is the
+				// closest analogue but different semantics (deadline
+				// on stop, not on the whole process lifetime). Warn
+				// so the operator picks the right rewrite manually.
+				warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -A %s (SIGALRM timer) not mapped — slinit has no runtime alarm; consider stop-timeout if you meant a stop deadline", val)})
+			case 'l', 'L':
+				cfg.lockFile = val
+			case 'P':
+				cfg.newSession = true
+			case '0':
+				cfg.closeStdin = true
+			case '1':
+				cfg.closeStdout = true
+			case '2':
+				cfg.closeStderr = true
+			case 'N':
+				cfg.closeStdin, cfg.closeStdout, cfg.closeStderr = true, true, true
+			case 'F', 'I':
+				warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -%c (PID namespace) not mapped — consider slinit's namespace-pid directive", flagChar)})
+			case 'v', 'V':
+				// verbose / version — irrelevant to the converted svc.
+			default:
+				warns = append(warns, warning{"WARN", fmt.Sprintf("unknown chpst flag -%c", flagChar)})
+			}
 		}
 	}
 	// We consumed all args without finding a daemon — chpst-only
@@ -677,13 +700,19 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 		fmt.Fprintf(w, "command = %s\n", c.command)
 	}
 	if c.argv0 != "" {
-		fmt.Fprintf(w, "argv0 = %s\n", c.argv0)
+		fmt.Fprintf(w, "command-argv0 = %s\n", c.argv0)
 	}
 	if c.runAs != "" {
 		fmt.Fprintf(w, "run-as = %s\n", c.runAs)
 	}
+	if len(c.supGroups) > 0 {
+		fmt.Fprintf(w, "supplementary-groups = %s\n", strings.Join(c.supGroups, " "))
+	}
 	if c.envFile != "" {
 		fmt.Fprintf(w, "env-file = %s\n", c.envFile)
+	}
+	if c.envDir != "" {
+		fmt.Fprintf(w, "env-dir = %s\n", c.envDir)
 	}
 	if c.workingDir != "" {
 		fmt.Fprintf(w, "working-dir = %s\n", c.workingDir)

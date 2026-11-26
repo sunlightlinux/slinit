@@ -51,10 +51,11 @@ func translate(argv []string) ([]string, error) {
 		if len(argv) != 2 {
 			return nil, fmt.Errorf("rc-service --exists <service>")
 		}
-		// Slinit's equivalent is `is-started` returning non-zero if
-		// the service isn't even loadable. That's close enough to
-		// OpenRC's semantic of "this service exists on the system".
-		return []string{"is-started", argv[1]}, nil
+		// OpenRC's -e succeeds whenever the service resolves, in any
+		// state, and prints nothing. query-name loads the service and
+		// fails only when it cannot be found or loaded; run discards
+		// the name it prints.
+		return []string{"query-name", argv[1]}, nil
 	case "-l", "--list":
 		return []string{"list"}, nil
 	case "-r", "--resolve":
@@ -148,6 +149,9 @@ func run(argv []string, stdout, stderr *os.File) int {
 	if len(argv) == 2 && argv[1] == "status" {
 		return runStatus(bin, argv[0], stdout, stderr)
 	}
+	if argv[0] == "-e" || argv[0] == "--exists" {
+		return runExists(bin, argv[1], stderr)
+	}
 
 	argvOut := append([]string{bin}, out...)
 	if err := execFunc(bin, argvOut, os.Environ()); err != nil {
@@ -177,6 +181,22 @@ func runStatus(bin, service string, stdout, stderr *os.File) int {
 	cmd.Stderr = stderr
 	state, _ := cmd.Output()
 	return openrcStatusCode(strings.TrimSpace(string(state)))
+}
+
+// runExists answers OpenRC's -e: exit 0 when the service resolves,
+// whatever its state, with nothing on stdout. Errors (not found, no
+// daemon) still reach stderr.
+func runExists(bin, service string, stderr *os.File) int {
+	cmd := exec.Command(bin, "query-name", service)
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode()
+		}
+		fmt.Fprintf(stderr, "rc-service: %s: %v\n", bin, err)
+		return 1
+	}
+	return 0
 }
 
 // openrcStatusCode maps the state slinitctl prints to the exit status

@@ -88,3 +88,63 @@ func TestAttachStrictRefusalCleansUp(t *testing.T) {
 		t.Errorf("temporary mount point left behind: %v", left)
 	}
 }
+
+// The journal directory was probed with os.Stat on the mount point plus
+// the subpath, which follows the image's symlinks on the host: an image
+// whose var/log/slinit-journal pointed at a host directory had that
+// directory's journal shown as the image's.
+func TestAttachResolvesJournalDirInsideImage(t *testing.T) {
+	calls := stubTools(t, "")
+	host := t.TempDir()
+	if err := os.WriteFile(filepath.Join(host, "host.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mount := "#!/bin/sh\necho \"mount $*\" >> " + calls + "\nmkdir -p \"$4/var/log\" && ln -s " + host + " \"$4/var/log/slinit-journal\"\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(calls), "mount"), []byte(mount), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	origEUID := geteuid
+	geteuid = func() int { return 0 }
+	defer func() { geteuid = origEUID }()
+	img := filepath.Join(t.TempDir(), "disk.img")
+	if err := os.WriteFile(img, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mnt, jdir, detach, err := Attach(img, nil)
+	if err != nil {
+		return // no journal inside the image: right
+	}
+	defer detach()
+	real, _ := filepath.EvalSymlinks(jdir)
+	if !strings.HasPrefix(real, mnt+"/") {
+		t.Fatalf("journal dir %s resolves to %s, outside the image mounted at %s", jdir, real, mnt)
+	}
+}
+
+// A journal directory that is in the image is found, its symlinks
+// resolved inside it.
+func TestAttachFindsJournalDirInsideImage(t *testing.T) {
+	calls := stubTools(t, "")
+	mount := "#!/bin/sh\necho \"mount $*\" >> " + calls + "\nmkdir -p \"$4/data/j\" \"$4/var/log\" && ln -s /data/j \"$4/var/log/slinit-journal\"\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(calls), "mount"), []byte(mount), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	origEUID := geteuid
+	geteuid = func() int { return 0 }
+	defer func() { geteuid = origEUID }()
+	img := filepath.Join(t.TempDir(), "disk.img")
+	if err := os.WriteFile(img, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mnt, jdir, detach, err := Attach(img, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detach()
+	real, _ := filepath.EvalSymlinks(mnt)
+	if jdir != filepath.Join(real, "data/j") {
+		t.Errorf("journal dir = %s; want %s", jdir, filepath.Join(real, "data/j"))
+	}
+}

@@ -13,7 +13,11 @@ import (
 
 func TestScheduleShutdownPayloadRoundTrip(t *testing.T) {
 	for _, msg := range []string{"", "kernel update"} {
-		st, d, m, ok := DecodeScheduleShutdown(EncodeScheduleShutdown(service.ShutdownReboot, 7*time.Minute, msg))
+		payload, err := EncodeScheduleShutdown(service.ShutdownReboot, 7*time.Minute, msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, d, m, ok := DecodeScheduleShutdown(payload)
 		if !ok || st != service.ShutdownReboot || d != 7*time.Minute || m != msg {
 			t.Errorf("round trip of %q: %v %v %q %v", msg, st, d, m, ok)
 		}
@@ -30,6 +34,33 @@ func TestParseShutdownTimeHHMM(t *testing.T) {
 	}
 	if d, _ := ParseShutdownTime("06:00", now); d != 7*time.Hour+45*time.Minute {
 		t.Errorf("tomorrow: %v", d)
+	}
+}
+
+// A delay too large for the wire's 32-bit seconds field used to
+// overflow time.Duration (negative: "now") or wrap the field (+71582789
+// minutes became 44 seconds). Both are errors now, at parse and encode.
+func TestShutdownTimeOutOfRange(t *testing.T) {
+	now := time.Now()
+	for _, s := range []string{"+153722868", "+71582789", "71582789", "+9223372036854775807"} {
+		if d, err := ParseShutdownTime(s, now); err == nil {
+			t.Errorf("%s parsed as %v, want an error", s, d)
+		}
+	}
+	if d, err := ParseShutdownTime("+71582788", now); err != nil || d != 71582788*time.Minute {
+		t.Errorf("+71582788 (largest that fits): %v %v", d, err)
+	}
+	for _, d := range []time.Duration{-time.Second, MaxShutdownDelay + time.Second} {
+		if _, err := EncodeScheduleShutdown(service.ShutdownPoweroff, d, ""); err == nil {
+			t.Errorf("encode of %v accepted", d)
+		}
+	}
+	payload, err := EncodeScheduleShutdown(service.ShutdownPoweroff, MaxShutdownDelay, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, d, _, _ := DecodeScheduleShutdown(payload); d != MaxShutdownDelay {
+		t.Errorf("max delay round-tripped as %v", d)
 	}
 }
 
@@ -117,5 +148,46 @@ func TestNologinRemovedBeforeScheduledSoftReboot(t *testing.T) {
 	}
 	if exists(path) {
 		t.Error("nologin survives into the soft-rebooted system")
+	}
+}
+
+// An immediate shutdown request must cancel a scheduled one. It used to
+// leave the timer armed and, before a soft-reboot, the scheduled
+// shutdown's nologin in /run: the soft-rebooted system refused non-root
+// logins, and the old schedule still fired on it.
+func TestImmediateShutdownClearsScheduled(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	path := filepath.Join(t.TempDir(), "nologin")
+	server.NologinPath = path
+	got := make(chan service.ShutdownType, 1)
+	server.ShutdownFunc = func(st service.ShutdownType, _ uint8) { got <- st }
+
+	server.ScheduleShutdown(service.ShutdownPoweroff, 3*time.Minute, "")
+	defer server.CancelShutdown()
+	if !exists(path) {
+		t.Fatal("no nologin for a shutdown 3 minutes away")
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	if err := WritePacket(conn, CmdShutdown, []byte{uint8(service.ShutdownSoftReboot)}); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := readReply(t, conn); r != RplyACK {
+		t.Fatalf("shutdown: rply=%d, want ACK", r)
+	}
+	if st := <-got; st != service.ShutdownSoftReboot {
+		t.Fatalf("ShutdownFunc got %v", st)
+	}
+	if exists(path) {
+		t.Error("nologin left behind by the superseded scheduled shutdown")
+	}
+	server.scheduledMu.Lock()
+	armed := server.scheduledTimer != nil
+	deadline := server.scheduledDeadline
+	server.scheduledMu.Unlock()
+	if armed || !deadline.IsZero() {
+		t.Errorf("scheduled shutdown still armed (timer %v, deadline %v)", armed, deadline)
 	}
 }

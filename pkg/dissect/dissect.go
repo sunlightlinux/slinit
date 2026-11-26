@@ -33,8 +33,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/internal/safepath"
 	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
@@ -121,8 +125,7 @@ func Attach(path string, policy *Policy) (mountDir, journalDir string, detach fu
 			continue // Filesystem probe failed — try next candidate.
 		}
 		for _, sub := range JournalSubpaths {
-			jdir := filepath.Join(tmpMount, sub)
-			if _, err := os.Stat(jdir); err == nil {
+			if jdir, ok := journalDirIn(tmpMount, sub); ok {
 				detach := func() error {
 					_ = process.RunAdhoc(exec.Command("umount", tmpMount))
 					_ = os.Remove(tmpMount)
@@ -139,6 +142,30 @@ func Attach(path string, policy *Policy) (mountDir, journalDir string, detach fu
 	return "", "", nil, fmt.Errorf(
 		"dissect: no journal directory found under %v on any partition of %s",
 		JournalSubpaths, path)
+}
+
+// journalDirIn returns the directory sub names inside the image mounted
+// at mnt, resolved there: os.Stat(mnt/sub) follows the image's symlinks
+// on the host, and an image whose var/log/slinit-journal pointed at a
+// host directory had that journal shown as the image's. The path
+// returned has no symlink left in it; the mount is read-only.
+func journalDirIn(mnt, sub string) (string, bool) {
+	fd, err := safepath.OpenInRoot(mnt, sub, unix.O_PATH|unix.O_DIRECTORY)
+	if err != nil {
+		return "", false
+	}
+	defer unix.Close(fd)
+	// The link reads back canonical, so compare it with the canonical
+	// mount point.
+	real, err := filepath.EvalSymlinks(mnt)
+	if err != nil {
+		return "", false
+	}
+	dir, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
+	if err != nil || !strings.HasPrefix(dir, real+"/") {
+		return "", false
+	}
+	return dir, true
 }
 
 // loopPartitions enumerates partition nodes for a loop device by

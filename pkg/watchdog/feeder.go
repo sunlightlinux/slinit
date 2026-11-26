@@ -21,6 +21,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -60,6 +61,25 @@ const (
 	// tests; the OS-conditional Open() never reaches the ioctl on
 	// other platforms anyway.
 	wdiocSetTimeout = 0xC0045706
+
+	// wdiocGetTimeout is _IOR('W', 7, int), WDIOC_GETTIMEOUT.
+	wdiocGetTimeout = 0x80045707
+)
+
+// The timeout ioctls, swappable so tests can stand a regular file in for
+// the device.
+var (
+	setTimeoutIoctl = func(fd, secs int) error {
+		return unix.IoctlSetPointerInt(fd, wdiocSetTimeout, secs)
+	}
+	getTimeoutIoctl = func(fd int) (int, error) {
+		var v int32
+		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), wdiocGetTimeout, uintptr(unsafe.Pointer(&v)))
+		if errno != 0 {
+			return 0, errno
+		}
+		return int(v), nil
+	}
 )
 
 // Config configures a Feeder. Zero values trigger sensible defaults; see
@@ -175,7 +195,7 @@ func (f *Feeder) setKernelTimeout(d time.Duration) error {
 	if secs <= 0 {
 		secs = 1
 	}
-	if err := unix.IoctlSetPointerInt(int(f.file.Fd()), wdiocSetTimeout, secs); err != nil {
+	if err := setTimeoutIoctl(int(f.file.Fd()), secs); err != nil {
 		return err
 	}
 	return nil
@@ -243,7 +263,11 @@ func (f *Feeder) Close() error {
 		return nil
 	}
 	f.closed = true
+	return f.disarm()
+}
 
+// disarm magic-closes the device. f.mu must be held.
+func (f *Feeder) disarm() error {
 	// Best-effort magic-close. If this fails (closed fd, EIO on a dead
 	// device) we still want to close the underlying file so we don't
 	// leak the descriptor.
@@ -260,6 +284,44 @@ func (f *Feeder) Close() error {
 		return fmt.Errorf("watchdog close: %w", closeErr)
 	}
 	return nil
+}
+
+// Handover is Close for the final shutdown of a reboot. The pings stop,
+// as after Close, but the device stays armed with timeout instead of
+// being disarmed, so a hang in what is left of the shutdown resets the
+// machine rather than holding it for ever. The open device is returned:
+// the caller must keep it reachable, as a collected *os.File is closed.
+//
+// The device is never left armed with a shorter timeout than asked for,
+// which nothing would feed: if the driver will not take timeout it is
+// disarmed as by Close, and the error says why.
+func (f *Feeder) Handover(timeout time.Duration) (*os.File, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return nil, errClosed
+	}
+	f.closed = true
+
+	err := f.setKernelTimeout(timeout)
+	if err == nil {
+		var secs int
+		secs, err = getTimeoutIoctl(int(f.file.Fd()))
+		if err == nil && time.Duration(secs)*time.Second < timeout {
+			err = fmt.Errorf("device took a %ds timeout, not %s", secs, timeout)
+		}
+	}
+	if err == nil {
+		// Start the long countdown from now.
+		_, err = f.file.Write([]byte{keepAliveByte})
+	}
+	if err != nil {
+		if derr := f.disarm(); derr != nil {
+			err = fmt.Errorf("%w; %v", err, derr)
+		}
+		return nil, fmt.Errorf("watchdog handover: %w", err)
+	}
+	return f.file, nil
 }
 
 // Device returns the resolved device path the feeder is bound to.

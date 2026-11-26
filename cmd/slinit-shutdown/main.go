@@ -44,116 +44,17 @@ func main() {
 		fmt.Printf("slinit-shutdown version %s\n", version)
 		return
 	}
-	var (
-		showHelp    bool
-		sysShutdown bool
-		forceMode   bool
-		useCFD      bool
-		wtmpOnly    bool
-		noWtmp      bool
-		noSync      bool
-		noWall      bool
-		interactive bool
-		// shutdown(8): -c, and the operands (a time, then a message).
-		cancel   bool
-		operands []string
-	)
-
-	shutdownType := defaultShutdownType()
-
-	// Detect invocation name for symlink-based defaults
 	execName := filepath.Base(os.Args[0])
-	switch {
-	case strings.HasSuffix(execName, "reboot") && !strings.HasSuffix(execName, "soft-reboot"):
-		shutdownType = service.ShutdownReboot
-	case strings.HasSuffix(execName, "soft-reboot"):
-		shutdownType = service.ShutdownSoftReboot
-	case strings.HasSuffix(execName, "halt"):
-		shutdownType = service.ShutdownHalt
+	o, err := parseArgs(execName, os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if o.grace != 0 {
+		shutdown.SetKillGracePeriod(o.grace)
 	}
 
-	for i := 1; i < len(os.Args); i++ {
-		arg := os.Args[i]
-		switch {
-		case arg == "--help":
-			showHelp = true
-		case arg == "--system":
-			sysShutdown = true
-		// systemd(1) reboot/halt/poweroff surface — long-form aliases.
-		case arg == "--halt":
-			shutdownType = service.ShutdownHalt
-		case arg == "--reboot":
-			shutdownType = service.ShutdownReboot
-		case arg == "--poweroff":
-			// systemd: `--poweroff` overrides argv[0] except when the
-			// binary is `reboot`, where it is ignored. Match that quirk.
-			if !strings.HasSuffix(execName, "reboot") ||
-				strings.HasSuffix(execName, "soft-reboot") {
-				shutdownType = service.ShutdownPoweroff
-			}
-		case arg == "-r":
-			shutdownType = service.ShutdownReboot
-		case execName == "shutdown" && arg == "-h":
-			shutdownType = shutdownDashH(shutdownType)
-		case arg == "-h":
-			// systemd: `-h` is short for --halt only for the poweroff
-			// binary; for others it's already a shutdown type toggle.
-			shutdownType = service.ShutdownHalt
-		case arg == "-p":
-			shutdownType = service.ShutdownPoweroff
-		case arg == "-s":
-			shutdownType = service.ShutdownSoftReboot
-		case arg == "-k":
-			shutdownType = service.ShutdownKexec
-		// systemd(1) reboot(8) options that bypass the init contact
-		// (or gate the utmp/wall/sync side effects). -f/--force triggers
-		// the *minimal* path (sync + reboot syscall); --system is the
-		// legacy alias for the *full* cleanup path (kill(-1) + umount +
-		// sync + reboot). Kept separate to match systemd's contract:
-		// `reboot -f` is documented as "does not contact the init system"
-		// and "filesystems are not properly unmounted before shutdown".
-		case arg == "-f", arg == "--force":
-			forceMode = true
-		case arg == "-w", arg == "--wtmp-only":
-			wtmpOnly = true
-		case arg == "-d", arg == "--no-wtmp":
-			noWtmp = true
-		case arg == "-n", arg == "--no-sync":
-			noSync = true
-		case arg == "--no-wall":
-			noWall = true
-		case arg == "-i", arg == "--interactive":
-			// s6-linux-init-hpr -i: prompt for the local short hostname
-			// before shutting the box down. Cheap safeguard against the
-			// classic SSH footgun of rebooting the wrong host.
-			interactive = true
-		case arg == "--use-passed-cfd":
-			useCFD = true
-		case strings.HasPrefix(arg, "--grace="):
-			if d, err := time.ParseDuration(arg[len("--grace="):]); err == nil {
-				shutdown.SetKillGracePeriod(d)
-			} else {
-				fmt.Fprintf(os.Stderr, "Invalid --grace value: %s\n", arg[len("--grace="):])
-				os.Exit(1)
-			}
-		case execName == "shutdown" && arg == "-P":
-			shutdownType = service.ShutdownPoweroff
-		case execName == "shutdown" && arg == "-H":
-			shutdownType = service.ShutdownHalt
-		case execName == "shutdown" && arg == "-c":
-			cancel = true
-		case execName == "shutdown" && !strings.HasPrefix(arg, "-"):
-			// shutdown(8)'s operands: a time, then an optional wall
-			// message. Everything from here on is operands.
-			operands = os.Args[i:]
-			i = len(os.Args)
-		default:
-			fmt.Fprintf(os.Stderr, "Unrecognized option: %s\n", arg)
-			os.Exit(1)
-		}
-	}
-
-	if showHelp {
+	if o.showHelp {
 		printUsage(execName)
 		os.Exit(0)
 	}
@@ -161,7 +62,7 @@ func main() {
 	// -w / --wtmp-only writes the shutdown record and exits without
 	// touching the init system or the reboot syscall. Matches systemd's
 	// contract exactly.
-	if wtmpOnly {
+	if o.wtmpOnly {
 		utmp.LogShutdown()
 		os.Exit(0)
 	}
@@ -169,8 +70,8 @@ func main() {
 	// -i / --interactive: require the operator to type the local
 	// short hostname before proceeding. Applies before any shutdown
 	// path (force / system / daemon) so the confirmation is universal.
-	if interactive {
-		verb := shutdownVerb(shutdownType)
+	if o.interactive {
+		verb := shutdownVerb(o.shutdownType)
 		if err := shutdown.ConfirmHostname(verb); err != nil {
 			fmt.Fprintf(os.Stderr, "slinit-shutdown: %v\n", err)
 			os.Exit(1)
@@ -180,13 +81,13 @@ func main() {
 	// Propagate the systemd-style gating knobs to pkg/shutdown so they
 	// apply to the direct path (--system / -f). They're no-ops on the
 	// daemon path — the daemon owns its own wtmp/sync/wall policy.
-	if noSync {
+	if o.noSync {
 		shutdown.SetSyncEnabled(false)
 	}
-	if noWtmp {
+	if o.noWtmp {
 		shutdown.SetWtmpEnabled(false)
 	}
-	if noWall {
+	if o.noWall {
 		shutdown.SetWallEnabled(false)
 	}
 
@@ -194,17 +95,24 @@ func main() {
 	// which walls the countdown and refuses logins in the last five
 	// minutes. "now" (or no time) keeps the path below.
 	if execName == "shutdown" {
-		delay, message, err := parseOperands(operands, time.Now())
+		delay, message, err := parseOperands(o.operands, o.cancel, time.Now())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
 			os.Exit(1)
 		}
-		if cancel || delay > 0 {
-			if forceMode || sysShutdown {
+		if o.warnOnly && !o.cancel {
+			if err := sendWarning(o.useCFD, shutdown.ShutdownNoticeText(o.shutdownType, delay, message)); err != nil {
+				fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if o.cancel || delay > 0 {
+			if o.forceMode || o.sysShutdown {
 				fmt.Fprintln(os.Stderr, "shutdown: -f/--system cannot be combined with a scheduled time or -c")
 				os.Exit(1)
 			}
-			if err := scheduleOrCancel(useCFD, shutdownType, delay, message, cancel); err != nil {
+			if err := scheduleOrCancel(o.useCFD, o.shutdownType, delay, message, o.cancel); err != nil {
 				fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
 				os.Exit(1)
 			}
@@ -212,19 +120,19 @@ func main() {
 		}
 	}
 
-	if forceMode {
-		doForceShutdown(shutdownType)
+	if o.forceMode {
+		doForceShutdown(o.shutdownType)
 		os.Exit(1)
 	}
 
-	if sysShutdown {
-		doSystemShutdown(shutdownType)
+	if o.sysShutdown {
+		doSystemShutdown(o.shutdownType)
 		// Should not return
 		os.Exit(1)
 	}
 
 	// Connect to daemon and issue shutdown command
-	conn, err := connectToDaemon(useCFD)
+	conn, err := connectToDaemon(o.useCFD)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to slinit daemon: %v\n", err)
 		os.Exit(1)
@@ -238,7 +146,7 @@ func main() {
 
 	fmt.Println("Issuing shutdown command...")
 
-	payload := []byte{uint8(shutdownType)}
+	payload := []byte{uint8(o.shutdownType)}
 	if err := control.WritePacket(conn, control.CmdShutdown, payload); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to send shutdown command: %v\n", err)
 		os.Exit(1)
@@ -257,6 +165,130 @@ func main() {
 
 	// Wait indefinitely — the system should shut down around us
 	select {}
+}
+
+// options is the parsed command line.
+type options struct {
+	showHelp    bool
+	sysShutdown bool
+	forceMode   bool
+	useCFD      bool
+	wtmpOnly    bool
+	noWtmp      bool
+	noSync      bool
+	noWall      bool
+	interactive bool
+	grace       time.Duration
+	// shutdown(8): -c, -k (warn only), and the operands (a time, then
+	// a message).
+	cancel       bool
+	warnOnly     bool
+	operands     []string
+	shutdownType service.ShutdownType
+}
+
+// parseArgs reads the command line (without argv[0]) for the name the
+// binary was invoked as, which sets the default action and, for
+// shutdown, the shutdown(8) options.
+func parseArgs(execName string, args []string) (options, error) {
+	o := options{shutdownType: defaultShutdownType()}
+
+	// Detect invocation name for symlink-based defaults
+	switch {
+	case strings.HasSuffix(execName, "reboot") && !strings.HasSuffix(execName, "soft-reboot"):
+		o.shutdownType = service.ShutdownReboot
+	case strings.HasSuffix(execName, "soft-reboot"):
+		o.shutdownType = service.ShutdownSoftReboot
+	case strings.HasSuffix(execName, "halt"):
+		o.shutdownType = service.ShutdownHalt
+	}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help":
+			o.showHelp = true
+		case arg == "--system":
+			o.sysShutdown = true
+		// systemd(1) reboot/halt/poweroff surface — long-form aliases.
+		case arg == "--halt":
+			o.shutdownType = service.ShutdownHalt
+		case arg == "--reboot":
+			o.shutdownType = service.ShutdownReboot
+		case arg == "--poweroff":
+			// systemd: `--poweroff` overrides argv[0] except when the
+			// binary is `reboot`, where it is ignored. Match that quirk.
+			if !strings.HasSuffix(execName, "reboot") ||
+				strings.HasSuffix(execName, "soft-reboot") {
+				o.shutdownType = service.ShutdownPoweroff
+			}
+		case arg == "-r":
+			o.shutdownType = service.ShutdownReboot
+		case execName == "shutdown" && arg == "-h":
+			o.shutdownType = shutdownDashH(o.shutdownType)
+		case arg == "-h":
+			// systemd: `-h` is short for --halt only for the poweroff
+			// binary; for others it's already a shutdown type toggle.
+			o.shutdownType = service.ShutdownHalt
+		case arg == "-p":
+			o.shutdownType = service.ShutdownPoweroff
+		case arg == "-s":
+			o.shutdownType = service.ShutdownSoftReboot
+		case execName == "shutdown" && arg == "-k":
+			// shutdown(8), sysvinit and systemd alike: send the
+			// warning only, never shut down.
+			o.warnOnly = true
+		case arg == "-k":
+			o.shutdownType = service.ShutdownKexec
+		// systemd(1) reboot(8) options that bypass the init contact
+		// (or gate the utmp/wall/sync side effects). -f/--force triggers
+		// the *minimal* path (sync + reboot syscall); --system is the
+		// legacy alias for the *full* cleanup path (kill(-1) + umount +
+		// sync + reboot). Kept separate to match systemd's contract:
+		// `reboot -f` is documented as "does not contact the init system"
+		// and "filesystems are not properly unmounted before shutdown".
+		case arg == "-f", arg == "--force":
+			o.forceMode = true
+		case arg == "-w", arg == "--wtmp-only":
+			o.wtmpOnly = true
+		case arg == "-d", arg == "--no-wtmp":
+			o.noWtmp = true
+		case arg == "-n", arg == "--no-sync":
+			o.noSync = true
+		case arg == "--no-wall":
+			o.noWall = true
+		case arg == "-i", arg == "--interactive":
+			// s6-linux-init-hpr -i: prompt for the local short hostname
+			// before shutting the box down. Cheap safeguard against the
+			// classic SSH footgun of rebooting the wrong host.
+			o.interactive = true
+		case arg == "--use-passed-cfd":
+			o.useCFD = true
+		case strings.HasPrefix(arg, "--grace="):
+			d, err := time.ParseDuration(arg[len("--grace="):])
+			if err != nil {
+				return o, fmt.Errorf("Invalid --grace value: %s", arg[len("--grace="):])
+			}
+			o.grace = d
+		case execName == "shutdown" && arg == "-P":
+			o.shutdownType = service.ShutdownPoweroff
+		case execName == "shutdown" && arg == "-H":
+			o.shutdownType = service.ShutdownHalt
+		case execName == "shutdown" && arg == "-c":
+			o.cancel = true
+		case execName == "shutdown" && arg == "--":
+			o.operands = append(o.operands, args[i+1:]...)
+			i = len(args)
+		case execName == "shutdown" && !strings.HasPrefix(arg, "-"):
+			// shutdown(8)'s operands: a time, then an optional wall
+			// message. Options may follow them, as getopt permutes
+			// (shutdown now -r reboots); -- ends the options.
+			o.operands = append(o.operands, arg)
+		default:
+			return o, fmt.Errorf("Unrecognized option: %s", arg)
+		}
+	}
+	return o, nil
 }
 
 func defaultShutdownType() service.ShutdownType {
@@ -314,6 +346,7 @@ shutdown [OPTIONS] [TIME [MESSAGE...]]
                      refuses new logins in its last five minutes
   MESSAGE            text added to the warnings
   -c                 cancel a scheduled shutdown
+  -k                 only send the warning; do not shut down
   -P, -H             power off, halt
 `)
 	}
@@ -407,10 +440,14 @@ func checkProtocolVersion(conn net.Conn) error {
 
 // parseOperands reads shutdown(8)'s operands: an optional time (see
 // control.ParseShutdownTime, shared with slinitctl shutdown), then the
-// words of a wall message. With no operands the time is now.
-func parseOperands(operands []string, now time.Time) (time.Duration, string, error) {
+// words of a wall message. With no operands the time is now. Under -c
+// there is no time: every operand is the message, as in systemd.
+func parseOperands(operands []string, cancel bool, now time.Time) (time.Duration, string, error) {
 	if len(operands) == 0 {
 		return 0, "", nil
+	}
+	if cancel {
+		return 0, strings.Join(operands, " "), nil
 	}
 	delay, err := control.ParseShutdownTime(operands[0], now)
 	if err != nil {
@@ -430,9 +467,12 @@ func scheduleOrCancel(useCFD bool, st service.ShutdownType, delay time.Duration,
 	if err := checkProtocolVersion(conn); err != nil {
 		return err
 	}
-	cmd, payload := control.CmdScheduleShutdown, control.EncodeScheduleShutdown(st, delay, message)
-	if cancel {
-		cmd, payload = control.CmdCancelShutdown, nil
+	cmd, payload := control.CmdCancelShutdown, []byte(nil)
+	if !cancel {
+		cmd = control.CmdScheduleShutdown
+		if payload, err = control.EncodeScheduleShutdown(st, delay, message); err != nil {
+			return err
+		}
 	}
 	if err := control.WritePacket(conn, cmd, payload); err != nil {
 		return err
@@ -452,6 +492,36 @@ func scheduleOrCancel(useCFD bool, st service.ShutdownType, delay time.Duration,
 	default:
 		return fmt.Errorf("slinit refused the request (reply %d)", rply)
 	}
+	return nil
+}
+
+// sendWarning is shutdown -k: slinit walls text to every logged-in user
+// and nothing is scheduled.
+func sendWarning(useCFD bool, text string) error {
+	conn, err := connectToDaemon(useCFD)
+	if err != nil {
+		return fmt.Errorf("cannot connect to slinit: %w", err)
+	}
+	defer conn.Close()
+	if err := checkProtocolVersion(conn); err != nil {
+		return err
+	}
+	msg := []byte(text)
+	if len(msg) > 0xFFFF {
+		msg = msg[:0xFFFF]
+	}
+	payload := append([]byte{byte(len(msg)), byte(len(msg) >> 8)}, msg...)
+	if err := control.WritePacket(conn, control.CmdWallNotice, payload); err != nil {
+		return err
+	}
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("slinit refused the warning (reply %d)", rply)
+	}
+	fmt.Println("Shutdown warning sent; nothing is scheduled.")
 	return nil
 }
 

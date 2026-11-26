@@ -76,9 +76,9 @@ func TestCronCalendarRunHasNoDeadline(t *testing.T) {
 	if _, has := ictx.Deadline(); !has {
 		t.Error("interval run lost its deadline")
 	}
-	origWait := cronStopWait
-	cronStopWait = 50 * time.Millisecond
-	defer func() { cronStopWait = origWait }()
+	origWait := cronStopWait.Load()
+	cronStopWait.Store(50 * time.Millisecond)
+	defer cronStopWait.Store(origWait)
 	close(cr.stopCh)
 	select {
 	case <-ctx.Done():
@@ -94,9 +94,10 @@ func TestCronCalendarRunHasNoDeadline(t *testing.T) {
 
 // Stopping ends the whole group, and one that ignores SIGTERM after the grace.
 func TestCronStopEndsTheProcessGroup(t *testing.T) {
-	origWait, origGrace := cronStopWait, cronStopGrace
-	cronStopWait, cronStopGrace = 50*time.Millisecond, 100*time.Millisecond
-	defer func() { cronStopWait, cronStopGrace = origWait, origGrace }()
+	origWait, origGrace := cronStopWait.Load(), cronStopGrace.Load()
+	cronStopWait.Store(50 * time.Millisecond)
+	cronStopGrace.Store(100 * time.Millisecond)
+	defer func() { cronStopWait.Store(origWait); cronStopGrace.Store(origGrace) }()
 	set, l := newTestSet()
 	spec, err := ParseCalendar("minutely")
 	if err != nil {

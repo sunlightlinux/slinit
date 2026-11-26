@@ -23,7 +23,7 @@ func dinitBinary(t *testing.T) string {
 	if p, err := exec.LookPath("dinit"); err == nil {
 		return p
 	}
-	t.Skip("no dinit binary: set SLINIT_TEST_DINIT or put dinit on PATH")
+	t.Skip("no dinit binary: set SLINIT_TEST_DINIT (make in a dinit checkout builds src/dinit, no install needed) or put dinit on PATH")
 	return ""
 }
 

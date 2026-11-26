@@ -23,8 +23,18 @@ import (
 //	    log.Warn("journal: %s unwritable (%v), using volatile %s", …)
 //	}
 func OpenFileSinkWithFallback(primaryDir, fallbackDir string, opts FileSinkOptions) (*FileSink, string, error) {
+	return OpenWithFallback(primaryDir, fallbackDir, func(dir string) (*FileSink, error) {
+		return NewFileSinkWithOptions(dir, opts)
+	})
+}
+
+// OpenWithFallback is OpenFileSinkWithFallback for any sink: open is
+// called with the directory it is to write in, so anything bound to a
+// directory (a vacuum hook) is bound to the one actually used.
+func OpenWithFallback[S any](primaryDir, fallbackDir string, open func(dir string) (S, error)) (S, string, error) {
+	var zero S
 	if err := probeWritable(primaryDir); err == nil {
-		fs, ferr := NewFileSinkWithOptions(primaryDir, opts)
+		fs, ferr := open(primaryDir)
 		if ferr == nil {
 			return fs, primaryDir, nil
 		}
@@ -32,21 +42,21 @@ func OpenFileSinkWithFallback(primaryDir, fallbackDir string, opts FileSinkOptio
 		// with a chmod, quota exhaustion). Fall through so the
 		// fallback still gets a shot.
 		if fallbackDir == "" {
-			return nil, "", ferr
+			return zero, "", ferr
 		}
-		fs, ferr2 := NewFileSinkWithOptions(fallbackDir, opts)
+		fs, ferr2 := open(fallbackDir)
 		if ferr2 != nil {
-			return nil, "", fmt.Errorf("journald: both primary (%v) and fallback (%v) failed",
+			return zero, "", fmt.Errorf("journald: both primary (%v) and fallback (%v) failed",
 				ferr, ferr2)
 		}
 		return fs, fallbackDir, ferr
 	} else {
 		if fallbackDir == "" {
-			return nil, "", err
+			return zero, "", err
 		}
-		fs, ferr := NewFileSinkWithOptions(fallbackDir, opts)
+		fs, ferr := open(fallbackDir)
 		if ferr != nil {
-			return nil, "", fmt.Errorf("journald: primary %s unwritable (%v) and fallback %s failed (%v)",
+			return zero, "", fmt.Errorf("journald: primary %s unwritable (%v) and fallback %s failed (%v)",
 				primaryDir, err, fallbackDir, ferr)
 		}
 		return fs, fallbackDir, err

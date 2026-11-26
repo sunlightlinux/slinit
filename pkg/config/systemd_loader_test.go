@@ -116,6 +116,39 @@ func TestSystemdDirPrecedence(t *testing.T) {
 	}
 }
 
+// `systemctl mask` puts a symlink to /dev/null (or an empty file) in /etc.
+// That failed IsRegular and was skipped, so the loader went on to the
+// packaged unit in /usr/lib and ran what the admin had masked.
+func TestMaskedSystemdUnitIsNotLoaded(t *testing.T) {
+	for _, how := range []string{"devnull", "empty"} {
+		t.Run(how, func(t *testing.T) {
+			root := t.TempDir()
+			etc := filepath.Join(root, "etc")
+			usr := filepath.Join(root, "usr")
+			writeUnit(t, usr, "probe.service", probeUnit)
+			if how == "empty" {
+				writeUnit(t, etc, "probe.service", "")
+			} else {
+				os.MkdirAll(etc, 0o755)
+				if err := os.Symlink("/dev/null", filepath.Join(etc, "probe.service")); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			dl := NewDirLoader(service.NewServiceSet(&testConsumerLogger{}), []string{filepath.Join(root, "slinit.d")})
+			dl.SetSystemdDirs([]string{etc, usr})
+
+			_, path, err := dl.findAndParse("probe")
+			if err == nil || !strings.Contains(err.Error(), "masked") {
+				t.Fatalf("findAndParse(probe) = %q, %v; want a masked error", path, err)
+			}
+			if dl.descriptionExists("probe") {
+				t.Error("descriptionExists(probe) = true for a masked unit")
+			}
+		})
+	}
+}
+
 // Only .service. A .timer or .socket has semantics that land on other
 // slinit facilities, and loading one as a service would start something
 // that never does what was asked.
@@ -466,6 +499,10 @@ ExecStart=/usr/bin/k
 KillSignal=SIGUSR2
 ExecStop=/bin/kill -USR2 $MAINPID
 `)
+	writeUnit(t, units, "b.service", `[Service]
+ExecStart=/usr/bin/b
+ExecStop=/bin/kill -s QUIT ${MAINPID}
+`)
 	writeUnit(t, units, "w.service", `[Service]
 ExecStart=/usr/bin/w
 ExecStop=/usr/bin/wctl stop ${MAINPID}
@@ -488,6 +525,7 @@ ExecStop=/usr/bin/wctl stop ${MAINPID}
 		"q": syscall.SIGQUIT,
 		"u": syscall.SIGTERM, // the default: USR1 is no stop signal
 		"k": syscall.SIGUSR2, // KillSignal= names it, so it is the stop signal
+		"b": syscall.SIGQUIT, // ${MAINPID} as well as $MAINPID
 	} {
 		d, _, err := dl.findAndParse(name)
 		if err != nil {

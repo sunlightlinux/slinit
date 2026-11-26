@@ -67,7 +67,8 @@ a unit. **ready-check-interval**, **runtime-max-sec** and the
 **@include** *path*
 :   Inline another file at this point. Relative paths are resolved
     against the directory of the file containing the directive. Up
-    to 10 levels of nesting are allowed.
+    to 10 levels of nesting are allowed, and at most 256 includes in
+    all for one description.
 
 **@include-opt** *path*
 :   Like **@include**, but missing files are silently ignored rather
@@ -186,7 +187,10 @@ what tells you the oldest slinit your configuration will run on. See
 
 **command**=*program* [*args*...]
 :   Program to execute (for **process**, **scripted**, **bgprocess**).
-    Quoting and escaping follow shell-like rules.
+    Quoting and escaping follow shell-like rules: single or double
+    quotes group words, and a backslash takes the next character
+    literally, inside quotes as outside. An empty pair of quotes is an
+    empty argument (since 4.0.3, as in dinit; before, it was dropped).
 
 **command-argv0**=*string*
 :   Override the argv[0] presented to the exec'd binary. The kernel
@@ -209,33 +213,78 @@ what tells you the oldest slinit your configuration will run on. See
     variable must be written `$$VAR`). A missing `end script` is a
     fatal parse error.
 
-**stop-command**=*program* [*args*...]
+**stop-command**=[**+**]*program* [*args*...]
 :   Program run to stop the service. For **scripted** it is the stop
     script; for **process** and **bgprocess** it is run instead of
-    sending **term-signal** (the stop timeout still applies).
+    sending **term-signal** (the stop timeout still applies). It runs
+    with the service's **run-as** user and its sandbox and hardening
+    settings; with the **+** prefix (since 4.0.3; see **The + prefix** below)
+    it runs as root without them.
 
-**finish-command**=*program* [*args*...]
+**finish-command**=[**+**]*program* [*args*...]
 :   Runit-style: a program executed *after* **command** exits, before
-    a possible restart.
+    a possible restart. It runs as the service's **run-as** user, or as
+    root with the **+** prefix (since 4.0.3).
 
-**pre-start-command**=*program* [*args*...]
-:   systemd-style *ExecStartPre=*: a program executed synchronously
-    before the main **command** is forked. A non-zero exit fails the
-    start. Runs after sandbox / required-paths checks but before
+    The exit is acted on — the service restarted, stopped or failed —
+    only once it has finished, as systemd does with *ExecStopPost=*. It
+    runs outside slinit's scheduling lock (since 4.0.3; before, every
+    other service's starts and stops waited for it), and a stop that
+    arrives while it runs waits for it too.
+
+**pre-start-command**=[**+**]*program* [*args*...]
+:   systemd-style *ExecStartPre=*: a program executed before the main
+    **command** is forked; the fork waits for it. A non-zero exit fails
+    the start. Runs after sandbox / required-paths checks but before
     fork+exec, so a failed pre-hook never leaves a half-started
     process behind. **+=** appends arguments. Process services only.
 
-**post-start-command**=*program* [*args*...]
+    The service is *STARTING* while it runs. A stop that arrives then
+    kills it (its process group) and the start ends there, the service
+    going *STOPPED* once the hook is gone.
+
+    Like systemd's, it runs with the service's credentials: the
+    **run-as** user and group and the **supplementary-groups**, the
+    **working-dir** and the service environment (since 4.0.3; until
+    4.0.3 it ran as root). A hook that needs root, such as one creating
+    or chowning a directory under */run*, takes the **+** prefix, as
+    systemd's *ExecStartPre=+* does:
+
+        run-as = foo
+        pre-start-command = +/bin/mkdir -p /run/foo
+
+    The service's sandbox and hardening settings do not apply to it,
+    with or without **+**.
+
+**post-start-command**=[**+**]*program* [*args*...]
 :   systemd-style *ExecStartPost=*: a program executed asynchronously
     right after the main process is forked — before readiness is
     confirmed, when a readiness protocol is configured. With
     **start-delay**, it runs once the delayed fork has happened. A
     non-zero exit is logged but does not fail the service. Useful for "service is up, notify
     something" hooks. **+=** appends arguments. Process services only.
+    It runs with the service's credentials, or as root with the **+**
+    prefix, as **pre-start-command** does (since 4.0.3; until 4.0.3 it
+    ran as root).
+
+    A run still going when the service is stopped, or when the next
+    start launches its own, is ended then (its process group killed);
+    otherwise **hook-timeout** bounds it. Before, a run outlived the
+    stop of its service, and a quick stop and start had two overlapping.
 
 **ready-check-command**=*program* [*args*...]
 :   A program polled until it exits 0; the service is considered
     started only when the check passes.
+
+    **hook-timeout** does not apply to it. One attempt may run for up to
+    30 seconds (never past **start-timeout**), so a check that
+    legitimately takes a while, such as `pg_isready -t 10`, still
+    passes, and an attempt that hangs is killed and the check polled
+    again. A check under way is also killed (its process group) when
+    the wait for readiness ends — the start timing out, the process
+    exiting, the service being stopped. Before, a check that hung was
+    never polled again and outlived the service, one more with each
+    restart.
 
 **ready-check-interval**=*duration*
 :   How often to retry **ready-check-command**, with a unit (*500ms*,
@@ -243,8 +292,15 @@ what tells you the oldest slinit your configuration will run on. See
     once immediately, before the first interval elapses, so a service
     that is already ready does not wait for a tick.
 
-**pre-stop-hook**=*program* [*args*...]
-:   Hook run before the stop signal is delivered.
+**pre-stop-hook**=[**+**]*program* [*args*...]
+:   Hook run before the stop signal is delivered (or the stop-command
+    run), with the service's process ID as its last argument. It runs
+    as the service's **run-as** user, or as root with the **+** prefix
+    (since 4.0.3). The service is *STOPPING* while it runs. A start
+    asked for meanwhile waits for the stop to finish and then starts
+    the service again. If the process exits on its own while the hook
+    runs, the exit is handled when the hook has finished, and no stop
+    signal is sent.
 
 **working-dir**=*path*
 :   Working directory for the service.
@@ -336,6 +392,13 @@ what tells you the oldest slinit your configuration will run on. See
 **chroot**=*path*
 :   `chroot()` into *path* before exec. **type**=*process* only; any
     other type refuses to load with it rather than run outside the jail.
+    It cannot be combined with the filesystem sandbox (**private-tmp**,
+    **protect-system**, **protect-home**, the **\*-paths** options,
+    **protect-proc**, **proc-subset**, **temporary-filesystem**) or with
+    **protect-kernel-tunables**, **-modules**, **-logs**,
+    **protect-control-groups** and **protect-hostname**: those apply to the host's paths, not the
+    jail's, and the service refuses to load. With a sandbox option set,
+    the jail is entered by slinit-runner, after its own setup.
 
 **new-session**=*yes*|*no*
 :   Place the service in a new POSIX session (`setsid`).
@@ -379,6 +442,35 @@ what tells you the oldest slinit your configuration will run on. See
 
     Inspired by upstart's **reload signal** stanza.
 
+### The + prefix (privileged commands)
+
+The command settings that stand for a systemd *Exec\*=* line take
+systemd's **+** prefix, "run with full privileges" (since 4.0.3):
+**pre-start-command** (*ExecStartPre=*), **post-start-command**
+(*ExecStartPost=*), **stop-command** (*ExecStop=*),
+**finish-command** (*ExecStopPost=*), **pre-stop-hook**,
+**control-command-**\* and **exec-condition** (*ExecCondition=*).
+The **+** goes directly before the program, `+/bin/mkdir`; a **+**
+followed by a space, or alone, is an error. Such a command runs as
+root, without the service's **run-as** user, group and
+**supplementary-groups**, whatever **run-as** says; it keeps the
+working directory and environment. A **stop-command**, the only one
+of these started inside the service's sandbox, also goes without
+the sandbox, the capability, securebits and no-new-privs limits,
+the LSM contexts, the namespaces, the kernel-protection and
+**restrict-**\* hardening, the personality and the seccomp filters;
+its cgroup and resource settings stay, as in systemd.
+
+**=** sets the command and whether it has **+**; **+=** appends
+arguments and keeps it, so a **+** there is an ordinary argument
+(a **+=** to a command not yet set starts it, **+** included).
+systemd's other prefixes (**-**, **@**, **:**, **!**, **|**) are not
+slinit syntax; **slinit-systemd-convert**(8) translates them. The
+other commands (**command**, **ready-check-command**,
+**cron-command**, **health-check-command**, **unhealthy-command**,
+**env-generator**, **log-processor**) take no prefix and run as the
+service's **run-as** user.
+
 ## ENVIRONMENT
 
 **env-file**=*path*
@@ -395,6 +487,27 @@ what tells you the oldest slinit your configuration will run on. See
     time. Merged after **env-file** and **env-dir** so it wins
     conflicts. A failing generator is logged and its output ignored;
     the start proceeds. **process** services only.
+
+    The generator runs as the service's **run-as** user (it ran as root
+    before), so that user must be able to execute it. It is bounded like
+    the other hooks: past **hook-timeout** its process group is
+    killed and the start goes on without its output, and output larger
+    than 64 KiB counts as a failure. It runs outside slinit's scheduling
+    lock (since 4.0.3), with the service in *STARTING*; before, it ran
+    inside it, and a generator that hung held up every other service's
+    start and stop for as long as it hung. One case still runs it
+    inside the lock: a service with an **exec-condition**, whose
+    environment is computed before its conditions are checked.
+
+    It runs once per start (before **pre-start-command** when there is
+    one, otherwise just before the fork). The environment computed then
+    is the one the main process, the hooks and every
+    **ready-check-command** poll of that start receive; before, the
+    generator ran again for each hook and each poll. So a variable set
+    with **slinitctl setenv** after the start reaches the hooks only at
+    the next start, as it does the main process. A service without an
+    **env-generator** is not affected: its hooks get the environment as
+    it is when each one runs, **slinitctl setenv** included.
 
 **pass-environment**=*NAME*...
 :   Allow-list filter applied to the inherited environment, the
@@ -672,9 +785,10 @@ error. Repeat the line for several targets.
 
     The service waits in *STARTING*, and the wait is a timer: slinit
     holds no lock during it, so other services start and stop normally.
-    Prefer it to `pre-start-command = /bin/sleep N`, which does the same
-    thing from inside the scheduling lock and stalls every other
-    service's transitions for the duration.
+    Prefer it to `pre-start-command = /bin/sleep N`, which spends a
+    process and counts against **hook-timeout**. (Before 4.0.3 that
+    hook also ran inside the scheduling lock and stalled every other
+    service's transitions for the duration.)
 
     A stop arriving during the wait cancels it; the service never
     launches. Set both this and **restart-delay** and a restart waits
@@ -694,29 +808,49 @@ error. Repeat the line for several targets.
     before it; a stop arriving during it cancels the start.
 
 **hook-timeout**=*duration*
-:   (since 3.0.5) How long each synchronous hook of a `type = process`
+:   (since 3.0.5) How long each hook of a `type = process`
     service may run: **pre-start-command**, **post-start-command**,
-    **finish-command**, **pre-stop-hook** and **control-command-**\*.
-    Default five seconds.
+    **finish-command**, **pre-stop-hook** and **control-command-**\*,
+    and the **env-generator**. Default five seconds. It does not bound
+    **ready-check-command**, whose attempts are bounded by
+    **start-timeout** instead.
 
     Raise it for a hook that legitimately waits on something — a mount
     appearing, a socket starting to accept. At the default, such a hook
     was killed after five seconds, and for **pre-start-command** that
     fails the start outright.
 
-    Mind what the budget buys. These hooks run inside slinit's
-    scheduling lock (except **post-start-command**, which runs
-    asynchronously and only shares the timeout), so the timeout is also how long one service's hook
-    can hold up *other* services' starts and stops: with a
+    Mind what the budget buys. The service's own transition waits for
+    its hook: a pre-start-command holds it in *STARTING*, a
+    pre-stop-hook in *STOPPING*, a finish-command holds back the restart
+    or the end of the stop. Set this to the time the hook genuinely
+    needs, not to a comfortable margin.
+
+    Other services are not held up (since 4.0.3). Until then these hooks
+    ran inside slinit's scheduling lock, so the timeout was also how
+    long one service's hook could hold up every other service's starts
+    and stops, and every control request that changes state: with a
     pre-start-command that sleeps, an unrelated `slinitctl start` was
     measured waiting 4 seconds for the remainder of the 5-second
-    default. Read-only queries such as `slinitctl list` stay
-    responsive. Set this to the time the hook genuinely needs, not to a
-    comfortable margin.
+    default. A shutdown's final kill ends a hook still running, and
+    **slinitctl reload** refuses a service while one of these hooks
+    runs, naming it; retry once it has finished.
 
     A hook killed at the deadline now says so, naming the timeout —
     previously the log read only `signal: killed`, which named the
     mechanism and hid the cause.
+
+    Each hook runs in a process group of its own, and the kill at the
+    deadline is SIGKILL to that whole group. Before, only the hook's
+    direct child was killed: in `sh -c "sleep 60; :"` the shell died and
+    the sleep ran on, reparented to PID 1. A hook that exits by itself
+    may still leave a background process behind.
+
+    Because a hook already leads its own process group, util-linux
+    `setsid cmd` inside it cannot call setsid(2) in place: it forks,
+    runs *cmd* in the child and returns at once, so the hook "finishes"
+    while *cmd* is still running, unwatched and outside the timeout. Use
+    `setsid -w cmd` (wait for the child), or leave **setsid** out.
 
 **restart-delay**=*duration*
 :   Delay before a restart attempt. Default *0.2* seconds; *0*
@@ -1011,7 +1145,8 @@ apply OS-level changes:
         log-select = -* +NOTICE +ERROR
 
 **log-buffer-size**=*N*
-:   Size in bytes of the in-memory log buffer.
+:   Size in bytes of the in-memory log buffer. At most 64 MiB
+    (67108864); a larger value is a load error.
 
 **logfile-permissions**=*octal*, **logfile-uid**=*N*, **logfile-gid**=*N*
 :   File mode and ownership of the log file (created if missing).
@@ -1158,7 +1293,10 @@ apply OS-level changes:
     LogRotator).
 
 **log-processor**=*program* [*args*...]
-:   Pipe lines through *program* before they hit the log target.
+:   Run *program* on each rotated log file, with the rotated file's
+    path appended as the last argument; 60-second timeout. It runs with
+    the service's **run-as**, **supplementary-groups**, **working-dir**
+    and environment (until 4.0.3 it ran as root).
 
 **output-logger**=*program* [*args*...], **error-logger**=*program* [*args*...]
 :   Spawn separate child processes for stdout / stderr. Implies
@@ -1178,8 +1316,8 @@ apply OS-level changes:
     The mux periodically emits a synthetic
     `[shared-logger] dropped N lines` heartbeat so the loss is
     visible in the log stream. **shared-logger-queue-size** tunes
-    the channel depth (default 1024 lines) — deeper smooths larger
-    bursts at the cost of more memory. First producer to register
+    the channel depth (default 1024 lines, at most 1048576) — deeper
+    smooths larger bursts at the cost of more memory. First producer to register
     wins the setting: the mux inherits its policy from the logger
     at construction time and does not re-tune on later joiners.
 
@@ -1327,7 +1465,7 @@ before exec'ing the service. The host filesystem is untouched.
     */proc*, */sys*, */run*, */tmp* and */var/tmp* are separate
     mount points (with the mounts below them), stay writable (use
     **private-tmp** to guarantee a writable */tmp*), and so do the
-    **temporary-filesystem** and **protect-home**=*tmpfs* mounts. Every
+    **temporary-filesystem** mounts. Every
     mount below a read-only path is remounted read-only too (until
     4.0.3, only the mount at the path was, so separate filesystems below
     it stayed writable). *no* (default) disables the remount.
@@ -1344,13 +1482,16 @@ before exec'ing the service. The host filesystem is untouched.
     listed paths. Applied before **read-only-paths**, so a path
     listed in both ends up read-only. The mounts below the path that
     the sandbox made read-only are writable again; one that was
-    read-only already stays so. Repeatable with `+=`.
+    read-only already stays so, and so does a **protect-home**=*read-only*
+    target or a **bind-read-only-paths** destination at or below the
+    path: as in systemd, the deeper path wins, and of two on one path
+    the read-only one. Repeatable with `+=`.
 
 **protect-home**=*no*|*yes*|*read-only*|*tmpfs*
 :   Hide */home*, */root* and */run/user* from the service. *yes*
     over-mounts each with an inaccessible (mode 0000) tmpfs; *read-only*
-    ro-remounts them and every mount below them (*/run/user/<uid>*); *tmpfs* replaces them with empty per-service
-    tmpfs. Equivalent to systemd's **ProtectHome=**.
+    ro-remounts them and every mount below them (*/run/user/<uid>*); *tmpfs* replaces them with empty read-only
+    tmpfs (mode 0755, */root* 0700). Equivalent to systemd's **ProtectHome=**.
 
 **inaccessible-paths**=*path*...
 :   Hide each absolute path behind an empty inaccessible mount (an
@@ -1555,8 +1696,10 @@ these hide or make read-only that do not exist are skipped.
     **ProtectControlGroups=**.
 
 **protect-hostname**=*yes*|*no*
-:   Deny **sethostname**(2), **setdomainname**(2). Equivalent to
-    systemd's **ProtectHostname=**.
+:   Deny **sethostname**(2), **setdomainname**(2), and make
+    */proc/sys/kernel/hostname* and */proc/sys/kernel/domainname*
+    read-only in a private mount namespace. Equivalent to systemd's
+    **ProtectHostname=**.
 
 **lock-personality**=*yes*|*no*
 :   Refuse changing the execution domain: a **personality**(2) call
@@ -2268,7 +2411,10 @@ watch; the service remains startable via `slinitctl start`.
     **watchdog-timeout** expires: hard dependents stop with it, and the
     **restart** policy decides whether it comes back (and its
     dependents with it). After a restart, checking starts over.
-    **type**=*process* only.
+    **type**=*process* only. The check runs with the service's
+    **run-as** user and **supplementary-groups**, **working-dir** and
+    environment, as **finish-command** does (until 4.0.3 it ran as
+    root).
 
 **healthcheck-interval**=*duration*, **healthcheck-delay**=*duration*,
 **healthcheck-max-failures**=*N*
@@ -2277,7 +2423,9 @@ watch; the service remains startable via `slinitctl start`.
 
 **unhealthy-command**=*program* [*args*...]
 :   Run after *each* failed check, with a 10-second timeout (e.g. send
-    a notification, kick a circuit breaker).
+    a notification, kick a circuit breaker). Same **run-as**
+    user, groups, **working-dir** and environment as the check (until
+    4.0.3 it ran as root).
 
 ## CRON-LIKE PERIODIC TASKS
 
@@ -2286,6 +2434,12 @@ watch; the service remains startable via `slinitctl start`.
     **type**=*process* and, since 3.13.0, **type**=*internal*, which is
     the way to write a periodic job with nothing to supervise between
     runs; other types ignore every **cron-\*** setting.
+
+    The command runs with the service's **run-as** user and
+    **supplementary-groups**, **working-dir** and environment, as
+    **finish-command** does (until 4.0.3 it ran as root); an internal
+    service has no **run-as**, so its command runs as slinit. A
+    **reload** that changes them applies from the next run.
 
     A run under **cron-interval** may not outlive its period. A run under
     **cron-calendar** has no limit (until 3.13.0 it had a minute); wrap the
@@ -2459,11 +2613,17 @@ watch; the service remains startable via `slinitctl start`.
 :   Like **extra-command**, but only callable when the service is
     *started*.
 
-**control-command-***SIG*=*program* [*args*...]
+**control-command-***SIG*=[**+**]*program* [*args*...]
 :   Run *program* instead of sending signal *SIG* to the service,
     whether the signal comes from **slinitctl signal**, from a stop
     (**control-command-TERM**), or from **slinitctl pause** /
-    **continue** (*STOP* / *CONT*).
+    **continue** (*STOP* / *CONT*). It runs as the service's **run-as**
+    user, or as root with the **+** prefix (since 4.0.3).
+
+    It runs outside slinit's scheduling lock, bounded by
+    **hook-timeout**. In a stop, the service stays *STOPPING* while it
+    runs and the stop-timeout is armed when it has finished, as it is
+    after a signal.
 
 ## VTTY (sunlight-os)
 
@@ -2719,12 +2879,19 @@ form):
     *VALUE* (split on the last `:`). Meant for sysfs enum and boolean
     files.
 
-**exec-condition**=*shell command*, **assert-exec-condition**=*shell command*
+**exec-condition**=[**+**]*shell command*, **assert-exec-condition**=[**+**]*shell command*
 :   Pre-flight command run through `/bin/sh -c`, 10-second timeout.
     Exit 0 = proceed with start; non-zero, timeout, or empty
     command = fail. **condition-** form skips silently on non-zero
     (matches other **condition-\*** family); **assert-** form
     fails the start and cascades. Systemd's **ExecCondition=**.
+    Like systemd's, it runs with the service's **run-as** user and
+    **supplementary-groups** (until 4.0.3 it ran as root), its
+    environment, and its **working-dir** when that exists already (a
+    directory slinit creates for the service, such as a
+    **state-directory**, is not made until the process starts). With
+    the **+** prefix, `exec-condition = +test -w /dev/foo`, it runs as
+    root (since 4.0.3), as systemd's *ExecCondition=+* does.
 
 **condition-boot-cond**=*name*, **assert-boot-cond**=*name*
 :   Match a value from the comma-separated **slinit.cond=** kernel-

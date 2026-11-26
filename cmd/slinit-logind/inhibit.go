@@ -42,6 +42,9 @@ var inhibitWhats = map[string]struct{}{
 	"handle-reboot-key": {},
 }
 
+// inhibitStringMax bounds each of Inhibit's strings.
+const inhibitStringMax = 4096
+
 // fdSendGrace is how long the descriptor in a method reply stays open
 // after the method returns (replyFD).
 //

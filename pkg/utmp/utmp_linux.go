@@ -254,7 +254,20 @@ static int c_log_shutdown(void) {
 */
 import "C"
 
-import "unsafe"
+import (
+	"sync"
+	"unsafe"
+)
+
+// utmpMu serializes every use of glibc's utmpx cursor. setutxent,
+// getutxent, pututxline and endutxent share one process-global file
+// position, and a walk (ListUserTTYs, ListUserSessions) spans many
+// cgo calls: a write from another goroutine (the service set's utmp
+// queue, the logout hook) between two of them rewinds or closes the
+// file under the walk, which then restarts or misses entries. Every
+// function that touches that state holds utmpMu for its whole run.
+// LogShutdown only appends to wtmp (updwtmp) and does not take it.
+var utmpMu sync.Mutex
 
 // MaxIDLen is the maximum length of an inittab-id value.
 var MaxIDLen = int(C.c_max_id_len())
@@ -266,6 +279,8 @@ var MaxLineLen = int(C.c_max_line_len())
 // It clears the utmp file first (same as dinit's CLEAR_UTMP_ON_BOOT).
 // Should be called once when the root filesystem becomes read-write.
 func LogBoot() bool {
+	utmpMu.Lock()
+	defer utmpMu.Unlock()
 	return C.c_log_boot() != 0
 }
 
@@ -293,6 +308,8 @@ func CreateEntryMode(id, line string, pid int, mode string) bool {
 	cLine := C.CString(line)
 	defer C.free(unsafe.Pointer(cID))
 	defer C.free(unsafe.Pointer(cLine))
+	utmpMu.Lock()
+	defer utmpMu.Unlock()
 	return C.c_create_entry_mode(cID, cLine, C.int(pid), utType) != 0
 }
 
@@ -303,6 +320,8 @@ func ClearEntry(id, line string) {
 	cLine := C.CString(line)
 	defer C.free(unsafe.Pointer(cID))
 	defer C.free(unsafe.Pointer(cLine))
+	utmpMu.Lock()
+	defer utmpMu.Unlock()
 	C.c_clear_entry(cID, cLine)
 }
 
@@ -313,6 +332,8 @@ func ListUserTTYs() []string {
 	buf := make([]byte, MaxLineLen+1)
 	cBuf := (*C.char)(unsafe.Pointer(&buf[0]))
 
+	utmpMu.Lock()
+	defer utmpMu.Unlock()
 	var lines []string
 	reset := C.int(1)
 	for C.c_next_user_line(cBuf, reset) != 0 {
@@ -349,6 +370,8 @@ func ListUserSessions() []Session {
 	cUser := (*C.char)(unsafe.Pointer(&userBuf[0]))
 	cLine := (*C.char)(unsafe.Pointer(&lineBuf[0]))
 
+	utmpMu.Lock()
+	defer utmpMu.Unlock()
 	var sessions []Session
 	reset := C.int(1)
 	for C.c_next_user_session(cUser, cLine, reset) != 0 {
@@ -376,6 +399,8 @@ func cStringUpTo(buf []byte) string {
 // clean session boundary instead of still-logged-in sessions bleeding
 // across the reboot. Returns the number of sessions logged out.
 func LogoutAllUsers() int {
+	utmpMu.Lock()
+	defer utmpMu.Unlock()
 	return int(C.c_logout_all_users())
 }
 

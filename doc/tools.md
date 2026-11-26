@@ -236,11 +236,14 @@ slinit-journald --vacuum-files=100 --vacuum-size=4294967296 --vacuum-age=720h  #
 ### slinit-journal-migrate
 
 One-time upgrade path from the JSONL format to the binary format. It
-reads every `.jsonl` and `.jsonl.gz` file under `--from`, in filename
-order, and appends the events to a single `YYYY-MM-DD.journal` file
-under `--to`. Unparseable lines are skipped and counted. The source
-directory is left untouched. The output is not FSS-sealed, and running
-the tool twice on the same day appends the events again.
+reads every `.jsonl` and `.jsonl.gz` file under `--from`, oldest first
+(shutdown tails after their day's file), and writes the events to a new
+`YYYY-MM-DD.journal` file under `--to`. Unparseable and over-long lines
+are skipped and counted. The run is atomic: a temporary file is renamed
+into place only once it is complete and fsynced, so a failed run leaves
+nothing behind. It refuses to touch an existing `YYYY-MM-DD.journal`
+(an earlier run, or live slinit-journald's file). The source directory
+is left untouched and the output is not FSS-sealed.
 
 ```bash
 # Preview: list the source files that would be read
@@ -282,8 +285,17 @@ Auto-detects `finish` (→ `finish-command`), `check` (→
 `consumer-of` + `log-type = pipe` on the primary). Recognises
 `sv check DEP` inside run scripts and emits `waits-for: DEP`
 automatically. `chpst` flags map to slinit equivalents where
-possible (`-u` → `run-as`, `-C` → `working-dir`, `-o` →
+possible (`-u` → `run-as`, `-e` → `env-dir`, `-C` → `working-dir`, `-o` →
 `rlimit-nofile`, `-A N` → WARN since slinit has no runtime alarm).
+
+With `--output-dir`, this and the other converters (`slinit-openrc-convert`,
+`slinit-systemd-convert`, `slinit-sysvinit-convert`,
+`slinit-immortal-convert`) replace a service file that is already
+there, so a rerun regenerates it, but refuse a symlink at an output
+name rather than write through it. Files are written to a temporary
+name and renamed into place; a replaced file keeps its mode and (as
+root) its owner, a new one gets 0644 less the umask, as with
+`os.WriteFile`.
 
 ```bash
 # Single service to stdout
@@ -335,7 +347,9 @@ merge into `run-as = user:group`. Hardening directives slinit
 implements under the same vocabulary (`PrivateTmp`, `ProtectSystem`,
 `ProtectHome`, `ProtectKernel*`, `SystemCallFilter`, `ReadOnlyPaths`,
 `PrivateNetwork`, `CapabilityBoundingSet`, …) are translated
-directly; the rest (`PrivateDevices`, `PrivateUsers`, …) are reported. Dependency names lose their
+directly; the rest (`PrivateUsers`, …) are reported, and confinement
+slinit cannot express (`PrivateDevices=yes`, an empty
+`CapabilityBoundingSet=`) refuses the unit. Dependency names lose their
 `.service` or `.socket` suffix (a socket stands for the service it
 activates, and a unit's own socket is dropped); references to any other
 unit type — `.target`, `.mount`, `.device`, `.path`, `.timer` — are
@@ -468,7 +482,7 @@ handling are exactly `slinitctl`'s.
 rc-service nginx start
 rc-service nginx stop
 rc-service nginx status
-rc-service --exists nginx     # → slinitctl is-started nginx
+rc-service --exists nginx     # → slinitctl query-name nginx (output discarded)
 rc-service --list             # → slinitctl list
 
 # rc-update — runlevel membership (modelled as runlevel-<name> services)

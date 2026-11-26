@@ -294,8 +294,16 @@ func readByte(r io.Reader, b *box, timeout time.Duration, verb string, interrupt
 	inputCh := make(chan byte, 1)
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
+	exited := make(chan struct{})
+	// A reader that can be cancelled is, and joined, so no goroutine is
+	// left reading the console once this returns (runs after done is
+	// closed, which ends the EOF wait below).
+	if cr, ok := r.(interface{ cancelRead(<-chan struct{}) }); ok {
+		defer cr.cancelRead(exited)
+	}
 	defer close(done)
 	go func() {
+		defer close(exited)
 		br := bufio.NewReader(r)
 		for {
 			b, err := br.ReadByte()

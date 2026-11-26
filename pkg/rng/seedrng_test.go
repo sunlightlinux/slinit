@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -198,3 +199,204 @@ func formatLog(format string, args ...any) string {
 // silence unused-import warnings if we later trim assertions
 var _ = syscall.SIGTERM
 var _ = unix.LOCK_EX
+
+// recordFeeds stubs the kernel feed and records every call. The stub
+// enforces the real RNDADDENTROPY size limit so a too-long seed shows
+// up as an error, as it would on a real kernel.
+type feedCall struct {
+	data   []byte
+	credit bool
+}
+
+func recordFeeds(t *testing.T) *[]feedCall {
+	t.Helper()
+	calls := &[]feedCall{}
+	withStubsCustom(t, func(b []byte, credit bool) error {
+		*calls = append(*calls, feedCall{data: append([]byte(nil), b...), credit: credit})
+		if len(b) > maxSeedLen {
+			return errors.New("seed too big")
+		}
+		return nil
+	}, defaultStubGetrandom)
+	return calls
+}
+
+// TestRun_SymlinkNoCreditNotFollowed: a symlink planted at
+// seed.no-credit pointing outside the seed dir must not make root
+// create (or truncate) the target when the new seed is written.
+func TestRun_SymlinkNoCreditNotFollowed(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "victim")
+	if err := os.Symlink(target, filepath.Join(dir, nonCreditableSeed)); err != nil {
+		t.Fatal(err)
+	}
+	recordFeeds(t)
+
+	_, _ = Run(Options{SeedDir: dir})
+
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlink target outside seed dir was created: lstat err=%v", err)
+	}
+	for _, n := range []string{nonCreditableSeed, creditableSeed} {
+		fi, err := os.Lstat(filepath.Join(dir, n))
+		if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("%s is still a symlink after the cycle", n)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, creditableSeed)); err != nil {
+		t.Fatalf("fresh seed not written: %v", err)
+	}
+}
+
+// TestRun_SymlinkSeedNotCredited: a seed.credit symlink to an existing
+// file must neither have the file's bytes fed (let alone credited) nor
+// the file itself modified.
+func TestRun_SymlinkSeedNotCredited(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "chosen")
+	payload := bytes.Repeat([]byte("attacker-chosen!"), 4)
+	if err := os.WriteFile(target, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{creditableSeed, nonCreditableSeed} {
+		if err := os.Symlink(target, filepath.Join(dir, n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := recordFeeds(t)
+
+	res, err := Run(Options{SeedDir: dir})
+	if err == nil {
+		t.Fatal("Run should report the rejected symlink seeds")
+	}
+	if res.CreditableConsumed || res.NonCreditableConsumed {
+		t.Fatalf("symlink seed reported as consumed: %+v", res)
+	}
+	for _, c := range *calls {
+		if bytes.Equal(c.data, payload) {
+			t.Fatalf("symlink target content fed to the kernel (credit=%v)", c.credit)
+		}
+	}
+	got, rerr := os.ReadFile(target)
+	if rerr != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("symlink target modified: %q err=%v", got, rerr)
+	}
+	for _, n := range []string{nonCreditableSeed, creditableSeed} {
+		fi, err := os.Lstat(filepath.Join(dir, n))
+		if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("%s symlink was not removed", n)
+		}
+	}
+}
+
+// TestRun_FIFODoesNotBlock: a FIFO at seed.credit must be rejected
+// without blocking the cycle (which holds the dir lock meanwhile).
+func TestRun_FIFODoesNotBlock(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, creditableSeed)
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	calls := recordFeeds(t)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(Options{SeedDir: dir})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run should report the rejected FIFO seed")
+		}
+	case <-time.After(5 * time.Second):
+		// Unblock the leaked open so the test binary can exit.
+		if f, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			f.Close()
+		}
+		t.Fatal("Run blocked on a FIFO seed")
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("FIFO seed was fed to the kernel: %d calls", len(*calls))
+	}
+	fi, err := os.Lstat(fifo)
+	if err != nil {
+		t.Fatalf("fresh seed missing: %v", err)
+	}
+	if !fi.Mode().IsRegular() {
+		t.Fatalf("seed.credit is still a %v", fi.Mode().Type())
+	}
+}
+
+// TestRun_OversizeSeedTruncated: a seed longer than maxSeedLen is fed
+// as its first maxSeedLen bytes instead of being unlinked and lost.
+func TestRun_OversizeSeedTruncated(t *testing.T) {
+	dir := t.TempDir()
+	seed := make([]byte, 600)
+	for i := range seed {
+		seed[i] = byte(i * 13)
+	}
+	if err := os.WriteFile(filepath.Join(dir, creditableSeed), seed, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	calls := recordFeeds(t)
+
+	res, err := Run(Options{SeedDir: dir})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.CreditableConsumed {
+		t.Fatal("oversize seed not consumed")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("want 1 feed, got %d", len(*calls))
+	}
+	c := (*calls)[0]
+	if !bytes.Equal(c.data, seed[:maxSeedLen]) || !c.credit {
+		t.Fatalf("fed %d bytes (credit=%v), want first %d bytes credited", len(c.data), c.credit, maxSeedLen)
+	}
+}
+
+// TestRun_InsecureDirRefused: a group/world-writable seed dir must be
+// refused before anything in it is consumed or written.
+func TestRun_InsecureDirRefused(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	seedPath := filepath.Join(dir, creditableSeed)
+	planted := bytes.Repeat([]byte{0xCD}, 64)
+	if err := os.WriteFile(seedPath, planted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := recordFeeds(t)
+
+	_, err := Run(Options{SeedDir: dir})
+	if !errors.Is(err, errInsecureSeedDir) {
+		t.Fatalf("Run on a 0777 dir: err=%v, want errInsecureSeedDir", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("seed from insecure dir was fed: %d calls", len(*calls))
+	}
+	if got, _ := os.ReadFile(seedPath); !bytes.Equal(got, planted) {
+		t.Fatal("seed in insecure dir was touched")
+	}
+}
+
+// TestCheckSeedDir_Owner: a dir owned by someone else is refused.
+func TestCheckSeedDir_Owner(t *testing.T) {
+	dir := t.TempDir()
+	dfd, err := unix.Open(dir, unix.O_DIRECTORY|unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(dfd)
+	if err := checkSeedDir(dfd, os.Geteuid()); err != nil {
+		t.Fatalf("own 0700 dir refused: %v", err)
+	}
+	if err := checkSeedDir(dfd, os.Geteuid()+1); !errors.Is(err, errInsecureSeedDir) {
+		t.Fatalf("foreign-owned dir accepted: err=%v", err)
+	}
+}

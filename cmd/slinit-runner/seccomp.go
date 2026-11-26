@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/sunlightlinux/slinit/pkg/seccomp"
+	"golang.org/x/sys/unix"
 )
 
 // seccompSpec captures the seccomp flags parsed by main(). Empty Filter
@@ -29,9 +30,13 @@ func (s seccompSpec) active() bool {
 // suppresses setuid effects on any subsequent execve. The AppArmor
 // onexec transition still works because the kernel applies the profile
 // to the *exec call*, not the prctl that preceded it.
-func installSeccomp(s seccompSpec) error {
+// installSeccomp builds and installs the service's filters. beforeInstall
+// runs once everything is compiled, just before the first install (or at
+// once when there is no filter): the last point where the runner may
+// still allocate and make system calls a filter could refuse.
+func installSeccomp(s seccompSpec, beforeInstall func() error) error {
 	if !s.active() {
-		return nil
+		return beforeInstall()
 	}
 	defAction, err := seccomp.ParseAction(s.errorAct)
 	if err != nil {
@@ -45,18 +50,24 @@ func installSeccomp(s seccompSpec) error {
 	if err != nil {
 		return fmt.Errorf("seccomp compile: %w", err)
 	}
-	if err := seccomp.EnsureNoNewPrivs(); err != nil {
-		return fmt.Errorf("seccomp prerequisite: %w", err)
-	}
 	// system-call-log is a filter of its own, as under systemd, so the
 	// kernel's most-restrictive rule keeps a logged call refused when
 	// the main filter refuses it. It goes in first: the main filter may
 	// refuse seccomp(2) itself.
+	var logProg []unix.SockFilter
 	if len(filter.LogSyscalls) > 0 {
-		logProg, err := seccomp.CompileLog(filter)
+		logProg, err = seccomp.CompileLog(filter)
 		if err != nil {
 			return fmt.Errorf("seccomp log compile: %w", err)
 		}
+	}
+	if err := beforeInstall(); err != nil {
+		return err
+	}
+	if err := seccomp.EnsureNoNewPrivs(); err != nil {
+		return fmt.Errorf("seccomp prerequisite: %w", err)
+	}
+	if logProg != nil {
 		if err := seccomp.Install(logProg); err != nil {
 			return fmt.Errorf("seccomp log install: %w", err)
 		}

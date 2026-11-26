@@ -62,7 +62,28 @@ var capLastCapFile = "/proc/sys/kernel/cap_last_cap"
 // lastCap is the highest capability the kernel knows. Where /proc cannot
 // tell, 40 (CAP_CHECKPOINT_RESTORE, the last as of Linux 5.9) is used: a
 // fixed bound left any capability a newer kernel adds in the bounding set.
+// lastCapPrimed holds lastCap's value once primeLastCap has read it.
+// The runner reads it before entering a chroot: read afterwards, the
+// path resolves inside the jail, and a jail the service can write could
+// plant a cap_last_cap of 0 so the bounding set is never narrowed.
+var (
+	lastCapPrimed   uintptr
+	lastCapIsPrimed bool
+)
+
+func primeLastCap() {
+	lastCapPrimed = readLastCap()
+	lastCapIsPrimed = true
+}
+
 func lastCap() uintptr {
+	if lastCapIsPrimed {
+		return lastCapPrimed
+	}
+	return readLastCap()
+}
+
+func readLastCap() uintptr {
 	b, err := os.ReadFile(capLastCapFile)
 	if err != nil {
 		return 40

@@ -48,11 +48,13 @@ before the daemon bound to its events socket are not lost.
 **-volatile-dir** *DIR*
 :   Fallback directory (default */run/slinit-journal*) used when
     **-dir** is not writable at start-up — early boot before */var* is
-    mounted read-write, or a read-only root. The start-up fallback
-    applies to **-format=jsonl** only; with **-format=binary** an
-    unwritable **-dir** is fatal. Set it to the empty string to disable
-    the fallback. **slinit-journalctl --flush** moves a volatile journal
-    to **-dir** once it is writable.
+    mounted read-write, a read-only root, or a full */var*; both
+    formats fall back. Set it to the empty string to disable the
+    fallback (an unwritable **-dir** is then fatal). **slinit-journalctl --flush** moves a volatile journal
+    to **-dir** once it is writable. In this directory the size cap is
+    further limited to 10% of its filesystem (1 MiB to 4 GiB) and the
+    oldest files are pruned to keep 5% of it free (at most 4 GiB), as
+    systemd-journald's RuntimeMaxUse= and RuntimeKeepFree= defaults.
 
 **-format** *FORMAT*
 :   Storage format: **binary** (Phase B, default) or **jsonl**
@@ -108,8 +110,9 @@ before the daemon bound to its events socket are not lost.
     Default */run/slinit/events.sock*.
 
 **-admin-socket** *PATH*
-:   UNIX SOCK_DGRAM admin control socket, mode 0666. Accepts the
-    commands **flush** (sent by **slinit-journalctl --flush**) and
+:   UNIX SOCK_DGRAM admin control socket, mode 0600; commands from
+    any uid other than root (or journald's own) are refused and logged.
+    Accepts the commands **flush** (sent by **slinit-journalctl --flush**) and
     **relinquish-var** (sent by **--relinquish-var**, and by
     **--smart-relinquish-var** when */var* is a separate mount);
     **smart-relinquish** is accepted as an alias. Default */run/slinit-journald.ctl*;

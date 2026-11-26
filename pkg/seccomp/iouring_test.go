@@ -16,17 +16,22 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sunlightlinux/slinit/internal/iouringtest"
+	"github.com/sunlightlinux/slinit/internal/reftree"
 )
 
 // The opcode table and the opcode-to-syscalls map are transcribed from the
 // kernel header and from systemd's io-uring-filter.c. Check both against
-// the systemd tree next door, which carries the same header, so a slip in
-// the transcription cannot hide.
+// the systemd tree next door (reftree.Systemd: $SLINIT_SYSTEMD_SRC or a
+// sibling checkout), which carries the same header, so a slip in the
+// transcription cannot hide.
 func TestIOUringTablesMatchSystemd(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "systemd")
+	root, ok := reftree.Systemd()
+	if !ok {
+		t.Skipf("no systemd source tree: set %s or check systemd out beside slinit", reftree.SystemdEnv)
+	}
 	hdr, err := os.ReadFile(filepath.Join(root, "src/include/uapi/linux/io_uring.h"))
 	if err != nil {
-		t.Skipf("systemd tree not found next to slinit: %v", err)
+		t.Fatal(err)
 	}
 	enum := regexp.MustCompile(`(?s)enum io_uring_op \{(.*?)\};`).FindSubmatch(hdr)
 	if enum == nil {

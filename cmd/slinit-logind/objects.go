@@ -580,14 +580,14 @@ func (m *manager) seatSessions(seatID string) []SessionRef {
 
 //
 // Each takes the caller so it can be checked (see authz.go): the owner of the
-// session or root, except Activate, which systemd without polkit allows
-// anyone, and the device calls, which belong to the session's controller.
+// session or root, except Activate, which is a VT switch (mayChvt), and the
+// device calls, which belong to the session's controller.
 
 func (s *sessionObject) Terminate(sender dbus.Sender) *dbus.Error {
 	return s.m.TerminateSession(sender, s.id)
 }
 func (s *sessionObject) Activate(sender dbus.Sender) *dbus.Error {
-	return s.m.ActivateSession(s.id)
+	return s.m.ActivateSession(sender, s.id)
 }
 func (s *sessionObject) Lock(sender dbus.Sender) *dbus.Error {
 	return s.m.LockSession(sender, s.id)
@@ -726,8 +726,8 @@ func (u *userObject) Kill(sender dbus.Sender, sig int32) *dbus.Error {
 
 // --- per-Seat methods ---
 
-func (s *seatObject) ActivateSession(sessionID string) *dbus.Error {
-	return s.m.ActivateSession(sessionID)
+func (s *seatObject) ActivateSession(sender dbus.Sender, sessionID string) *dbus.Error {
+	return s.m.ActivateSession(sender, sessionID)
 }
 func (s *seatObject) Terminate(sender dbus.Sender) *dbus.Error {
 	if err := s.m.authorize(sender, noGoodUser, "Terminate"); err != nil {
@@ -738,7 +738,10 @@ func (s *seatObject) Terminate(sender dbus.Sender) *dbus.Error {
 	}
 	return nil
 }
-func (s *seatObject) SwitchTo(vtnr uint32) *dbus.Error {
+func (s *seatObject) SwitchTo(sender dbus.Sender, vtnr uint32) *dbus.Error {
+	if err := s.m.mayChvt(sender, s.id, "SwitchTo"); err != nil {
+		return err
+	}
 	if err := activateVT(vtnr); err != nil {
 		return dbus.NewError("org.freedesktop.DBus.Error.Failed",
 			[]any{fmt.Sprintf("switch to VT %d: %v", vtnr, err)})

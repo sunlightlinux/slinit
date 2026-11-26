@@ -196,8 +196,9 @@ func (m *manager) CreateSessionWithPIDFD(
 	flags uint64,
 	properties []Property,
 ) (string, dbus.ObjectPath, string, dbus.UnixFD, uint32, string, uint32, bool, *dbus.Error) {
-	// The fd is ours once godbus has received it, whatever happens next.
-	defer unix.Close(int(pidfd))
+	// The connection closes pidfd once the reply is sent
+	// (dbusservice.CloseReceivedFDs); closing it here as well could close
+	// a descriptor that has since taken its number.
 	if err := m.authorize(sender, noGoodUser, "CreateSessionWithPIDFD"); err != nil {
 		return "", "", "", -1, 0, "", 0, false, err
 	}
@@ -554,14 +555,26 @@ func (m *manager) CreateSession(
 // ReleaseSession is for the session itself (pam_slinit at logout, from
 // inside it) or root. systemd-logind refuses any other caller with the
 // same error.
+//
+// The caller's session is found by its pid, which can be reused between
+// the bus naming it and the lookup; systemd asks for a pidfd instead. So
+// the session must also be the caller's user's own: a reused pid can then
+// only release a session of the same user.
 func (m *manager) ReleaseSession(sender dbus.Sender, id string) *dbus.Error {
 	if err := m.authorize(sender, noGoodUser, "ReleaseSession"); err != nil {
-		own, ok := m.resolveAlias(sender, "self")
-		if !ok || own.ID != id {
+		own, ok := callerOwnSession(m, sender)
+		uid, uerr := senderUID(m, sender)
+		if !ok || own.ID != id || uerr != nil || own.UserID != uid {
 			return errAccessDenied("Refused to release session, since it doesn't match the one of the client")
 		}
 	}
 	return m.releaseSession(id)
+}
+
+// callerOwnSession is the session of the calling process; a variable so
+// tests can stand in for the bus daemon and /proc.
+var callerOwnSession = func(m *manager, sender dbus.Sender) (SessionRecord, bool) {
+	return m.resolveAlias(sender, "self")
 }
 
 // releaseSession is ReleaseSession without the check, for slinit-logind's
@@ -946,7 +959,8 @@ func fileExists(path string) bool {
 //
 // This is what GDM calls when a user session ends and it re-uses the
 // running greeter, via ActivateSessionOnSeat. It used to be a no-op.
-func (m *manager) ActivateSession(id string) *dbus.Error {
+// The caller must pass mayChvt.
+func (m *manager) ActivateSession(sender dbus.Sender, id string) *dbus.Error {
 	if !validSessionID(id) {
 		return errBadSessionID(id)
 	}
@@ -955,12 +969,15 @@ func (m *manager) ActivateSession(id string) *dbus.Error {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
 			[]interface{}{id})
 	}
+	if err := m.mayChvt(sender, rec.SeatID, "ActivateSession"); err != nil {
+		return err
+	}
 	return activateSession(rec)
 }
 
 // ActivateSessionOnSeat is ActivateSession with the seat checked, as in
 // elogind: activating a session through a seat it is not on is refused.
-func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
+func (m *manager) ActivateSessionOnSeat(sender dbus.Sender, id, seat string) *dbus.Error {
 	if !validSessionID(id) {
 		return errBadSessionID(id)
 	}
@@ -972,6 +989,9 @@ func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
 	if seat != "" && rec.SeatID != seat {
 		return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs",
 			[]interface{}{fmt.Sprintf("session %s is not on seat %s", id, seat)})
+	}
+	if err := m.mayChvt(sender, rec.SeatID, "ActivateSessionOnSeat"); err != nil {
+		return err
 	}
 	return activateSession(rec)
 }

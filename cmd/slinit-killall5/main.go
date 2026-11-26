@@ -309,9 +309,14 @@ func skip(p procInfo, self, sid int, omit map[int]bool) bool {
 		return true
 	case p.pid == self:
 		return true
-	case sid > 0 && p.sid == sid:
+	case sid >= 0 && p.sid == sid:
 		// Our own session: the shell that called us, and anything else it
-		// started. Sweeping it would end the script mid-shutdown.
+		// started. Sweeping it would end the script mid-shutdown. Session
+		// 0 counts too: in a PID namespace whose session leader lives
+		// outside it, getsid(0) and /proc/PID/stat both say 0 for the
+		// caller's whole session, as sysvinit's plain sid compare also
+		// treats it. Kernel threads (also session 0) are skipped below
+		// either way; -1 means getsid failed and protects nothing.
 		return true
 	case p.kernel:
 		return true

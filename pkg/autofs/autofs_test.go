@@ -322,8 +322,9 @@ func TestParseMountFlagsAllKnown(t *testing.T) {
 		t.Errorf("all known flags should have empty opts, got %q", opts)
 	}
 	expected := uintptr(unix.MS_RDONLY | unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC |
-		unix.MS_SYNCHRONOUS | unix.MS_MANDLOCK | unix.MS_DIRSYNC | unix.MS_NOATIME |
-		unix.MS_NODIRATIME | unix.MS_RELATIME | unix.MS_STRICTATIME | unix.MS_LAZYTIME | unix.MS_SILENT)
+		unix.MS_SYNCHRONOUS | unix.MS_MANDLOCK | unix.MS_DIRSYNC |
+		unix.MS_NODIRATIME | unix.MS_STRICTATIME | unix.MS_LAZYTIME | unix.MS_SILENT)
+	// noatime, relatime and strictatime exclude each other: the last wins.
 	if flags != expected {
 		t.Errorf("flags = %x, want %x", flags, expected)
 	}

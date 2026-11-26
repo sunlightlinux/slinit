@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -575,5 +576,192 @@ func TestFileTriggerSharesDirectoryWithExists(t *testing.T) {
 	replaceFile(t, path, "b")
 	if !waitFire(t, &changed, 1, 2*time.Second) {
 		t.Errorf("removing the exists trigger dropped the changed trigger's directory watch")
+	}
+}
+
+// TestCloseWakesRun: Run sleeps in poll with no timeout and Close wakes
+// it through an eventfd, then closes the fds once Run has returned. Run
+// used to poll every 200ms only to notice Close (five wakeups a second in
+// an idle PID 1), and Close closed the inotify fd under it, so Close took
+// up to 200ms and Run could poll a reused fd number.
+func TestCloseWakesRun(t *testing.T) {
+	const n = 10
+	var ws []*Watcher
+	for i := 0; i < n; i++ {
+		w, err := New(nullLogger{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		go w.Run()
+		ws = append(ws, w)
+	}
+	// Let every Run reach its poll.
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	for _, w := range ws {
+		w.Close()
+		select {
+		case <-w.done:
+		default:
+			t.Fatal("Close returned before Run exited")
+		}
+	}
+	// A 200ms poll timeout makes n closes take ~n*100ms on average.
+	if d := time.Since(start); d > 150*time.Millisecond {
+		t.Errorf("%d Closes took %v; Close did not wake Run", n, d)
+	}
+}
+
+// TestExistsSurvivesParentRecreate: removing the watched directory makes
+// the kernel drop the watch (IN_IGNORED). The entry was left with no
+// watch and no log, and never fired again even once the directory and
+// the file were back. Run now re-arms it.
+func TestExistsSurvivesParentRecreate(t *testing.T) {
+	w := newWatcher(t)
+	sub := filepath.Join(t.TempDir(), "sub")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var fired atomic.Int32
+	if err := w.Add(filepath.Join(sub, "marker"), TriggerExists, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.Remove(sub); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // let Run see IN_IGNORED
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "marker"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &fired, 1, 3*time.Second) {
+		t.Fatal("exists trigger did not fire after its directory was recreated")
+	}
+}
+
+// TestDirNotEmptySurvivesRecreate: as above for the watched directory
+// itself, recreated empty and filled afterwards, so the fire has to come
+// from the new watch rather than from the re-arm's own check.
+func TestDirNotEmptySurvivesRecreate(t *testing.T) {
+	w := newWatcher(t)
+	sub := filepath.Join(t.TempDir(), "queue")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var fired atomic.Int32
+	if err := w.Add(sub, TriggerDirNotEmpty, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.Remove(sub); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Wait out a re-arm pass, so the entry is armed on the empty dir.
+	time.Sleep(2 * time.Second)
+	if fired.Load() != 0 {
+		t.Fatal("fired on an empty directory")
+	}
+	if err := os.WriteFile(filepath.Join(sub, "job"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &fired, 1, 2*time.Second) {
+		t.Fatal("directory-not-empty did not fire after the directory was recreated")
+	}
+}
+
+// TestQueueOverflowRearms: IN_Q_OVERFLOW comes with wd -1 and was
+// dropped like an event for an unknown watch, so a trigger whose event
+// was among those lost never fired. On overflow every unfired entry is
+// re-armed, which checks its condition afresh.
+func TestQueueOverflowRearms(t *testing.T) {
+	// No Run: the file's real IN_CREATE stays unread in the kernel, as
+	// if the overflow had swallowed it.
+	w, err := New(testLogger{t})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		unix.Close(w.fd)
+		unix.Close(w.wakeFd)
+	})
+	path := filepath.Join(t.TempDir(), "marker")
+	var fired atomic.Int32
+	if err := w.Add(path, TriggerExists, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := make([]byte, unix.SizeofInotifyEvent)
+	ev := (*unix.InotifyEvent)(unsafe.Pointer(&buf[0]))
+	ev.Wd = -1
+	ev.Mask = unix.IN_Q_OVERFLOW
+	w.dispatch(buf)
+	w.rearmLost() // what Run does after each dispatch
+
+	if fired.Load() != 1 {
+		t.Fatalf("fired %d times after a queue overflow, want 1", fired.Load())
+	}
+}
+
+// rearmLoop re-arms path n times, as pathRearmListener does after each
+// stop of a service that fails while its condition still holds.
+func rearmLoop(t *testing.T, w *Watcher, path string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if err := w.Rearm(path); err != nil {
+			t.Fatalf("Rearm: %v", err)
+		}
+	}
+}
+
+// TestTriggerLimit: each Rearm of a condition that still holds fires
+// again at once, so a failing path-activated service was forked by PID 1
+// in a tight loop. Like a systemd path unit, an entry stops firing after
+// triggerLimitBurst fires within triggerLimitInterval.
+func TestTriggerLimit(t *testing.T) {
+	w := newWatcher(t)
+	path := filepath.Join(t.TempDir(), "marker")
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	var fired atomic.Int32
+	if err := w.Add(path, TriggerExists, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	rearmLoop(t, w, path, 300)
+	if got := fired.Load(); got != 200 {
+		t.Fatalf("fired %d times in a burst, want the limit of 200", got)
+	}
+}
+
+// TestTriggerLimitReset: once the limit is hit the entry stays down
+// through Rearm until ResetLimit (the service started by other means).
+func TestTriggerLimitReset(t *testing.T) {
+	w := newWatcher(t)
+	path := filepath.Join(t.TempDir(), "marker")
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	var fired atomic.Int32
+	if err := w.Add(path, TriggerExists, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	rearmLoop(t, w, path, 250)
+	before := fired.Load()
+	rearmLoop(t, w, path, 1)
+	if fired.Load() != before {
+		t.Fatal("a limited entry fired on Rearm")
+	}
+	w.ResetLimit(path)
+	rearmLoop(t, w, path, 1)
+	if fired.Load() != before+1 {
+		t.Fatal("Rearm after ResetLimit did not fire")
 	}
 }

@@ -113,6 +113,29 @@ mount -t tmpfs tmpfs /run/user/1000`, false) {
 	}
 }
 
+// protect-home=tmpfs mounted writable tmpfs over /home, /root and
+// /run/user, kept writable under protect-system: a service could fill
+// them, or leave files there for itself. systemd mounts them read-only,
+// /root with mode 0700.
+func TestProtectHomeTmpfsReadOnly(t *testing.T) {
+	if !inMountNS(t, `mount -t tmpfs tmpfs /home
+mount -t tmpfs tmpfs /run
+mkdir /run/user`, false) {
+		return
+	}
+	if err := applySandbox(sandboxSpec{protectHome: "tmpfs", protectSystem: "strict"}); err != nil {
+		t.Fatal(err)
+	}
+	for p, mode := range map[string]os.FileMode{"/home": 0o755, "/root": 0o700, "/run/user": 0o755} {
+		wantRO(t, p, true)
+		if st, err := os.Stat(p); err != nil {
+			t.Error(err)
+		} else if st.Mode().Perm() != mode {
+			t.Errorf("%s mode %v; want %v", p, st.Mode().Perm(), mode)
+		}
+	}
+}
+
 // protect-system=strict made / read-only and nothing mounted below it;
 // the documented exceptions (/dev, /proc, /sys, /run, /tmp, /var/tmp)
 // must stay writable, and so must a read-write-path's submounts.
@@ -182,6 +205,41 @@ mount -t tmpfs tmpfs "$BASE/sub"`, false) {
 	}
 }
 
+// A read-write-path turned back every mount below it that any directive
+// had made read-only: protect-home=read-only with read-write-paths=/run
+// left /run/user/1000 writable, and a bind-read-only-path below a
+// read-write-path became writable. In systemd the deeper path wins, and
+// of two on the same path the read-only one.
+func TestReadWritePathKeepsDeeperReadOnly(t *testing.T) {
+	if _, err := os.Stat("/mnt"); err != nil {
+		t.Skip("no /mnt to mount a fixture on")
+	}
+	if !inMountNS(t, `mount -t tmpfs tmpfs /run
+mkdir -p /run/user/1000
+mount -t tmpfs tmpfs /run/user/1000
+mount -t tmpfs tmpfs /home
+mkdir /home/alice
+mount -t tmpfs tmpfs /mnt
+mkdir -p /mnt/src /mnt/app/conf`, false) {
+		return
+	}
+	err := applySandbox(sandboxSpec{
+		protectHome:    "read-only",
+		bindROPaths:    []string{"/mnt/src:/mnt/app/conf"},
+		readWritePaths: []string{"/run", "/mnt/app", "/home", "/home/alice"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRO(t, "/run", false)
+	wantRO(t, "/run/user", true)
+	wantRO(t, "/run/user/1000", true)
+	wantRO(t, "/mnt/app", false)
+	wantRO(t, "/mnt/app/conf", true)
+	wantRO(t, "/home", true)        // same path: read-only wins
+	wantRO(t, "/home/alice", false) // deeper: read-write wins
+}
+
 // The read-only remount passed MS_RDONLY alone, and a bind remount
 // replaces the per-mount flags: a noexec, nosuid or nodev mount made
 // read-only lost them, so a script on a noexec tmpfs listed in
@@ -242,6 +300,21 @@ func TestProtectKernelTunablesCoversBinfmtMisc(t *testing.T) {
 	}
 	wantRO(t, "/proc/sys", true)
 	wantRO(t, "/proc/sys/fs/binfmt_misc", true)
+}
+
+// protect-hostname refused sethostname and setdomainname but left
+// /proc/sys/kernel/hostname and domainname writable, which set the same
+// names; systemd's ProtectHostname= makes both read-only.
+func TestProtectHostnameReadOnlySysctl(t *testing.T) {
+	if !inMountNS(t, "", false) {
+		return
+	}
+	runtime.LockOSThread() // the call filter is per thread; see below
+	if err := applyHardening(hardeningSpec{protectHostname: true}); err != nil {
+		t.Fatal(err)
+	}
+	wantRO(t, "/proc/sys/kernel/hostname", true)
+	wantRO(t, "/proc/sys/kernel/domainname", true)
 }
 
 // protect-kernel-tunables, -modules, -logs and protect-clock only

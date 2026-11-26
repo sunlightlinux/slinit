@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,52 +200,108 @@ IOUringFilter=~socket,connect
 			desc.RestrictSUIDSGID, desc.IOUringFilter, desc.SystemCallErrorNumber)
 	}
 
-	// systemd's ProtectHostname=private has no slinit counterpart: say
-	// so rather than emit something weaker.
+	// systemd's ProtectHostname=private has no slinit counterpart.
+	// Left out, the service could set the host's hostname; it becomes
+	// protect-hostname = yes, which is stricter, and says so.
 	os.WriteFile(path, []byte("[Service]\nExecStart=/bin/true\nProtectHostname=private\n"), 0o644)
 	cfg, warns, _ = ConvertSystemdUnit(path)
 	buf.Reset()
 	EmitSlinitFile(&buf, cfg)
-	if strings.Contains(buf.String(), "protect-hostname") {
-		t.Errorf("ProtectHostname=private emitted as a switch:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "protect-hostname = yes") {
+		t.Errorf("ProtectHostname=private not made protect-hostname = yes:\n%s", buf.String())
 	}
 	if len(warns) == 0 {
 		t.Error("ProtectHostname=private must warn")
 	}
 }
 
-// A deny-list cannot be expressed by an allow-list directive; converting
-// it anyway would invert the operator's intent, which is worse than
-// declining to convert it.
-func TestSystemdDenyListsAreNotSilentlyInverted(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "d.service")
-	os.WriteFile(path, []byte(`[Service]
+// A deny-list of address families and a list of namespace types were
+// dropped with a warning, so the service ran with no restriction at all.
+// The deny-list becomes the allow-list of every other family, and the
+// namespace list refuses every type, which is stricter.
+func TestSystemdDenyListsAreKept(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
 ExecStart=/bin/true
-RestrictAddressFamilies=~AF_PACKET
+RestrictAddressFamilies=~AF_PACKET AF_NETLINK
 RestrictNamespaces=net ipc
-`), 0o644)
-	cfg, warns, err := ConvertSystemdUnit(path)
-	if err != nil {
-		t.Fatalf("convert: %v", err)
+`)
+	if !desc.RestrictAFEnabled {
+		t.Fatal("RestrictAddressFamilies=~ dropped")
 	}
-	var buf bytes.Buffer
-	EmitSlinitFile(&buf, cfg)
-	out := buf.String()
-	if strings.Contains(out, "restrict-address-families") {
-		t.Errorf("a ~ deny-list was emitted as an allow-list:\n%s", out)
+	allowed := map[string]bool{}
+	for _, f := range desc.RestrictAddressFamilies {
+		allowed[f] = true
 	}
-	if strings.Contains(out, "restrict-namespaces") {
-		t.Errorf("a namespace-type list was emitted as a blanket switch:\n%s", out)
+	if allowed["17"] || allowed["16"] || !allowed["1"] || !allowed["2"] || !allowed["10"] {
+		t.Errorf("~AF_PACKET AF_NETLINK became %v; want every family but 16 and 17", desc.RestrictAddressFamilies)
 	}
-	var warned int
+	if !desc.RestrictNamespaces {
+		t.Error("RestrictNamespaces=net ipc dropped; want restrict-namespaces = yes")
+	}
+	var warned bool
 	for _, w := range warns {
-		if w.Level == "WARN" {
-			warned++
+		warned = warned || (w.Level == "WARN" && strings.Contains(w.Msg, "RestrictNamespaces"))
+	}
+	if !warned {
+		t.Error("RestrictNamespaces=<list> → yes must warn that it is stricter")
+	}
+}
+
+// RestrictAddressFamilies= folds its assignments as systemd's
+// parse_address_families does: a later line of the other kind takes
+// families away, an empty one resets, none allows nothing.
+func TestSystemdAddressFamiliesFold(t *testing.T) {
+	for _, c := range []struct {
+		unit string
+		want string // "" = directive not in force
+	}{
+		{"RestrictAddressFamilies=AF_UNIX AF_INET\nRestrictAddressFamilies=~AF_INET", "AF_UNIX"},
+		{"RestrictAddressFamilies=AF_UNIX\nRestrictAddressFamilies=AF_INET6", "AF_UNIX AF_INET6"},
+		{"RestrictAddressFamilies=AF_UNIX\nRestrictAddressFamilies=", ""},
+		{"RestrictAddressFamilies=none", "-"},
+	} {
+		desc, _ := convertWarns(t, "[Service]\nExecStart=/bin/true\n"+c.unit+"\n")
+		got := strings.Join(desc.RestrictAddressFamilies, " ")
+		switch {
+		case c.want == "" && desc.RestrictAFEnabled:
+			t.Errorf("%q: restriction in force (%q); want none", c.unit, got)
+		case c.want == "-" && (!desc.RestrictAFEnabled || got != ""):
+			t.Errorf("%q: enabled=%v families %q; want an empty allow-list", c.unit, desc.RestrictAFEnabled, got)
+		case c.want != "" && c.want != "-" && got != c.want:
+			t.Errorf("%q: families %q; want %q", c.unit, got, c.want)
 		}
 	}
-	if warned < 2 {
-		t.Errorf("both unconvertible directives should warn, got %d WARNs", warned)
+	// A deny-list naming a family slinit does not know cannot be
+	// inverted: the unit is refused.
+	path := filepath.Join(t.TempDir(), "u.service")
+	os.WriteFile(path, []byte("[Service]\nExecStart=/bin/true\nRestrictAddressFamilies=~AF_BOGUS\n"), 0o644)
+	if _, _, err := ConvertSystemdUnit(path); err == nil {
+		t.Error("~AF_BOGUS converted; want an error")
+	}
+}
+
+// Confinement slinit cannot express refuses the unit instead of running
+// it less confined than written: an empty CapabilityBoundingSet= kept
+// every capability. PrivateDevices=yes is a WARN for now (see systemd.go).
+func TestSystemdUnexpressibleConfinementRefused(t *testing.T) {
+	for _, line := range []string{"CapabilityBoundingSet=", "CapabilityBoundingSet=~CAP_CHOWN\nCapabilityBoundingSet="} {
+		path := filepath.Join(t.TempDir(), "u.service")
+		os.WriteFile(path, []byte("[Service]\nExecStart=/bin/true\n"+line+"\n"), 0o644)
+		if _, _, err := ConvertSystemdUnit(path); err == nil {
+			t.Errorf("%q converted; want an error", line)
+		}
+		if _, err := SystemdUnitToServiceDescription(path, "u"); err == nil {
+			t.Errorf("%q loaded; want an error", line)
+		}
+	}
+	if desc, warns := convertWarns(t, "[Service]\nExecStart=/bin/true\nPrivateDevices=yes\n"); desc == nil {
+		t.Error("PrivateDevices=yes refused; it is a warning for now")
+	} else if !strings.Contains(fmt.Sprint(warns), "PrivateDevices") {
+		t.Errorf("PrivateDevices=yes loaded without a warning: %v", warns)
+	}
+	// PrivateDevices=no asks for nothing.
+	if desc, _ := convertWarns(t, "[Service]\nExecStart=/bin/true\nPrivateDevices=no\n"); desc == nil {
+		t.Error("PrivateDevices=no refused")
 	}
 }
 
@@ -388,13 +445,12 @@ CapabilityBoundingSet=~CAP_SYS_ADMIN CAP_SYS_MODULE
 func TestSystemdUnmappableSandboxFormsWarn(t *testing.T) {
 	desc, warns := convertWarns(t, `[Service]
 ExecStart=/bin/true
-ReadOnlyPaths=+/etc /var/%N
+ReadOnlyPaths=+/etc /var/%h
 BindReadOnlyPaths=/usr:/opt/usr:norbind
-CapabilityBoundingSet=
 ProtectProc=bogus
 `)
 	if len(desc.ReadOnlyPaths) != 0 || len(desc.BindReadOnlyPaths) != 0 ||
-		desc.CapabilityBoundingSet != "" || desc.ProtectProc != "" {
+		desc.ProtectProc != "" {
 		t.Errorf("an unmappable form was emitted: %+v", desc)
 	}
 	var n int
@@ -403,7 +459,172 @@ ProtectProc=bogus
 			n++
 		}
 	}
+	// %h is warned about twice: as a specifier left unexpanded, and as
+	// a path slinit cannot take.
 	if n != 5 {
-		t.Errorf("got %d WARNs, want 5 (+path, %%specifier, norbind, empty bounding set, bogus protect-proc): %v", n, warns)
+		t.Errorf("got %d WARNs, want 5 (+path, %%h twice, norbind, bogus protect-proc): %v", n, warns)
+	}
+}
+
+// ExecStart=@path argv0 args runs path with argv0 as argv[0]. Stripping
+// the @ alone left argv0 in the command, so it became argv[1] and every
+// argument moved one place.
+func TestSystemdExecArgv0Prefix(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=@/usr/sbin/daemon "my daemon" --flag x
+ExecStartPre=@/bin/prep prep-name -v
+`)
+	if got := strings.Join(desc.Command, "|"); got != "/usr/sbin/daemon|--flag|x" {
+		t.Errorf("command = %q; want /usr/sbin/daemon|--flag|x", got)
+	}
+	if desc.Argv0 != "my daemon" {
+		t.Errorf("argv0 = %q; want %q", desc.Argv0, "my daemon")
+	}
+	if got := strings.Join(desc.PreStartCommand, "|"); got != "/bin/prep|-v" {
+		t.Errorf("pre-start-command = %q; want /bin/prep|-v", got)
+	}
+	warned := false
+	for _, w := range warns {
+		if w.Level == "WARN" && strings.Contains(w.Msg, "prep-name") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("the dropped argv0 of ExecStartPre= was not a WARN: %v", warns)
+	}
+}
+
+// A scripted service takes no command-argv0, so a oneshot's @ argv[0]
+// is dropped with a warning rather than silently.
+func TestSystemdExecArgv0PrefixOneshot(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=@/bin/job job-name -x
+Type=oneshot
+`)
+	if got := strings.Join(desc.Command, "|"); got != "/bin/job|-x" {
+		t.Errorf("command = %q; want /bin/job|-x", got)
+	}
+	for _, w := range warns {
+		if w.Level == "WARN" && strings.Contains(w.Msg, "job-name") {
+			return
+		}
+	}
+	t.Errorf("the dropped argv0 of a oneshot was not a WARN: %v", warns)
+}
+
+// command-argv0 is written as the rest of its line, trimmed and
+// unquoted, and the argv[0] an @ gives is C-unescaped first: a "\n" in
+// it ended the line, and what followed became a setting of its own
+// (here run-as). An argv[0] that cannot be written so that it reads back
+// the same is dropped with a WARN; with ":" its $ stay literal.
+func TestSystemdExecArgv0Unwritable(t *testing.T) {
+	for _, c := range []struct{ line, why string }{
+		{`@/bin/sleep "x\nrun-as = nobody" 10`, "control character"},
+		{`@/bin/sleep "x\rrun-as = nobody" 10`, "control character"},
+		{`@/bin/sleep "x\x01y" 10`, "control character"},
+		{`@/bin/sleep "  spaced  " 10`, "blank"},
+		{`@/bin/sleep "" 10`, "empty"},
+	} {
+		unit := "[Service]\nExecStart=" + c.line + "\n"
+		desc, warns := convertWarns(t, unit)
+		if desc.RunAs != "" || desc.Argv0 != "" {
+			t.Errorf("%s: run-as = %q, command-argv0 = %q; want both unset", c.line, desc.RunAs, desc.Argv0)
+		}
+		if got := strings.Join(desc.Command, "|"); got != "/bin/sleep|10" {
+			t.Errorf("%s: command = %q; want /bin/sleep|10", c.line, got)
+		}
+		warned := false
+		for _, w := range warns {
+			warned = warned || w.Level == "WARN" && strings.Contains(w.Msg, "argv[0]") && strings.Contains(w.Msg, c.why)
+		}
+		if !warned {
+			t.Errorf("%s: no WARN naming the %s: %v", c.line, c.why, warns)
+		}
+	}
+
+	t.Setenv("SLINIT_ARGV0_PROBE", "expanded")
+	desc, _ := convertWarns(t, "[Service]\nExecStart=:@/bin/sleep \"a$SLINIT_ARGV0_PROBE $$\" 10\n")
+	if desc.Argv0 != "a$SLINIT_ARGV0_PROBE $$" {
+		t.Errorf(`":@": command-argv0 = %q; want it literal, "a$SLINIT_ARGV0_PROBE $$"`, desc.Argv0)
+	}
+}
+
+// systemd expands %-specifiers in Exec lines and paths. They passed
+// through literally, so a service ran with "%t/%N.sock" as an argument,
+// and nothing said so.
+func TestSystemdSpecifiersExpanded(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=/usr/bin/d --sock %t/%N.sock --unit %n --name %p%i --state %S/%N --pct 100%% --home %h
+PIDFile=%t/%N.pid
+WorkingDirectory=%S/%p
+ReadWritePaths=%L/%N %C/%N %E/%N
+`)
+	want := "/usr/bin/d|--sock|/run/probe.sock|--unit|probe.service|--name|probe|--state|/var/lib/probe|--pct|100%|--home|%h"
+	if got := strings.Join(desc.Command, "|"); got != want {
+		t.Errorf("command = %q;\nwant %q", got, want)
+	}
+	if desc.PIDFile != "/run/probe.pid" {
+		t.Errorf("pid-file = %q", desc.PIDFile)
+	}
+	if desc.WorkingDir != "/var/lib/probe" {
+		t.Errorf("working-dir = %q", desc.WorkingDir)
+	}
+	if got := strings.Join(desc.ReadWritePaths, " "); got != "/var/log/probe /var/cache/probe /etc/probe" {
+		t.Errorf("read-write-paths = %q", got)
+	}
+	for _, w := range warns {
+		if w.Level == "WARN" && strings.Contains(w.Msg, "%h") {
+			return
+		}
+	}
+	t.Errorf("an unexpanded %%h was not a WARN: %v", warns)
+}
+
+// SupplementaryGroups= was reported "not mapped" although slinit has
+// supplementary-groups, and PrivateUsers=, lost confinement, was a NOTE
+// that slinit-systemd-convert hides without --verbose.
+func TestSystemdSupplementaryGroupsAndPrivateUsers(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=/bin/true
+SupplementaryGroups=audio video
+SupplementaryGroups=input
+PrivateUsers=yes
+`)
+	if got := strings.Join(desc.SupplementaryGroups, " "); got != "audio video input" {
+		t.Errorf("supplementary-groups = %q; want audio video input", got)
+	}
+	var privUsers bool
+	for _, w := range warns {
+		if strings.Contains(w.Msg, "SupplementaryGroups") {
+			t.Errorf("SupplementaryGroups= still reported: %v", w)
+		}
+		if w.Level == "WARN" && strings.Contains(w.Msg, "PrivateUsers") {
+			privUsers = true
+		}
+	}
+	if !privUsers {
+		t.Errorf("PrivateUsers=yes is not a WARN: %v", warns)
+	}
+
+	desc, _ = convertWarns(t, `[Service]
+ExecStart=/bin/true
+SupplementaryGroups=audio
+SupplementaryGroups=
+`)
+	if len(desc.SupplementaryGroups) != 0 {
+		t.Errorf("an empty SupplementaryGroups= did not reset the list: %q", desc.SupplementaryGroups)
+	}
+}
+
+// Group= without User= runs the service as root with that group. It
+// became run-as = :wheel, which process.ResolveRunAs rejects ("no
+// user"), so the service never started.
+func TestSystemdGroupWithoutUser(t *testing.T) {
+	desc, _ := convertWarns(t, `[Service]
+ExecStart=/bin/true
+Group=wheel
+`)
+	if desc.RunAs != "root:wheel" {
+		t.Errorf("run-as = %q; want root:wheel", desc.RunAs)
 	}
 }

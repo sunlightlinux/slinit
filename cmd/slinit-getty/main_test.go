@@ -3,8 +3,14 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/internal/nstest"
 )
 
 // TestExpandIssue_Basic: no escapes = passthrough. Regression
@@ -141,5 +147,103 @@ func TestUnixString_NoNUL(t *testing.T) {
 	got := unixString(buf)
 	if got != "abc" {
 		t.Errorf("unixString(no NUL): got %q, want %q", got, "abc")
+	}
+}
+
+// When login cannot run, getty must not fall back to a shell that asks
+// for nothing: only sulogin, which authenticates, may stand in.
+func TestRescueIsOnlySulogin(t *testing.T) {
+	for _, p := range rescueShellCandidates {
+		if filepath.Base(p) != "sulogin" {
+			t.Errorf("rescue candidate %s does not authenticate", p)
+		}
+	}
+}
+
+// A login whose exec fails (ETXTBSY during an upgrade) with no sulogin
+// present makes getty return an error, so it exits and is respawned,
+// and nothing else is executed.
+func TestLoginExecFailureExits(t *testing.T) {
+	login := filepath.Join(t.TempDir(), "login")
+	if err := os.WriteFile(login, []byte("#!/bin/false\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldLogin, oldRescue := loginPathCandidates, rescueShellCandidates
+	t.Cleanup(func() { loginPathCandidates, rescueShellCandidates = oldLogin, oldRescue })
+	loginPathCandidates = []string{login}
+	rescueShellCandidates = []string{filepath.Join(t.TempDir(), "sulogin")}
+
+	var ran []string
+	err := execLogin("root", false, func(path string, _ []string, _ []string) error {
+		ran = append(ran, path)
+		return syscall.ETXTBSY
+	})
+	if err == nil || !strings.Contains(err.Error(), "text file busy") {
+		t.Errorf("err %v, want the exec failure", err)
+	}
+	if len(ran) != 1 || ran[0] != login {
+		t.Errorf("executed %v, want only %s", ran, login)
+	}
+}
+
+// agetty's modes: the tty group may write to the user's terminal
+// (write(1), wall), nobody else may; without a tty group, owner only.
+func TestTTYMode(t *testing.T) {
+	if m := ttyMode(5); m != 0o620 {
+		t.Errorf("with a tty group: %o, want 620", m)
+	}
+	if m := ttyMode(0); m != 0o600 {
+		t.Errorf("without a tty group: %o, want 600", m)
+	}
+}
+
+// A tty the last session's login gave to its user goes back to root
+// before the next prompt. Needs root to chown: not root, it runs as root
+// of a user namespace with the caller's subordinate ids mapped, on a
+// devpts instance of its own (the host's ptys belong to a tty group the
+// namespace cannot map, so chown on them is refused).
+func TestReclaimTTY(t *testing.T) {
+	if !nstest.AsRoot(t, nstest.Opts{IDs: true, Mount: true}) {
+		return
+	}
+	if nstest.Inside() {
+		if err := unix.Mount("devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666"); err != nil {
+			t.Skipf("mount a devpts instance in the user namespace: %v", err)
+		}
+	}
+	ptmx, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Skipf("no pty: %v", err)
+	}
+	defer unix.Close(ptmx)
+	if err := unix.IoctlSetPointerInt(ptmx, unix.TIOCSPTLCK, 0); err != nil {
+		t.Fatal(err)
+	}
+	n, err := unix.IoctlGetInt(ptmx, unix.TIOCGPTN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slave := "/dev/pts/" + strconv.Itoa(n)
+	fd, err := unix.Open(slave, unix.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	// As a previous login would have left it.
+	if err := unix.Fchown(fd, 1000, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Fchmod(fd, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := reclaimTTY(fd, 5); err != nil {
+		t.Fatal(err)
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Uid != 0 || st.Gid != 5 || st.Mode&0o777 != 0o620 {
+		t.Errorf("%s: uid %d gid %d mode %o, want 0 5 620", slave, st.Uid, st.Gid, st.Mode&0o777)
 	}
 }

@@ -90,8 +90,11 @@ func (p *PinStore) Set(name, intent string) error {
 	// without the fsync, a power cut can leave the renamed file empty
 	// and Load drops the pin. The directory is synced after so the
 	// rename itself survives. Same pattern as pkg/snapshot's Write.
+	// The temp name starts with '.', which no service name does, so
+	// Load can tell it from a pin; "<name>.tmp" was a valid service
+	// name, and Load used to skip that service's pin.
 	path := filepath.Join(p.dir, name)
-	tmp := path + ".tmp"
+	tmp := filepath.Join(p.dir, "."+name+".tmp")
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("persist: write %s: %w", tmp, err)
@@ -165,7 +168,8 @@ func (p *PinStore) Load() (map[string]string, error) {
 		return out, fmt.Errorf("persist: read %s: %w", p.dir, err)
 	}
 	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".tmp") {
+		// A leading '.' is Set's temp file: no service name has one.
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		name := e.Name()

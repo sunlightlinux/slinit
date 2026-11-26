@@ -48,9 +48,16 @@ At least one of **--exec**, **--pidfile**, or **--name** must be given.
 When multiple are provided, a process must satisfy **all** of them.
 
 **-x**, **--exec** *PATH*
-:   Match processes whose **/proc/PID/exe** symlink resolves to *PATH*,
-    including one still running a *PATH* since replaced or removed
-    (the link then reads "*PATH* (deleted)").
+:   Match processes whose **/proc/PID/exe** is the same file as *PATH*
+    (device and inode, as Debian compares them), so any spelling of
+    the path matches: on a merged-/usr system **/usr/sbin/foo** finds
+    a daemon the kernel reports as **/usr/bin/foo**. A process still
+    running a *PATH* since replaced or removed (the link then reads
+    "*PATH* (deleted)") is matched by the path string instead. When
+    *PATH* is itself a symlink (a busybox applet such as
+    **/usr/sbin/crond** -> **/bin/busybox**) only its directory is
+    resolved and the name compared, as OpenRC does: the link's target
+    is the multi-call binary every applet runs.
     Also names the binary to spawn on **--start**.
 
 **-p**, **--pidfile** *PATH*
@@ -68,7 +75,10 @@ When multiple are provided, a process must satisfy **all** of them.
 
 **-n**, **--name** *NAME*
 :   Match against **/proc/PID/comm** (the kernel task name, truncated
-    to 15 bytes).
+    to 15 bytes). A longer *NAME* is matched on its first 15 bytes,
+    the part the kernel keeps, with a warning on stderr (as dpkg's
+    start-stop-daemon warns); use **--exec** to match exactly. With
+    **--interpreted**, the script name is compared whole.
 
 **-u**, **--user** *USER*
 :   Match processes owned by *USER* (name or uid). On **--start** this
@@ -82,10 +92,17 @@ When multiple are provided, a process must satisfy **all** of them.
 
 **-c**, **--chuid** *USER*[:*GROUP*]
 :   Set the child user (and optionally group). Overrides **--user**
-    for credential selection.
+    for credential selection. *USER* may be a name or a numeric uid;
+    without *GROUP* the child takes the user's passwd group. As
+    OpenRC and Debian do with **initgroups**(3), the child gets the
+    supplementary groups of *USER*, plus its group; a uid with no
+    passwd entry gets that group alone, never the caller's groups.
 
 **-g**, **--group** *GROUP*
-:   Set the child's primary group.
+:   Set the child's primary group. Given without a user (no
+    **--chuid** or **--user**), only the group changes and the
+    supplementary groups are inherited from the caller, as in OpenRC
+    and Debian.
 
 **-d**, **--chdir** *DIR*
 :   Change to *DIR* before **exec**(2).
@@ -217,8 +234,20 @@ child before **exec**(2) — a peer task cannot set them from outside.
     - Slash-separated: **--retry TERM/30/KILL/5** sends SIGTERM, waits
       up to 30s, then sends SIGKILL and waits up to 5s.
 
-    A trailing signal without timeout means "wait forever" for that
-    step.
+    As in Debian and OpenRC, a signal item may be written with one
+    leading dash (**-TERM/5/-KILL/5**); a signal number needs it
+    (**-15/5/-9/5**), since a plain number is a timeout. A signal with
+    no timeout after it is sent and the schedule moves on; if it is
+    the last item the process gets one second to be gone and is then
+    reported as refusing to die (exit **4**). A timeout of **0** only
+    checks whether the process is gone.
+
+    **forever** repeats the items after it until the process exits:
+    **TERM/5/forever/KILL/5** sends SIGKILL every 5s. As the last
+    item (**TERM/30/forever**) it repeats the timeout before it, that
+    is, waits with no deadline, as OpenRC does (Debian refuses this
+    form). **forever** may appear once, and the items it repeats must
+    include a non-zero timeout.
 
     Without **--retry**, as in OpenRC, **--stop** sends **--signal**
     and waits up to 5s for the process to exit, returning **4** if it

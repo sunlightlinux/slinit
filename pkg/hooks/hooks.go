@@ -7,6 +7,9 @@
 //
 // Contract:
 //   - Scripts must be regular files with any execute bit set.
+//   - The hook-point directory and every script must be owned by root
+//     and not writable by group or others, as sudo and cron require of
+//     what they run as root; anything else is skipped with a warning.
 //   - Ordering: filepath.Glob then sort.Strings — same shell/systemd
 //     tmpfiles.d convention (`00-x`, `10-y`, …).
 //   - Each script gets 30 s to run before slinit gives up and continues;
@@ -41,6 +44,40 @@ import (
 // Overridable at package level for tests so they don't need to write
 // to /etc.
 var hooksDir = "/etc/slinit/hooks.d"
+
+// hookOwnerUID must own every hook directory and script that runs.
+// Root; a variable so the tests can run unprivileged.
+var hookOwnerUID uint32 = 0
+
+// checkTrusted refuses what someone other than root could have
+// written: an entry not owned by hookOwnerUID, or one writable by
+// group or others. Every hook runs as root, so either would let
+// that someone run code as root.
+func checkTrusted(path string, info os.FileInfo) error {
+	st, _ := info.Sys().(*syscall.Stat_t)
+	if st == nil || st.Uid != hookOwnerUID {
+		return fmt.Errorf("%s is not owned by uid %d; refusing it", path, hookOwnerUID)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is writable by group or others (mode %#o); refusing it",
+			path, info.Mode().Perm())
+	}
+	return nil
+}
+
+// checkTrustedDir Lstats dir and applies checkTrusted. A symlink is
+// refused: its own mode is always 0777 and its target is not what
+// was checked.
+func checkTrustedDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory (a symlink is refused)", dir)
+	}
+	return checkTrusted(dir, info)
+}
 
 // perScriptTimeout is how long a single hook script may run before
 // slinit kills it and moves on. 30 s matches systemd's
@@ -88,17 +125,30 @@ func Run(point string, logger *logging.Logger) (ran, failed int) {
 		names = append(names, e.Name())
 	}
 	sort.Strings(names)
+	if len(names) == 0 {
+		return 0, 0
+	}
+	// Whoever can write the directory can replace any script in it
+	// between this check and the exec, so it is checked too.
+	if err := checkTrustedDir(dir); err != nil {
+		logger.Warn("hooks: %v", err)
+		return 0, 0
+	}
 
 	for _, name := range names {
 		path := filepath.Join(dir, name)
-		st, err := os.Stat(path)
+		st, err := os.Lstat(path)
 		if err != nil {
 			logger.Warn("hooks: stat %s: %v", path, err)
 			continue
 		}
-		if st.Mode()&0o111 == 0 {
+		if !st.Mode().IsRegular() || st.Mode()&0o111 == 0 {
 			// Not executable — skip silently. Operator may have
 			// dropped a README here or a WIP script without chmod.
+			continue
+		}
+		if err := checkTrusted(path, st); err != nil {
+			logger.Warn("hooks: %v", err)
 			continue
 		}
 		ran++

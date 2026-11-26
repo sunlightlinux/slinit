@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // openConfiguredFile opens the path in e per the systemd OpenFile=
@@ -37,14 +39,23 @@ func openConfiguredFile(e OpenFileEntry) (*os.File, error) {
 			return nil, fmt.Errorf("unknown option %q (accepted: read-only, append, truncate, graceful)", tok)
 		}
 	}
-	f, err := os.OpenFile(e.Path, flags, 0o644)
+	// O_NONBLOCK so a FIFO at the path cannot block PID 1 in open()
+	// waiting for its other end; FIFOs and sockets are legitimate
+	// targets, so they are not refused. The service gets the fd back
+	// in blocking mode, as a plain open would have given it.
+	fd, err := unix.Open(e.Path, flags|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o644)
+	if err == nil {
+		if err = unix.SetNonblock(fd, false); err != nil {
+			unix.Close(fd)
+		}
+	}
 	if err != nil {
 		if graceful {
 			return os.Open("/dev/null")
 		}
-		return nil, err
+		return nil, &os.PathError{Op: "open", Path: e.Path, Err: err}
 	}
-	return f, nil
+	return os.NewFile(uintptr(fd), e.Path), nil
 }
 
 func splitOpenFileOptions(s string) []string {

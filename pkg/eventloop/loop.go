@@ -35,6 +35,10 @@ type EventLoop struct {
 	shutdownInitiated bool
 	shutdownType      service.ShutdownType
 	emergencyTimer    *time.Timer
+	// runExited is set when Run returns. A shutdown still in its
+	// pre-shutdown work then (an escalated timer returned Run) must not
+	// arm a timer or reporter that nothing will cancel.
+	runExited bool
 
 	// Emergency shutdown timeout. Zero means "use defaultEmergencyTimeout".
 	// Set via SetEmergencyTimeout before Run(); reads are unlocked because
@@ -54,6 +58,14 @@ type EventLoop struct {
 	// "nothing is running" is the expected steady state rather than a
 	// collapse — see checkInactive.
 	isRescue bool
+
+	// SIGPWR work: at most one power hook run queued behind the one
+	// running. See queuePowerHook.
+	powerOnce    sync.Once
+	powerPending chan struct{}
+	// powerHook is shutdown.HandlePowerSignal; a field so tests can
+	// stand in a slow hook.
+	powerHook func(*logging.Logger) shutdown.PowerState
 
 	// Channel for forcing event loop exit (emergency timeout)
 	forceExitCh chan struct{}
@@ -80,7 +92,10 @@ type EventLoop struct {
 	// its activation/pin/trigger state. main.go wires this to capture
 	// a snapshot for soft-reboot — by the time StopAllServices returns
 	// the operator-visible state is gone. Returning is best-effort:
-	// errors are logged by the callback and shutdown continues.
+	// errors are logged by the callback and shutdown continues. It runs
+	// on its own goroutine and is waited for at most the emergency
+	// timeout (see runPreShutdown), so time-critical work belongs at
+	// its start.
 	OnPreShutdown func(shutdownType service.ShutdownType)
 
 	// OnShutdownAnnounce fires at the very TOP of initiateShutdown,
@@ -88,7 +103,7 @@ type EventLoop struct {
 	// wires this to unmute the catch-all console tee so the WARN +
 	// subsequent teardown output is visible on /dev/console again.
 	// Distinct from OnPreShutdown, which fires later — after the
-	// WARN and after emergency timers are armed. Best-effort;
+	// WARN and before the emergency timer is armed. Best-effort;
 	// panics are recovered by the caller's outer defer.
 	OnShutdownAnnounce func()
 }
@@ -99,6 +114,7 @@ func New(services *service.ServiceSet, logger *logging.Logger) *EventLoop {
 		services:    services,
 		logger:      logger,
 		forceExitCh: make(chan struct{}, 1),
+		powerHook:   shutdown.HandlePowerSignal,
 	}
 }
 
@@ -112,12 +128,41 @@ func New(services *service.ServiceSet, logger *logging.Logger) *EventLoop {
 // the set before the loop's channel lets go, leaving no gap; nothing
 // reads it, and signal delivery to a full channel is dropped, not
 // blocking. Children still get default dispositions, unlike with
-// signal.Ignore, which exec would pass on.
+// signal.Ignore, which exec would pass on. The fresh channel is kept in
+// heldSigCh so the next loop can let it go once it has claimed the set:
+// discarded, it stayed registered, one more per remain.
 func (el *EventLoop) releaseSignals() {
 	if el.isPID1 || os.Getpid() == 1 {
-		SetupEarlySignals()
+		ch := SetupEarlySignals()
+		heldSigMu.Lock()
+		prev := heldSigCh
+		heldSigCh = ch
+		heldSigMu.Unlock()
+		if prev != nil {
+			StopSignals(prev)
+		}
 	}
 	StopSignals(el.sigCh)
+}
+
+// heldSigCh is the channel releaseSignals claims the signals on between
+// two loops, guarded by heldSigMu. Package-level: each loop is a new
+// EventLoop.
+var (
+	heldSigMu sync.Mutex
+	heldSigCh chan os.Signal
+)
+
+// releaseHeldSignals lets go of the channel the previous loop left
+// holding the signals. Call it once this loop has claimed them.
+func releaseHeldSignals() {
+	heldSigMu.Lock()
+	ch := heldSigCh
+	heldSigCh = nil
+	heldSigMu.Unlock()
+	if ch != nil {
+		StopSignals(ch)
+	}
 }
 
 // SetPID1Mode enables PID 1 specific behavior:
@@ -188,7 +233,19 @@ func (el *EventLoop) Run(ctx context.Context) error {
 		// for it until now.
 		signal.Notify(el.sigCh, syscall.SIGCHLD)
 	}
+	releaseHeldSignals()
 	defer el.releaseSignals()
+	defer el.stopPowerHooks()
+	// An orphan that exited before SIGCHLD was claimed (during boot, or
+	// between the previous loop and this one after a remain) sent a
+	// signal nobody received: reap it now rather than at the next exit.
+	el.reapOrphans()
+	defer func() {
+		el.mu.Lock()
+		el.runExited = true
+		el.mu.Unlock()
+		el.cancelEmergencyTimer()
+	}()
 
 	el.logger.Info("slinit event loop started (PID %d)", os.Getpid())
 
@@ -212,6 +269,9 @@ func (el *EventLoop) Run(ctx context.Context) error {
 			} else {
 				el.logger.Error("Emergency shutdown timeout reached, forcing exit")
 			}
+			// The reporter and timer go with the loop: after a remain
+			// PID 1 runs on, and they would report into it for ever.
+			el.cancelEmergencyTimer()
 			return nil
 
 		case sig := <-el.sigCh:
@@ -320,8 +380,7 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 			el.logger.Info("Received SIGPWR while shutting down, ignoring")
 			return false
 		}
-		state := shutdown.HandlePowerSignal(el.logger)
-		el.logger.Notice("Received SIGPWR, power status: %s", state)
+		el.queuePowerHook()
 		return false
 	}
 
@@ -519,7 +578,13 @@ func formatBlockingServices(active []service.ActiveServiceInfo) string {
 // which services are blocking shutdown.
 func (el *EventLoop) startShutdownReporter() {
 	stop := make(chan struct{})
+	el.mu.Lock()
+	if el.runExited {
+		el.mu.Unlock()
+		return
+	}
 	el.shutdownReporterStop = stop
+	el.mu.Unlock()
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -536,6 +601,8 @@ func (el *EventLoop) startShutdownReporter() {
 
 // stopShutdownReporter stops the periodic shutdown reporter.
 func (el *EventLoop) stopShutdownReporter() {
+	el.mu.Lock()
+	defer el.mu.Unlock()
 	if el.shutdownReporterStop != nil {
 		close(el.shutdownReporterStop)
 		el.shutdownReporterStop = nil
@@ -545,6 +612,50 @@ func (el *EventLoop) stopShutdownReporter() {
 // isShuttingDown returns the current shutdown state (lock-free).
 func (el *EventLoop) isShuttingDown() bool {
 	return el.shutdownSignals.Load() > 0
+}
+
+// queuePowerHook hands a SIGPWR to the power-hook goroutine. The hook is
+// the operator's program and may run for minutes: on this goroutine it
+// stalled orphan reaping, Ctrl+Alt+Del, SIGTERM and even the shutdown
+// the hook itself asks for. Runs never overlap. A SIGPWR that arrives
+// while one runs queues one more run, which reads the status file when
+// it starts; further ones collapse into it, as the kernel collapses a
+// repeated pending signal, so nothing the UPS daemon wrote is lost.
+func (el *EventLoop) queuePowerHook() {
+	el.powerOnce.Do(func() {
+		el.powerPending = make(chan struct{}, 1)
+		go el.runPowerHooks(el.powerPending)
+	})
+	select {
+	case el.powerPending <- struct{}{}:
+	default:
+		el.logger.Info("Received SIGPWR while a power hook run is already queued, collapsing into it")
+	}
+}
+
+func (el *EventLoop) runPowerHooks(pending <-chan struct{}) {
+	for range pending {
+		if el.isShuttingDown() {
+			// Same rule as a SIGPWR received during shutdown: leave
+			// the status file for a hook that may still be running.
+			el.logger.Info("SIGPWR queued before shutdown began, ignoring")
+			continue
+		}
+		state := el.powerHook(el.logger)
+		el.logger.Notice("Received SIGPWR, power status: %s", state)
+	}
+}
+
+// stopPowerHooks ends the SIGPWR worker with the loop, after any run it
+// is in. Called on the Run goroutine, the only one that queues a run, so
+// no send can race the close; one queued later finds no channel and is
+// dropped.
+func (el *EventLoop) stopPowerHooks() {
+	el.powerOnce.Do(func() {})
+	if el.powerPending != nil {
+		close(el.powerPending)
+		el.powerPending = nil
+	}
 }
 
 // InitiateShutdown triggers a shutdown from outside the event loop
@@ -595,33 +706,27 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	// the whole point of the announcement.
 	el.logger.Warn("Shutting down slinit (%s)...", shutdownType)
 
-	// Start emergency timeout with a cancellable timer.
-	// Capture immutable refs to avoid racing on el fields after mutex release.
-	// services is captured too so the callback can enumerate blockers
-	// without touching el fields the timer isn't holding a lock on.
-	logger := el.logger
-	forceExitCh := el.forceExitCh
-	services := el.services
-	timeout := el.effectiveEmergencyTimeout()
-	el.emergencyTimer = time.AfterFunc(timeout, func() {
-		blocking := formatBlockingServices(services.GetActiveServiceInfo())
-		logger.Error("Services did not stop within %v, forcing shutdown%s",
-			timeout, blocking)
-		select {
-		case forceExitCh <- struct{}{}:
-		default:
-		}
-	})
-	// Release mutex before calling StopAllServices to avoid potential
-	// deadlock if service state changes try to signal back to the event loop.
+	// Release mutex before calling OnPreShutdown and StopAllServices to
+	// avoid potential deadlock if service state changes try to signal
+	// back to the event loop.
 	el.mu.Unlock()
 
-	// Capture operator state (snapshot) while services still hold it.
-	// StopAllServices clears activation/pin/trigger as it tears down,
-	// so this hook must run first.
-	if el.OnPreShutdown != nil {
-		el.OnPreShutdown(shutdownType)
-	}
+	// Capture operator state (snapshot) and run the system-down work
+	// while services still hold their state. StopAllServices clears
+	// activation/pin/trigger as it tears down, so this hook must run
+	// first. It is bounded: see runPreShutdown.
+	el.runPreShutdown(shutdownType)
+
+	// The emergency timer guards the stop phase only. Armed before the
+	// pre-shutdown work, slow system-down hooks or ifdown spent the
+	// whole budget while every service was still running, and the
+	// timer fired before a single service had been asked to stop.
+	el.armEmergencyTimer()
+
+	// Start periodic reporting of blocking services. Before the stop,
+	// whose end can return Run at once: started after, it outlived the
+	// loop that should have stopped it.
+	el.startShutdownReporter()
 
 	el.services.StopAllServices(shutdownType)
 
@@ -637,9 +742,68 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 		default:
 		}
 	}
+}
 
-	// Start periodic reporting of blocking services
-	el.startShutdownReporter()
+// runPreShutdown runs OnPreShutdown and waits for it at most as long as
+// the emergency timeout, the budget the stop phase gets too. It runs
+// operator hooks (30s each, any number of them) and ifdown (90s), so
+// unbounded it could hold the shutdown for as long as they liked.
+// When it overruns, services are stopped anyway and the work carries
+// on beside the stop; anything it left running is swept with the rest
+// at the end of the shutdown.
+func (el *EventLoop) runPreShutdown(shutdownType service.ShutdownType) {
+	if el.OnPreShutdown == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// A panic on its own goroutine would take PID 1 down
+		// mid-shutdown; the stop goes on without it instead.
+		defer func() {
+			if r := recover(); r != nil {
+				el.logger.Error("Pre-shutdown hook panicked: %v", r)
+			}
+		}()
+		el.OnPreShutdown(shutdownType)
+	}()
+	limit := el.effectiveEmergencyTimeout()
+	t := time.NewTimer(limit)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		el.logger.Warn("Pre-shutdown hooks still running after %v, stopping services anyway", limit)
+	}
+}
+
+// armEmergencyTimer starts the emergency timeout for the stop phase.
+// A repeated shutdown signal during the pre-shutdown work has already
+// armed the shorter escalated timer; that one stays. Once Run has
+// returned there is no loop left to force out.
+func (el *EventLoop) armEmergencyTimer() {
+	el.mu.Lock()
+	defer el.mu.Unlock()
+	if el.emergencyTimer != nil || el.runExited {
+		return
+	}
+	// Capture immutable refs to avoid racing on el fields from the
+	// timer goroutine. services is captured too so the callback can
+	// enumerate blockers without touching el fields the timer isn't
+	// holding a lock on.
+	logger := el.logger
+	forceExitCh := el.forceExitCh
+	services := el.services
+	timeout := el.effectiveEmergencyTimeout()
+	el.emergencyTimer = time.AfterFunc(timeout, func() {
+		blocking := formatBlockingServices(services.GetActiveServiceInfo())
+		logger.Error("Services did not stop within %v, forcing shutdown%s",
+			timeout, blocking)
+		select {
+		case forceExitCh <- struct{}{}:
+		default:
+		}
+	})
 }
 
 // cancelEmergencyTimer stops the emergency timer if it's running.

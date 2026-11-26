@@ -63,8 +63,9 @@ depend() {
 	if cfg.umask != "022" {
 		t.Errorf("umask = %q", cfg.umask)
 	}
-	if cfg.restartDelay != "5" || cfg.restartLimitCount != "3" || cfg.restartLimitCounti != "60" {
-		t.Errorf("respawn_* mapping wrong: %+v", cfg)
+	// No supervise-daemon: OpenRC neither respawns nor reads respawn_*.
+	if cfg.restart != "no" || cfg.restartDelay != "" || cfg.restartLimitCount != "" || cfg.restartLimitCounti != "" {
+		t.Errorf("restart/respawn_* mapping wrong: %+v", cfg)
 	}
 	if !cfg.noNewPrivs {
 		t.Errorf("noNewPrivs not set")
@@ -425,5 +426,377 @@ func TestDependSoftReferencesLoad(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("missing dependencies %v\n%s", want, buf.String())
+	}
+}
+
+// A wrapped script hands its variables to openrc-run, which reads them
+// itself; the converter used to copy them into the file anyway, as
+// shell text, so upstream agetty came out as `restart-limit-interval =
+// ${respawn_period:-60}` and `pid-file = /run/${RC_SVCNAME}.pid` and did
+// not load, and a command_user became run-as on openrc-run itself.
+func TestWrappedScriptLeavesVariablesToOpenrcRun(t *testing.T) {
+	script := `#!/sbin/openrc-run
+supervisor=supervise-daemon
+respawn_period="${respawn_period:-60}"
+respawn_max=3
+respawn_delay=2
+command=/sbin/agetty
+command_user=nobody
+directory=/var/lib/d
+umask=022
+stopsig=SIGHUP
+no_new_privs=yes
+pidfile="/run/${RC_SVCNAME}.pid"
+
+start_pre() {
+	:
+}
+`
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	svc, out := loadConverted(t, cfg)
+	if svc.Type() != service.TypeScripted {
+		t.Errorf("type = %v, want scripted\n%s", svc.Type(), out)
+	}
+	for _, k := range []string{"pid-file", "restart", "run-as", "working-dir", "umask", "term-signal", "no-new-privs"} {
+		if strings.Contains(out, k) {
+			t.Errorf("wrapped script emits %s, which openrc-run applies itself:\n%s", k, out)
+		}
+	}
+}
+
+// upstreamScripts finds OpenRC's own init.d scripts: $OPENRC_SRC, or an
+// openrc checkout beside any directory above this one. Tests that sweep
+// them skip when there is none; the scripts are not copied into this
+// tree.
+func upstreamScripts() []string {
+	dirs := []string{}
+	if d := os.Getenv("OPENRC_SRC"); d != "" {
+		dirs = append(dirs, d)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		for d := wd; ; d = filepath.Dir(d) {
+			dirs = append(dirs, filepath.Join(d, "openrc"))
+			if d == filepath.Dir(d) {
+				break
+			}
+		}
+	}
+	for _, d := range dirs {
+		if ins, _ := filepath.Glob(filepath.Join(d, "init.d", "*.in")); len(ins) > 0 {
+			return ins
+		}
+	}
+	return nil
+}
+
+// convertUpstream converts every upstream OpenRC init.d script and
+// returns name → emitted file.
+func convertUpstream(t *testing.T) map[string]string {
+	t.Helper()
+	ins := upstreamScripts()
+	if len(ins) == 0 {
+		t.Skip("no OpenRC checkout found (set OPENRC_SRC)")
+	}
+	dir := t.TempDir()
+	out := map[string]string{}
+	for _, in := range ins {
+		name := strings.TrimSuffix(filepath.Base(in), ".in")
+		data, err := os.ReadFile(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cfg, _, err := convertScript(p, "/usr/sbin/openrc-run")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var buf bytes.Buffer
+		emitSlinitFile(&buf, cfg)
+		out[name] = buf.String()
+	}
+	return out
+}
+
+// Every script OpenRC ships must convert to a file slinit loads.
+func TestUpstreamScriptsLoad(t *testing.T) {
+	for name, text := range convertUpstream(t) {
+		if _, err := config.Parse(strings.NewReader(text), name, name); err != nil {
+			t.Errorf("%s: converted file does not load: %v\n%s", name, err, text)
+		}
+	}
+}
+
+// A mapped value the shell computes, or one assigned in shell logic,
+// is known only when the script runs. slinit expands $VAR in command
+// from its own environment at load time, so command_args="${FOO_OPTS}
+// -f" silently lost FOO_OPTS, and the scan kept the textually last of
+// rarpd's if/else assignments, turning it into a command with neither
+// -f nor -a. Such a script must be wrapped, with a WARN.
+func TestDynamicValuesAreWrapped(t *testing.T) {
+	for _, tc := range []struct{ name, body, why string }{
+		{"confd-var", "command=/usr/sbin/d\ncommand_args=\"${FOO_OPTS} -f\"\ncommand_background=yes\n", "command_args="},
+		{"cmd-subst", "command=/usr/sbin/d\ncommand_args=\"--id $(cat /etc/id)\"\ncommand_background=yes\n", "command_args="},
+		{"backtick-pidfile", "command=/usr/sbin/d\npidfile=`cat /etc/d.pidpath`\n", "pidfile="},
+		{"rarpd-if-else", "command=/usr/sbin/rarpd\ncommand_args=\"-f\"\ncommand_background=YES\n" +
+			"if [ -z \"$rarpd_interface\" ]; then\n\tcommand_args=\"-f -a\"\nelse\n\tcommand_args=\"-f eth0\"\nfi\n", "command_args is assigned in shell logic"},
+		{"case-arm", "command=/usr/sbin/syslogd\ncase \"$RC_UNAME\" in\n\tFreeBSD)\tpidfile=/var/run/syslog.pid;;\n\t*)\t\tpidfile=/var/run/syslogd.pid;;\nesac\n", "pidfile is assigned in shell logic"},
+		{"and-list", "command=/usr/sbin/d\ncommand_background=yes\n[ -n \"$X\" ] && command_args=-v\n", "command_args is assigned in shell logic"},
+		{"default-expansion", "command=/usr/sbin/d\ncommand_background=yes\n: ${command_user:=nobody}\n", "command_user is assigned in shell logic"},
+		{"helper-function", "command=/usr/sbin/d\ncommand_background=yes\n_setup() {\n\tcommand_args=-v\n}\n_setup\n", "command_args is assigned in shell logic"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+			warns := parseOpenrcScript(cfg, "#!/sbin/openrc-run\n"+tc.body, "/usr/sbin/openrc-run")
+			svc, out := loadConverted(t, cfg)
+			if svc.Type() != service.TypeScripted || !strings.Contains(out, "openrc-run /etc/init.d/d start") {
+				t.Errorf("not wrapped:\n%s", out)
+			}
+			found := false
+			for _, w := range warns {
+				found = found || (w.level == "WARN" && strings.Contains(w.msg, tc.why) && strings.Contains(w.msg, "wrapped"))
+			}
+			if !found {
+				t.Errorf("no WARN saying %q forced the wrapper: %v", tc.why, warns)
+			}
+		})
+	}
+}
+
+// Literal values outside shell logic still convert directly, even
+// with logic around them that touches nothing mapped or a quoted "if".
+func TestLiteralValuesStayDirect(t *testing.T) {
+	script := "#!/sbin/openrc-run\ndescription=\"start if needed; done\"\n" +
+		"command=/usr/sbin/d\ncommand_args=\"-f --conf /etc/d.conf\"\ncommand_background=yes\n" +
+		"if [ -e /etc/x ]; then\n\textra=1\nfi\nport=\"${RC_SVCNAME#*.}\"\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	if cfg.svcType != "process" || cfg.command != "/usr/sbin/d -f --conf /etc/d.conf" {
+		t.Errorf("type %s command %q, want process running /usr/sbin/d -f --conf /etc/d.conf", cfg.svcType, cfg.command)
+	}
+}
+
+// No upstream script may convert to a command slinit would expand at
+// load time, losing what the shell would have put there.
+func TestUpstreamCommandsAreLiteral(t *testing.T) {
+	for name, text := range convertUpstream(t) {
+		for _, ln := range strings.Split(text, "\n") {
+			if !strings.HasPrefix(ln, "#") && strings.ContainsAny(ln, "$`") {
+				t.Errorf("%s: shell expansion in the converted file: %q\n%s", name, ln, text)
+			}
+		}
+	}
+}
+
+// A quoted value may run on across lines, and a trailing backslash
+// joins the next one. The line-by-line scan saw only the first line:
+// command_args="-a<newline>-b --conf /etc/bar.conf" loaded as
+// ["/usr/sbin/bar", "-a"].
+func TestMultiLineValues(t *testing.T) {
+	want := []string{"/usr/sbin/bar", "-a", "-b", "--conf", "/etc/bar.conf"}
+	for _, tc := range []struct{ name, body string }{
+		{"quoted", "command_args=\"-a\n\t-b --conf /etc/bar.conf\"\n"},
+		{"backslash-split-word", "command_args=\"-a -b --co\\\nnf /etc/bar.conf\"\n"},
+		{"quoted-backslash", "command_args=\"-a \\\n-b --conf /etc/bar.conf\"\n"},
+		{"apostrophe-in-comment", "# don't stop here\ncommand_args=\"-a\n-b --conf /etc/bar.conf\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := "#!/sbin/openrc-run\ndescription=\"Bar\n daemon\"\ncommand=/usr/sbin/bar\n" + tc.body + "command_background=yes\n"
+			cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+			parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+			var buf bytes.Buffer
+			emitSlinitFile(&buf, cfg)
+			d, err := config.Parse(strings.NewReader(buf.String()), "d", "d")
+			if err != nil {
+				t.Fatalf("does not load: %v\n%s", err, buf.String())
+			}
+			if strings.Join(d.Command, "|") != strings.Join(want, "|") {
+				t.Errorf("command = %q, want %q\n%s", d.Command, want, buf.String())
+			}
+		})
+	}
+}
+
+// A quote left open to the end of the script cannot be read as any
+// value: wrap it, and say so.
+func TestUnterminatedQuoteIsWrapped(t *testing.T) {
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/bar\ncommand_args=\"-a\n-b\ncommand_background=yes\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	if cfg.svcType != "scripted" {
+		t.Errorf("not wrapped: %q", cfg.command)
+	}
+	found := false
+	for _, w := range warns {
+		found = found || (w.level == "WARN" && strings.Contains(w.msg, "end of the script"))
+	}
+	if !found {
+		t.Errorf("no WARN about the unterminated quote: %v", warns)
+	}
+}
+
+// depend() written on one line was not taken for a function, so its
+// dependencies were dropped without a word.
+func TestInlineDepend(t *testing.T) {
+	initd := t.TempDir()
+	for _, n := range []string{"localmount", "bootmisc", "net"} {
+		os.WriteFile(filepath.Join(initd, n), []byte("#!/sbin/openrc-run\n"), 0o755)
+	}
+	for _, body := range []string{
+		"depend() { need localmount net; after bootmisc; }\n",
+		"depend() { need localmount net; after bootmisc\n}\n",
+		"depend()\n{ need localmount net; after bootmisc; }\n",
+	} {
+		script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\n" + body
+		cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: filepath.Join(initd, "d")}
+		parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+		if strings.Join(cfg.depends, " ") != "localmount net" || strings.Join(cfg.waitsFor, " ") != "bootmisc" {
+			t.Errorf("%q: depends %v waits-for %v, want [localmount net] [bootmisc]", body, cfg.depends, cfg.waitsFor)
+		}
+		if cfg.command != "/usr/sbin/d" {
+			t.Errorf("%q: command = %q", body, cfg.command)
+		}
+	}
+}
+
+// A depend() body is shell. What the converter cannot follow — a
+// conditional need, a name from a variable, a loop — is reported, not
+// mapped silently.
+func TestDependShellIsReported(t *testing.T) {
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\n" +
+		"depend() {\n\tlocal w=\"\"\n\tif [ -e /etc/x ]; then\n\t\tneed root\n\tfi\n\twant $w\n}\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	for _, want := range []string{"`need root` sits inside shell logic", "`want $w` left out", "local w="} {
+		found := false
+		for _, w := range warns {
+			found = found || (w.level == "WARN" && strings.Contains(w.msg, want))
+		}
+		if !found {
+			t.Errorf("no WARN containing %q: %v", want, warns)
+		}
+	}
+	for _, d := range append(cfg.depends, cfg.waitsFor...) {
+		if strings.Contains(d, "$") {
+			t.Errorf("dependency on %q emitted", d)
+		}
+	}
+}
+
+// OpenRC respawns a daemon only under supervise-daemon, which is also
+// the only one that reads respawn_*; start-stop-daemon starts it once.
+// Every converted daemon used to get restart = yes, so one OpenRC left
+// dead was restarted by slinit.
+func TestRestartOnlyUnderSuperviseDaemon(t *testing.T) {
+	const respawn = "respawn_delay=5\nrespawn_max=3\nrespawn_period=60\n"
+	for _, tc := range []struct {
+		name, vars string
+		restart    service.AutoRestartMode
+		limits     bool
+	}{
+		{"start-stop-daemon", "command_background=yes\n" + respawn, service.RestartNever, false},
+		{"supervise-daemon", "supervisor=supervise-daemon\n" + respawn, service.RestartAlways, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "d")
+			os.WriteFile(p, []byte("#!/sbin/openrc-run\ncommand=/usr/sbin/d\n"+tc.vars), 0o755)
+			cfg, _, err := convertScript(p, "/usr/sbin/openrc-run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+			emitSlinitFile(&buf, cfg)
+			d, err := config.Parse(strings.NewReader(buf.String()), "d", "d")
+			if err != nil {
+				t.Fatalf("does not load: %v\n%s", err, buf.String())
+			}
+			if d.AutoRestart != tc.restart {
+				t.Errorf("restart = %v, want %v\n%s", d.AutoRestart, tc.restart, buf.String())
+			}
+			for _, k := range []string{"restart-delay = 5", "restart-limit-count = 3", "restart-limit-interval = 60"} {
+				if strings.Contains(buf.String(), k) != tc.limits {
+					t.Errorf("%s emitted = %v, want %v\n%s", k, !tc.limits, tc.limits, buf.String())
+				}
+			}
+		})
+	}
+}
+
+// A here-document's body is data: an apostrophe in it opened a quote
+// that ran to the end of the script, so depend() was never read and
+// the converted service lost its dependencies without a word.
+func TestHeredocBodyIsSkipped(t *testing.T) {
+	initd := t.TempDir()
+	for _, n := range []string{"localmount", "net"} {
+		os.WriteFile(filepath.Join(initd, n), []byte("#!/sbin/openrc-run\n"), 0o755)
+	}
+	for _, hd := range []string{
+		"\tcat <<-EOM\n\tDon't forget to edit /etc/foo.conf\n\tEOM\n",
+		"\tcat <<EOM\nDon't forget to edit /etc/foo.conf\nEOM\n",
+		"\tcat <<'EOM'\nDon't forget { to edit /etc/foo.conf\nEOM\n",
+		"\tcat << \"EOM\" >&2\nDon't \"forget\" to edit /etc/foo.conf\nEOM\n",
+		"\tcat <<\\EOM\nDon't forget } to edit /etc/foo.conf\nEOM\n",
+		"\tcat <<-A; cat <<-B\n\tDon't\n\tA\n\tforget's\n\tB\n",
+	} {
+		script := "#!/sbin/openrc-run\ncommand=/usr/bin/foo\npidfile=/run/foo.pid\n\n" +
+			"checkconfig() {\n" + hd + "}\n\ndepend() {\n\tneed localmount\n\tuse net\n}\n"
+		cfg := &slinitConfig{svcType: "bgprocess", restart: "yes", scriptPath: filepath.Join(initd, "foo")}
+		warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+		if cfg.svcType != "bgprocess" || cfg.command != "/usr/bin/foo" {
+			t.Errorf("%q: type %s command %q, want bgprocess /usr/bin/foo (%v)", hd, cfg.svcType, cfg.command, warns)
+		}
+		if strings.Join(cfg.depends, " ") != "localmount" || strings.Join(cfg.waitsFor, " ") != "net" {
+			t.Errorf("%q: depends %v waits-for %v, want [localmount] [net]", hd, cfg.depends, cfg.waitsFor)
+		}
+	}
+}
+
+// <<< and an arithmetic shift open no here-document.
+func TestHeredocsNotHeredoc(t *testing.T) {
+	for _, line := range []string{
+		"read x <<< \"$y\"",
+		"x=$((1 << 2))",
+		"x=$((1<<y))",
+		"echo '<<EOF'",
+		"echo \"<<EOF\"",
+		"echo # <<EOF",
+	} {
+		if hs := heredocs(line); len(hs) != 0 {
+			t.Errorf("%q: heredocs %v, want none", line, hs)
+		}
+	}
+	if hs := heredocs("cat <<-'E O' >x"); len(hs) != 1 || hs[0].word != "E O" || !hs[0].stripTabs {
+		t.Errorf("quoted word: %v", hs)
+	}
+}
+
+// When a script is wrapped because the scan ran off its end, depend()
+// is still read line by line; when even that fails, a WARN says the
+// dependencies were not read.
+func TestUnterminatedStillReadsDepend(t *testing.T) {
+	initd := t.TempDir()
+	os.WriteFile(filepath.Join(initd, "localmount"), []byte("#!/sbin/openrc-run\n"), 0o755)
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/bar\ncommand_args=\"-a\n-b\ndepend() {\n\tneed localmount\n}\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: filepath.Join(initd, "d")}
+	warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	if cfg.svcType != "scripted" {
+		t.Errorf("not wrapped: %q", cfg.command)
+	}
+	if strings.Join(cfg.depends, " ") != "localmount" {
+		t.Errorf("depends %v, want [localmount] (%v)", cfg.depends, warns)
+	}
+
+	script = "#!/sbin/openrc-run\ncommand=/usr/sbin/bar\ncommand_args=\"-a\ndepend() {\n\tneed localmount\n"
+	cfg = &slinitConfig{svcType: "process", restart: "yes", scriptPath: filepath.Join(initd, "d")}
+	warns = parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	found := false
+	for _, w := range warns {
+		found = found || (w.level == "WARN" && strings.Contains(w.msg, "dependencies were not read"))
+	}
+	if !found {
+		t.Errorf("no WARN that the dependencies were not read: %v", warns)
 	}
 }

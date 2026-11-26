@@ -40,6 +40,15 @@ const (
 // datagram to the buffer; the message is kept, cut short.
 const syslogMaxDatagram = 64 * 1024
 
+// syslogMaxNonRootMessage bounds the message a non-root sender gets into
+// the journal; longer ones are cut. The rate limit counts messages, not
+// bytes, and /dev/log is writable by every local user: at full datagram
+// size one of them could fill all 4096 ring slots with 64 KiB messages
+// and pin about 256 MiB in PID 1. 8 KiB is far beyond any ordinary
+// syslog(3) line and bounds that to 32 MiB. Root's messages keep
+// MaxMessageLen.
+const syslogMaxNonRootMessage = 8 * 1024
+
 // SyslogReader serves the syslog socket and emits each message into the
 // journal with Transport=syslog, so `slinit-journalctl -t sudo` finds
 // what sudo, login, dhcpcd and the like log through syslog(3). Without
@@ -180,6 +189,9 @@ func (r *SyslogReader) handle(data, oob []byte) {
 	if evt == nil {
 		return
 	}
+	if cred.Uid != 0 {
+		evt.Msg = truncateMsg(evt.Msg, syslogMaxNonRootMessage)
+	}
 	evt.Transport = TransportSyslog
 	evt.Pid, evt.Uid, evt.Gid = int(cred.Pid), int(cred.Uid), int(cred.Gid)
 	evt.Comm, evt.Exe = procIdentity(int(cred.Pid))
@@ -315,9 +327,7 @@ func ParseSyslog(data []byte) *Event {
 	if s == "" {
 		return nil
 	}
-	if len(s) > MaxMessageLen {
-		s = s[:MaxMessageLen]
-	}
+	s = truncateMsg(s, MaxMessageLen)
 	return &Event{Msg: s, Prio: prio, SyslogIdentifier: ident}
 }
 

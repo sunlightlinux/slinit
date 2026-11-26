@@ -27,8 +27,11 @@ package catalog
 import (
 	"bufio"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"sort"
@@ -201,22 +204,70 @@ func (c *Catalog) parse(r io.Reader) error {
 // to load on the next --dump/--list without re-parsing every source
 // file, and cheap to invalidate — just delete the cache.
 func (c *Catalog) SaveCompiled(path string) error {
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	dir, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
 		return err
+	}
+	defer dir.Close()
+	return c.saveIn(dir, filepath.Base(path))
+}
+
+// SaveCompiledInRoot is SaveCompiled for path inside root, the tree of
+// an image or another system. path and its missing parents are
+// resolved and created inside root, and a symlink leading out of it is
+// refused rather than followed: --update-catalog --root runs as root
+// over a tree someone else built.
+func (c *Catalog) SaveCompiledInRoot(root, path string) error {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	rel := strings.TrimPrefix(filepath.Clean("/"+path), "/")
+	if err := r.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
+		return err
+	}
+	dir, err := r.OpenRoot(filepath.Dir(rel))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return c.saveIn(dir, filepath.Base(rel))
+}
+
+// saveIn writes the catalog to a new temporary file in dir and renames
+// it over name. The temporary file is created with O_EXCL: a fixed
+// name+".tmp" was opened with os.Create, which follows a symlink
+// planted there and overwrote the file it named.
+func (c *Catalog) saveIn(dir *os.Root, name string) error {
+	var f *os.File
+	var tmp string
+	for {
+		tmp = fmt.Sprintf(".%s.%x.tmp", name, rand.Uint64())
+		var err error
+		f, err = dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return err
+		}
 	}
 	enc := gob.NewEncoder(f)
 	if err := enc.Encode(c.entries); err != nil {
 		f.Close()
-		os.Remove(tmp)
+		dir.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		dir.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := dir.Rename(tmp, name); err != nil {
+		dir.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // LoadCompiled reads a previously-saved gob file. Any decode failure

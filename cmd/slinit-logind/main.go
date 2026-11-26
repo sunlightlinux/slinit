@@ -45,6 +45,9 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
+
+	"github.com/sunlightlinux/slinit/pkg/dbusservice"
+	"github.com/sunlightlinux/slinit/pkg/polkit"
 )
 
 const (
@@ -155,6 +158,10 @@ type manager struct {
 	// m.mu: a delay wait holds the registry for seconds while the
 	// manager keeps answering property reads.
 	inhibitors *inhibitRegistry
+
+	// polkit decides the VT switches the rules in mayChvt do not allow;
+	// nil refuses them.
+	polkit *polkit.Checker
 
 	// debug mirrors the --debug flag. Session setup is the one place
 	// where a post-mortem is useless: the gdm/gnome fork chain we are
@@ -658,7 +665,18 @@ func (m *manager) CanSuspendThenHibernate(sender dbus.Sender) (string, *dbus.Err
 // The sender argument is godbus's injection of the caller's bus name,
 // used to attribute the lock to a uid and pid so `loginctl
 // list-inhibitors` names something an operator can act on.
+//
+// Each string is refused past inhibitStringMax: a lock lives as long as
+// its holder wants, and anyone may take a delay lock, so who and why
+// were a way to park up to a bus message's worth of memory per lock in
+// the daemon.
 func (m *manager) Inhibit(sender dbus.Sender, what, who, why, mode string) (dbus.UnixFD, *dbus.Error) {
+	for _, s := range []string{what, who, why, mode} {
+		if len(s) > inhibitStringMax {
+			return -1, dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs",
+				[]any{fmt.Sprintf("Inhibit: argument longer than %d bytes", inhibitStringMax)})
+		}
+	}
 	if err := m.mayInhibit(sender, what, mode); err != nil {
 		return -1, err
 	}
@@ -929,14 +947,14 @@ func main() {
 	}
 	_ = os.Mkdir("/run/systemd/inaccessible/dir", 0000)
 
-	conn, err := dbus.ConnectSystemBus()
+	conn, err := dbus.ConnectSystemBus(dbusservice.CloseReceivedFDs()...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-logind: connect system bus: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	m := &manager{conn: conn, debug: *debug, inhibitors: newInhibitRegistry()}
+	m := &manager{conn: conn, debug: *debug, inhibitors: newInhibitRegistry(), polkit: polkit.New(conn)}
 
 	// Button/lid configuration is read before anything is exported, so
 	// the Handle* properties answer with the real settings from the very
@@ -1018,11 +1036,18 @@ func main() {
 	// complete their startup handshake. Fails soft: if the name is
 	// already owned (live systemd, another shim), we log and keep
 	// login1 running.
-	_ = registerSystemd1(conn, *debug)
+	_ = registerSystemd1(conn, *debug, true)
 
 	// Block on SIGTERM/SIGINT. Nothing else to do — dbus/v5 runs its
-	// own dispatch goroutine.
+	// own dispatch goroutine. A lost bus connection is an exit with an
+	// error, so the supervisor starts us again: staying up without it
+	// left the machine with no login1 until a reboot.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	<-sig
+	select {
+	case <-sig:
+	case <-conn.Context().Done():
+		fmt.Fprintln(os.Stderr, "slinit-logind: lost the system bus connection")
+		os.Exit(1)
+	}
 }

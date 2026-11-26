@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"syscall"
 	"testing"
 	"time"
@@ -54,5 +55,127 @@ func TestParseSignalForms(t *testing.T) {
 	}
 	if _, err := ParseSignal("BOGUS"); err == nil {
 		t.Errorf("expected error for BOGUS")
+	}
+}
+
+// OpenRC and Debian document signals in a schedule with a leading '-'
+// ("-TERM/30/-KILL/5") and "forever" to repeat what follows. Both were
+// rejected, so the supervisor never stopped its daemon: stopDaemon
+// returned the parse error without sending anything.
+func TestParseRetryDashAndForever(t *testing.T) {
+	steps, err := ParseRetry("-TERM/30/-KILL/5", syscall.SIGTERM)
+	if err != nil {
+		t.Fatalf("-SIG form: %v", err)
+	}
+	if len(steps) != 2 || steps[0].Signal != syscall.SIGTERM || steps[0].Timeout != 30*time.Second ||
+		steps[1].Signal != syscall.SIGKILL || steps[1].Timeout != 5*time.Second {
+		t.Errorf("-TERM/30/-KILL/5 = %+v", steps)
+	}
+	if steps, err := ParseRetry("-9/5", syscall.SIGTERM); err != nil || steps[0].Signal != syscall.SIGKILL {
+		t.Errorf("-9/5 = %+v, %v; want SIGKILL", steps, err)
+	}
+
+	steps, err = ParseRetry("TERM/5/forever/KILL/1", syscall.SIGTERM)
+	if err != nil {
+		t.Fatalf("forever: %v", err)
+	}
+	want := []Step{
+		{Signal: syscall.SIGTERM, Timeout: 5 * time.Second},
+		{Signal: syscall.SIGKILL, Timeout: time.Second},
+		{Repeat: true, RepeatFrom: 1},
+	}
+	if len(steps) != len(want) {
+		t.Fatalf("TERM/5/forever/KILL/1 = %+v", steps)
+	}
+	for i := range want {
+		if steps[i] != want[i] {
+			t.Errorf("step %d = %+v, want %+v", i, steps[i], want[i])
+		}
+	}
+	if _, unbounded := scheduleBudget(steps); !unbounded {
+		t.Errorf("a forever schedule has a bounded budget")
+	}
+
+	// Trailing forever: nothing to repeat, wait for the exit.
+	steps, err = ParseRetry("TERM/5/forever", syscall.SIGTERM)
+	if err != nil || len(steps) != 2 || steps[1].Signal != 0 || steps[1].Timeout != 0 {
+		t.Errorf("TERM/5/forever = %+v, %v", steps, err)
+	}
+	if _, err := ParseRetry("forever/TERM/1/forever", syscall.SIGTERM); err == nil {
+		t.Errorf("two forevers accepted")
+	}
+	// A signal followed by a signal is sent without waiting.
+	steps, err = ParseRetry("HUP/TERM/5", syscall.SIGTERM)
+	if err != nil || len(steps) != 2 || steps[0].Timeout != noWait {
+		t.Errorf("HUP/TERM/5 = %+v, %v", steps, err)
+	}
+}
+
+// stopDaemon runs a "forever" schedule against a daemon that ignores
+// SIGTERM: the repeated KILL ends it.
+func TestStopDaemonForeverSchedule(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	opts := Options{
+		Service: "test",
+		Exec:    sh,
+		Args:    []string{"-c", "trap '' TERM; exec sleep 60"},
+		Retry:   "-TERM/1/forever/-KILL/1",
+	}
+	pid, exitCh, err := startDaemon(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	time.Sleep(100 * time.Millisecond)
+	if err := stopDaemon(opts, pid); err != nil {
+		t.Errorf("stopDaemon: %v", err)
+	}
+	select {
+	case <-exitCh:
+	case <-time.After(5 * time.Second):
+		t.Errorf("daemon pid %d survived the schedule", pid)
+	}
+}
+
+// A trailing signal, or a timeout of 0, must not make --stop wait with
+// no deadline: a daemon that ignores the signal hung --stop and so the
+// shutdown. Only an explicit trailing "forever" is unbounded.
+func TestTrailingSignalScheduleIsBounded(t *testing.T) {
+	for _, spec := range []string{"TERM", "HUP/TERM", "TERM/0", "TERM/0/KILL/1"} {
+		steps, err := ParseRetry(spec, syscall.SIGTERM)
+		if err != nil {
+			t.Fatalf("%s: %v", spec, err)
+		}
+		if _, unbounded := scheduleBudget(steps); unbounded {
+			t.Errorf("--retry %s waits forever", spec)
+		}
+	}
+	steps, err := ParseRetry("TERM/5/forever", syscall.SIGTERM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, unbounded := scheduleBudget(steps); !unbounded {
+		t.Error("--retry TERM/5/forever should be unbounded")
+	}
+
+	cmd := exec.Command("sh", "-c", "trap '' TERM; while :; do sleep 0.1; done")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	time.Sleep(200 * time.Millisecond)
+	steps, _ = ParseRetry("TERM", syscall.SIGTERM)
+	done := make(chan bool, 1)
+	go func() { done <- runSchedule(cmd.Process.Pid, steps) }()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("a daemon ignoring TERM was reported stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("--retry TERM still waiting after 5s on a daemon that ignores TERM")
 	}
 }

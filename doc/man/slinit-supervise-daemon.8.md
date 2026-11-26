@@ -38,21 +38,38 @@ daemon.
 **-S**, **--start**  *(default)*
 :   Fork off a detached supervisor that owns the daemon's lifecycle,
     then wait until the supervisor writes **--pidfile** before
-    returning. The daemon PID is recorded alongside the supervisor
-    pidfile as *PIDFILE***.daemon**.
+    returning. If *PIDFILE* names a running supervisor, **--start**
+    exits 1; a pid that now runs anything else is a stale pidfile and
+    does not block the start. The daemon PID is recorded alongside the
+    supervisor pidfile as *PIDFILE***.daemon**. The supervisor is this same
+    program re-executed with a private first argument; no environment
+    variable marks it, so nothing the daemon starts inherits the
+    switch, and a **--stop** or **--signal** run from under a
+    supervised daemon behaves as it does anywhere else. The
+    **SLINIT_SSD_SUPERVISOR** variable older versions used is ignored
+    and removed from the daemon's environment.
 
 **-K**, **--stop**
 :   Read the supervisor pidfile, deliver **SIGTERM**, and wait for
-    the supervisor to exit (30 seconds, or the total of the **--retry**
-    timeouts given here); if it is still alive then, it is sent
-    **SIGKILL**. The supervisor's own shutdown path stops the daemon
-    and cleans both pidfiles. Sending **SIGHUP** to the supervisor
+    the supervisor to stop the daemon with the stop schedule (see
+    **--retry**) and exit. **--stop** waits as long as the schedule
+    can take plus two seconds (at least 30 seconds when **--stop** is
+    given no **--retry**; without end only when the schedule ends in
+    **forever**). A supervisor still alive then is taken as hung: it is
+    sent **SIGKILL**, and so is its daemon, identified beforehand as
+    the supervisor's child, and the pidfiles are removed. **--stop**
+    fails (exit 4) if the daemon outlives the stop, for instance when
+    the schedule sends no **SIGKILL**. Sending **SIGHUP** to the supervisor
     forwards it to the daemon; while it waits out a respawn delay there
     is no daemon, and **SIGHUP** is ignored.
 
 **-s**, **--signal** *SIG*
 :   Deliver *SIG* directly to the supervised daemon (via
-    *PIDFILE***.daemon**). Bypasses the supervisor so a **SIGHUP**
+    *PIDFILE***.daemon**), but only while *PIDFILE* names a running
+    supervisor and the daemon pid is that supervisor's child; a
+    daemon pidfile left behind names nothing that may be signalled
+    once its pid is reused, and is reported as stale. Bypasses the
+    supervisor so a **SIGHUP**
     reload does not race with the respawn logic. Caveat: sending
     **SIGTERM** or **SIGKILL** this way will be treated as a crash by
     the supervisor and trigger a respawn — use **--stop** for
@@ -66,15 +83,25 @@ daemon.
 **-p**, **--pidfile** *PATH*
 :   Path to the supervisor pidfile. Required for **--start**,
     **--stop**, and **--signal**. The daemon PID is written to
-    *PATH***.daemon**. A pidfile naming PID 1 or this process is
-    treated as malformed and never signalled.
+    *PATH***.daemon**. A pidfile naming PID 1, this process or its
+    parent is treated as malformed and never signalled. Both files are
+    written by the supervisor, so before signalling what they name
+    **--stop** and **--signal** refuse one that is a symlink, is
+    world-writable, or is owned (or group-writable) by anyone but root
+    or the caller. **--stop** also signals the supervisor pid only
+    when it runs this same executable; a live pid that does not is
+    treated as a stale pidfile.
 
 **-u**, **--user** *USER*[**:***GROUP*]
 :   Drop credentials before **exec**(2). The optional group shorthand
-    replaces the value **--group** would supply.
+    replaces the value **--group** would supply. The daemon's
+    supplementary groups are *USER*'s, plus its primary group, as
+    **initgroups**(3) sets them (an unknown numeric uid gets only the
+    primary group).
 
 **-g**, **--group** *GROUP*
-:   Daemon primary group.
+:   Daemon primary group. Given without **--user**, only the group
+    changes; the supplementary groups are kept.
 
 **-d**, **--chdir** *DIR*
 :   **chdir**(2) before exec.
@@ -129,7 +156,9 @@ daemon.
 
 **--respawn-delay-step** *DURATION*
 :   Additional backoff added per respawn (linear step). Default
-    **128ms**.
+    **128ms**. The step count starts over after a daemon that stayed
+    up for at least **--respawn-period** (12 seconds if that is 0),
+    so occasional crashes do not build up to the cap.
 
 **--respawn-delay-cap** *DURATION*
 :   Ceiling for the stepped backoff. Default **30sec**.
@@ -140,14 +169,27 @@ Go's **time.ParseDuration** style (**500ms**, **2h**).
 # STOP ESCALATION
 
 **-R**, **--retry** *SPEC*
-:   Given with **--start**, the schedule the supervisor uses to stop
-    the daemon when it is told to shut down. Given with **--stop**, it
-    only sets how long **--stop** waits for the supervisor to exit (the
-    sum of the timeouts). Two forms:
+:   The schedule the supervisor uses to stop the daemon when it is
+    told to shut down. Given with **--start**, it is the supervisor's
+    own; given with **--stop**, it replaces that one for this stop.
+    The supervisor publishes its schedule in *PIDFILE***.retry**, and
+    **--stop** hands a replacement over through the same file, which
+    is held to the same ownership checks as the pidfiles. Forms:
 
     - Integer seconds: **--retry 5** is shorthand for
       **--retry TERM/5/KILL/5**.
-    - Slash-separated: **--retry TERM/30/KILL/5**.
+    - Slash-separated: **--retry TERM/30/KILL/5**. A signal is a
+      name with or without **SIG**, or a number, optionally with one
+      leading **-** (**-TERM/30/-KILL/5**, as **start-stop-daemon**(8)
+      writes it). A number without **-** is a timeout in seconds. A
+      signal followed directly by another signal is sent without
+      waiting. A trailing signal is sent and the process given one
+      second, after which the schedule has failed (as in OpenRC and
+      Debian); a timeout of **0** checks once.
+    - **forever** (at most once) repeats the items after it until the
+      process is gone: **TERM/30/forever/KILL/5** sends **SIGKILL**
+      every five seconds after the first thirty. A trailing
+      **forever** just waits.
 
     Default: **TERM/5/KILL/5**.
 
@@ -193,14 +235,15 @@ skipped:
 
 - **0**: success. **--stop** also returns 0 when there is no
   supervisor pidfile.
-- **1**: already running (**--start**), or no daemon pidfile
-  (**--signal**)
+- **1**: already running (**--start**), or no supervisor or daemon
+  pidfile (**--signal**)
 - **2**: syntax / bad usage
 - **4**: the supervisor could not be started or did not write its
-  pidfile in time, a signal could not be delivered, or the supervisor
-  survived **--stop**
-- **5**: stale pidfile: the supervisor (**--stop**) or daemon
-  (**--signal**) it names is gone. **--stop** removes the stale
+  pidfile in time, a signal could not be delivered, the supervisor or
+  its daemon survived **--stop**, or a pidfile was refused as insecure
+- **5**: stale pidfile: the supervisor (**--stop**, **--signal**) it
+  names is gone or is not a supervisor, or the daemon (**--signal**)
+  is not the supervisor's child. **--stop** removes the stale
   pidfiles.
 
 # EXAMPLES

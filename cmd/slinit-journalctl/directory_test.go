@@ -272,3 +272,28 @@ func TestDirectoryQueryHoldsOnlyTheTail(t *testing.T) {
 		t.Errorf("heap grew %d KB reading a %d KB journal for -n 3; the entries were held", grew>>10, size>>10)
 	}
 }
+
+// A container's or an image's journal directory may hold a symlink to a
+// host journal file; -M and --image read only its regular files.
+func TestForeignDirSkipsSymlinkedFiles(t *testing.T) {
+	files := writeTwoBootJournal(t, "jsonl")
+	dir := t.TempDir()
+	if err := os.Symlink(files[0], dir+"/host.jsonl"); err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	out, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = out
+	err = runFromDirectory(options{directory: dir, foreignDir: true, quiet: true})
+	os.Stdout = stdout
+	out.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(out.Name()); strings.Contains(string(b), "msg") {
+		t.Errorf("a symlinked file in a foreign journal directory was read:\n%s", b)
+	}
+}

@@ -25,9 +25,16 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
-const cgroupRoot = "/sys/fs/cgroup"
+// cgroupRoot is where the v2 hierarchy is read; tests point it at a
+// fake tree.
+var cgroupRoot = "/sys/fs/cgroup"
+
+// clock timestamps samples; tests replace it.
+var clock = time.Now
 
 // sample is a single point-in-time snapshot of the metrics we care
 // about for one cgroup directory.
@@ -38,6 +45,10 @@ type sample struct {
 	memCurrent uint64
 	ioRead     uint64
 	ioWrite    uint64
+	// at is when this cgroup's counters were read. A scan of a large
+	// tree takes long enough that the interval between two reads of
+	// one cgroup is not the --delay between scans.
+	at time.Time
 }
 
 // row is the display-ready delta between two samples: rate-based
@@ -155,6 +166,7 @@ func takeAll(maxDepth int) (map[string]sample, error) {
 		s := sample{path: rel}
 		s.tasks = countLines(filepath.Join(path, "cgroup.procs"))
 		s.cpuUsageUS = readKV(filepath.Join(path, "cpu.stat"), "usage_usec")
+		s.at = clock()
 		s.memCurrent = readUint(filepath.Join(path, "memory.current"))
 		s.ioRead, s.ioWrite = readIOStat(filepath.Join(path, "io.stat"))
 		out[rel] = s
@@ -252,14 +264,17 @@ func readIOStat(path string) (rb, wb uint64) {
 	return rb, wb
 }
 
-// diff computes per-cgroup rates over the sampling window. When a
+// diff computes per-cgroup rates over the time between the two reads
+// of each cgroup — not the nominal --delay: walking 21k cgroups takes
+// seconds, so with --delay=100ms a fully busy cgroup showed ~300% CPU.
+// window is the fallback for samples without a timestamp. When a
 // cgroup vanished between samples it's dropped; when it just appeared
 // its rate-based fields default to 0 (single point can't produce a
 // rate).
 func diff(prev, curr map[string]sample, window time.Duration, includeIdle bool) []row {
-	winSec := window.Seconds()
-	if winSec <= 0 {
-		winSec = 1
+	defSec := window.Seconds()
+	if defSec <= 0 {
+		defSec = 1
 	}
 	cpuTicksPerCgroup := float64(len(currCPUCores()))
 	_ = cpuTicksPerCgroup // reserved for a future per-core-normalised %
@@ -267,6 +282,12 @@ func diff(prev, curr map[string]sample, window time.Duration, includeIdle bool) 
 	out := make([]row, 0, len(curr))
 	for path, c := range curr {
 		p, hadPrev := prev[path]
+		winSec := defSec
+		if hadPrev && !p.at.IsZero() && !c.at.IsZero() {
+			if d := c.at.Sub(p.at).Seconds(); d > 0 {
+				winSec = d
+			}
+		}
 		var cpuUS uint64
 		if hadPrev && c.cpuUsageUS >= p.cpuUsageUS {
 			cpuUS = c.cpuUsageUS - p.cpuUsageUS
@@ -355,17 +376,44 @@ func printHeader(delay time.Duration, sortBy string) {
 
 func printRows(rows []row) {
 	for _, r := range rows {
-		p := r.path
+		p := displayPath(r.path)
 		if p == "" {
 			p = "/"
 		}
-		if len(p) > 45 {
-			p = "..." + p[len(p)-42:]
+		if n := utf8.RuneCountInString(p); n > 45 {
+			rs := []rune(p)
+			p = "..." + string(rs[n-42:])
 		}
 		fmt.Printf("%-45s %6d %6.1f%% %10s %11s %11s\n",
 			p, r.tasks, r.cpuPct, humanBytes(r.mem),
 			humanBytes(r.ioReadRate), humanBytes(r.ioWriteRate))
 	}
+}
+
+// displayPath makes a cgroup path safe to print to a terminal. Anyone
+// with a delegated subtree names its cgroups, and a name holding
+// escape sequences would otherwise drive the viewer's terminal
+// (retitle it, clear it, rewrite other rows). Control characters,
+// other non-printable runes (C1 controls, bidi overrides) and invalid
+// UTF-8 bytes become \xNN, per byte; a backslash becomes \\ so the
+// escaped form stays unambiguous.
+func displayPath(p string) string {
+	var b strings.Builder
+	for i := 0; i < len(p); {
+		r, size := utf8.DecodeRuneInString(p[i:])
+		switch {
+		case r == '\\':
+			b.WriteString(`\\`)
+		case (r == utf8.RuneError && size <= 1) || !unicode.IsPrint(r):
+			for j := 0; j < size; j++ {
+				fmt.Fprintf(&b, `\x%02x`, p[i+j])
+			}
+		default:
+			b.WriteString(p[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
 }
 
 func humanBytes(n uint64) string {

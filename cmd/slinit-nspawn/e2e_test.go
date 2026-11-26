@@ -4,8 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // buildNspawn compiles slinit-nspawn for the end-to-end tests.
@@ -113,5 +117,366 @@ exec "$NSPAWN" --name t3 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /
 	t.Logf("output:\n%s", out)
 	if strings.Contains(out, "HOST-SECRET") {
 		t.Error("the container's init read a host file through a descriptor inherited from the launcher")
+	}
+}
+
+// TestContainerDevIsFresh: the container's /dev was the image's own,
+// and the rootfs was bound without nodev, so a device node shipped in
+// the image opened the host device it named. /dev is now a fresh
+// tmpfs holding only the standard nodes, and the rootfs is nodev.
+func TestContainerDevIsFresh(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines" "$ROOTFS/dev"
+: > "$ROOTFS/dev/evil"; mount --bind /dev/null "$ROOTFS/dev/evil"
+: > "$ROOTFS/evil"; mount --bind /dev/null "$ROOTFS/evil"
+exec "$NSPAWN" --name t4 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c '
+echo DEV: $(cd /dev && echo *)
+[ -e /dev/evil ] && echo IMAGE-DEV-VISIBLE
+(echo x >/evil) 2>/dev/null && echo IMAGE-NODE-OPENS
+echo x >/dev/null && head -c1 /dev/urandom >/dev/null && echo NODES-WORK
+echo PTMX: $(readlink /dev/ptmx)'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	for _, bad := range []string{"IMAGE-DEV-VISIBLE", "IMAGE-NODE-OPENS"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("%s: a device node from the image is reachable in the container", bad)
+		}
+	}
+	if !strings.Contains(out, "DEV: console fd full null ptmx pts random shm stderr stdin stdout tty urandom zero\n") {
+		t.Error("/dev does not hold exactly the standard nodes, links and mount points")
+	}
+	if !strings.Contains(out, "NODES-WORK") {
+		t.Error("the container's /dev/null and /dev/urandom do not work")
+	}
+	if !strings.Contains(out, "PTMX: pts/ptmx") {
+		t.Error("/dev/ptmx does not point at the container's devpts")
+	}
+}
+
+// TestContainerProcProtected: the container's /proc was fully
+// writable, /proc/sys included, where kernel.core_pattern runs a
+// program as host root. /proc/sys and the other hardware and tunable
+// directories are now read-only, and kcore, keys, kallsyms,
+// sysrq-trigger and timer_list are covered, as under systemd-nspawn.
+// With a private network the container's own net sysctls stay
+// writable. The IPC namespace belongs to the test's user namespace,
+// so kernel.msgmax is writable unless the mount is read-only.
+func TestContainerProcProtected(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+exec "$NSPAWN" --name t5 --boot "$ROOTFS" --machine-dir "$DIR/machines" --private-network --init /bin/sh -- -c '
+[ -r /proc/self/status ] && echo PROC-MOUNTED
+(cat /proc/sys/kernel/msgmax >/proc/sys/kernel/msgmax) 2>/dev/null && echo SYS-WRITABLE
+(echo 1 >/proc/sys/net/ipv4/ip_forward) 2>/dev/null && echo NET-WRITABLE
+for f in kcore keys kallsyms sysrq-trigger timer_list; do [ -c /proc/$f ] || echo UNMASKED:$f; done
+while read -r _ _ _ _ mp opts _; do case $mp in /proc/sys|/proc/bus|/proc/fs|/proc/irq|/sys) echo "MNT $mp ${opts%%,*}";; esac; done </proc/self/mountinfo'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "PROC-MOUNTED") {
+		t.Fatal("/proc is not mounted in the container")
+	}
+	if strings.Contains(out, "SYS-WRITABLE") {
+		t.Error("/proc/sys is writable in the container")
+	}
+	if strings.Contains(out, "UNMASKED") {
+		t.Error("a /proc entry systemd-nspawn makes inaccessible is reachable")
+	}
+	for _, mp := range []string{"/proc/sys", "/proc/bus", "/proc/fs", "/proc/irq", "/sys"} {
+		if !strings.Contains(out, "MNT "+mp+" ro\n") && !strings.HasSuffix(out, "MNT "+mp+" ro") {
+			t.Errorf("%s is not mounted read-only", mp)
+		}
+	}
+	if !strings.Contains(out, "NET-WRITABLE") {
+		t.Error("with --private-network the container's own net sysctls are not writable")
+	}
+}
+
+// TestContainerCapabilities: the container's init ran with every
+// capability: CAP_SYS_MODULE loads a kernel module, CAP_SYS_RAWIO
+// reads /dev/mem, and so on. Its bounding set is now systemd-nspawn's
+// default retained set, and no other capability reaches its permitted
+// set, not even through an inheritable set the launcher was started
+// with. With a private network CAP_NET_ADMIN stays, as under nspawn.
+func TestContainerCapabilities(t *testing.T) {
+	if _, err := exec.LookPath("setpriv"); err != nil {
+		t.Skip("setpriv not available")
+	}
+	// systemd-nspawn's arg_caps_retain default.
+	var nspawn uint64
+	for _, c := range []uint{
+		unix.CAP_AUDIT_CONTROL, unix.CAP_AUDIT_WRITE, unix.CAP_CHOWN,
+		unix.CAP_DAC_OVERRIDE, unix.CAP_DAC_READ_SEARCH, unix.CAP_FOWNER,
+		unix.CAP_FSETID, unix.CAP_IPC_OWNER, unix.CAP_KILL, unix.CAP_LEASE,
+		unix.CAP_LINUX_IMMUTABLE, unix.CAP_MKNOD, unix.CAP_NET_BIND_SERVICE,
+		unix.CAP_NET_BROADCAST, unix.CAP_NET_RAW, unix.CAP_SETFCAP,
+		unix.CAP_SETGID, unix.CAP_SETPCAP, unix.CAP_SETUID, unix.CAP_SYS_ADMIN,
+		unix.CAP_SYS_BOOT, unix.CAP_SYS_CHROOT, unix.CAP_SYS_NICE,
+		unix.CAP_SYS_PTRACE, unix.CAP_SYS_RESOURCE, unix.CAP_SYS_TTY_CONFIG,
+	} {
+		nspawn |= 1 << c
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+setpriv --inh-caps +sys_module,+sys_time "$NSPAWN" --name t6 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c 'grep ^Cap /proc/self/status'
+"$NSPAWN" --name t7 --boot "$ROOTFS" --machine-dir "$DIR/machines" --private-network --init /bin/sh -- -c 'sed -n "s/^CapBnd:/PrivateNetBnd:/p" /proc/self/status'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	caps := map[string]uint64{}
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) == 2 && strings.HasSuffix(f[0], ":") {
+			v, err := strconv.ParseUint(f[1], 16, 64)
+			if err != nil {
+				t.Fatalf("%q: %v", l, err)
+			}
+			caps[strings.TrimSuffix(f[0], ":")] = v
+		}
+	}
+	if len(caps) == 0 {
+		t.Fatal("no capability sets read from the container")
+	}
+	if caps["CapBnd"] != nspawn {
+		t.Errorf("CapBnd = %#x, want systemd-nspawn's %#x (extra %#x)", caps["CapBnd"], nspawn, caps["CapBnd"]&^nspawn)
+	}
+	for _, set := range []string{"CapPrm", "CapEff", "CapInh", "CapAmb"} {
+		if extra := caps[set] &^ nspawn; extra != 0 {
+			t.Errorf("%s holds %#x outside the retained set", set, extra)
+		}
+	}
+	if want := nspawn | 1<<unix.CAP_NET_ADMIN; caps["PrivateNetBnd"] != want {
+		t.Errorf("with --private-network CapBnd = %#x, want %#x", caps["PrivateNetBnd"], want)
+	}
+	if caps["CapEff"]&(1<<unix.CAP_SYS_ADMIN) == 0 {
+		t.Error("the init lost CAP_SYS_ADMIN, which a full init in the container needs")
+	}
+}
+
+// TestContainerCgroupNamespace: the container shared the host's cgroup
+// namespace, so /proc/self/cgroup, and a cgroup2 mount made inside,
+// showed the host's hierarchy and the container's place in it. With
+// CLONE_NEWCGROUP the container's own cgroup is its root.
+func TestContainerCgroupNamespace(t *testing.T) {
+	host, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil || strings.TrimSpace(string(host)) == "0::/" {
+		t.Skip("the test does not run below the cgroup root, nothing to tell apart")
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+exec "$NSPAWN" --name t8 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c 'sed "s/^/CGROUP /" /proc/self/cgroup'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "CGROUP 0::/\n") && !strings.HasSuffix(out, "CGROUP 0::/") {
+		t.Error("the container sees the host's cgroup hierarchy, not its own cgroup as the root")
+	}
+}
+
+// TestContainerSeccomp: the container's init ran with no seccomp
+// filter. It now runs under one (see TestSeccompDenies for what it
+// refuses).
+func TestContainerSeccomp(t *testing.T) {
+	if runtime.GOARCH != "amd64" {
+		t.Skip("pkg/seccomp has a system call table for amd64 only")
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+exec "$NSPAWN" --name t9 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c 'sed -n "s/^Seccomp:[[:space:]]*/SECCOMP /p" /proc/self/status'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "SECCOMP 2") {
+		t.Error("the container's init runs without a seccomp filter")
+	}
+}
+
+// TestContainerConsole: the fresh /dev had no /dev/console, which slinit
+// as the container's PID 1 opens for its console log, emergency shell
+// and on-console services. It is now the terminal on stdin, which the
+// init also inherits, or /dev/null when stdin is not a terminal, as
+// under systemd-nspawn.
+func TestContainerConsole(t *testing.T) {
+	if _, err := exec.LookPath("script"); err != nil {
+		t.Skip("script not available to allocate a terminal")
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+cat >"$ROOTFS/probe" <<'PROBE'
+echo CON $(stat -c %t:%T /dev/console) IN $(stat -L -c %t:%T /proc/self/fd/0)
+echo VIA-CONSOLE >/dev/console && echo CONSOLE-WRITABLE
+PROBE
+echo "== pipe"
+"$NSPAWN" --name t10 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- /probe </dev/null
+echo "== tty"
+script -qec "$NSPAWN --name t11 --boot $ROOTFS --machine-dir $DIR/machines --init /bin/sh -- /probe" /dev/null </dev/null
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	pipe, tty, ok := strings.Cut(out, "== tty")
+	if !ok {
+		t.Fatal("the probe did not run")
+	}
+	if !strings.Contains(pipe, "CON 1:3 ") || !strings.Contains(pipe, "CONSOLE-WRITABLE") {
+		t.Error("with stdin not a terminal, /dev/console is not a working /dev/null")
+	}
+	var con, in string
+	for _, l := range strings.Split(tty, "\n") {
+		if f := strings.Fields(l); len(f) == 4 && f[0] == "CON" {
+			con, in = f[1], f[3]
+		}
+	}
+	if con == "" || con != in || con == "1:3" {
+		t.Errorf("with a terminal on stdin, /dev/console is %q, not that terminal %q", con, in)
+	}
+	if !strings.Contains(tty, "VIA-CONSOLE") {
+		t.Error("output written to /dev/console did not reach the terminal")
+	}
+}
+
+// TestContainerReadsTerminal: the container ran in a process group of
+// its own while the terminal's foreground group stayed the launcher's,
+// so its init reading the terminal got SIGTTIN, which a PID 1 does not
+// act on, and the read restarted forever at full CPU. The container is
+// now the foreground group, and the launcher takes the terminal back
+// when it exits, so the shell that started it can read it again.
+func TestContainerReadsTerminal(t *testing.T) {
+	for _, tool := range []string{"script", "timeout"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " not available")
+		}
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+(sleep 1; echo hello; sleep 1; echo world) | timeout 10 script -qec "$NSPAWN --name t12 --boot $ROOTFS --machine-dir $DIR/machines --init /bin/sh -- -c 'read x; echo got=\$x'; read y; echo after=\$y" /dev/null
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "got=hello") {
+		t.Error("the container's init could not read the terminal")
+	}
+	if !strings.Contains(out, "after=world") {
+		t.Error("the shell could not read the terminal after the container exited")
+	}
+}
+
+// TestLauncherHangupStopsContainer: the launcher caught only SIGTERM
+// and SIGINT, so SIGHUP, its terminal going away, killed it while the
+// container kept running, unreaped and still registered. SIGHUP is now
+// forwarded to the init as SIGTERM, and the launcher waits for it and
+// removes the registry entry.
+func TestLauncherHangupStopsContainer(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+S="sleep 46""13" # not the literal, which pgrep -f would find in this script
+"$NSPAWN" --name t13 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c "trap 'exit 7' TERM; $S & wait" </dev/null &
+P=$!
+i=0; until [ -e "$DIR/machines/t13" ] && pgrep -f "$S" >/dev/null; do i=$((i+1)); [ $i -gt 50 ] && break; sleep 0.1; done
+kill -HUP $P
+wait $P; echo "LAUNCHER-EXIT $?"
+sleep 0.2
+pgrep -f "$S" >/dev/null && echo CONTAINER-RUNNING
+pkill -9 -f "$S"
+[ -e "$DIR/machines/t13" ] && echo REGISTRY-LEFT
+true
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "LAUNCHER-EXIT 7") {
+		t.Error("the launcher did not stop the container on SIGHUP and exit with its status")
+	}
+	for _, bad := range []string{"CONTAINER-RUNNING", "REGISTRY-LEFT"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("%s after SIGHUP to the launcher", bad)
+		}
+	}
+}
+
+// TestNohupLauncherIgnoresHangup: started with SIGHUP ignored (nohup),
+// the launcher must keep ignoring it rather than stop the container at
+// logout.
+func TestNohupLauncherIgnoresHangup(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+S="sleep 46""15" # not the literal, which pgrep -f would find in this script
+(trap '' HUP; exec "$NSPAWN" --name t15 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c "trap 'exit 7' TERM; $S & wait" </dev/null) &
+P=$!
+i=0; until [ -e "$DIR/machines/t15" ] && pgrep -f "$S" >/dev/null; do i=$((i+1)); [ $i -gt 50 ] && break; sleep 0.1; done
+kill -HUP $P
+sleep 0.5
+kill -0 $P 2>/dev/null && echo LAUNCHER-ALIVE
+pgrep -f "$S" >/dev/null && echo CONTAINER-RUNNING
+kill -TERM $P; wait $P
+pkill -9 -f "$S"
+true
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	for _, want := range []string{"LAUNCHER-ALIVE", "CONTAINER-RUNNING"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %s after SIGHUP to a launcher started under nohup", want)
+		}
+	}
+}
+
+// TestKilledLauncherKillsContainer: the container had no parent death
+// signal, so a launcher killed outright left it running with no one to
+// reap it. The init now dies with the launcher, as under
+// systemd-nspawn (PR_SET_PDEATHSIG).
+func TestKilledLauncherKillsContainer(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+S="sleep 46""14" # not the literal, which pgrep -f would find in this script
+"$NSPAWN" --name t14 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c "$S & wait" </dev/null &
+P=$!
+i=0; until pgrep -f "$S" >/dev/null; do i=$((i+1)); [ $i -gt 50 ] && break; sleep 0.1; done
+pgrep -f "$S" >/dev/null && echo CONTAINER-STARTED
+kill -KILL $P
+sleep 0.5
+pgrep -f "$S" >/dev/null && echo CONTAINER-RUNNING
+pkill -9 -f "$S"
+true
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "CONTAINER-STARTED") {
+		t.Fatal("the container did not start")
+	}
+	if strings.Contains(out, "CONTAINER-RUNNING") {
+		t.Error("the container kept running after its launcher was killed")
+	}
+}
+
+// TestContainerEnvironment: the init got the launcher's whole
+// environment, secrets and SSH agent included, and the variables that
+// carry the launch parameters, so an slinit-nspawn started inside the
+// container saw _SLINIT_NSPAWN_CHILD and ran as a child. It now gets
+// systemd-nspawn's fixed set and --setenv, and a nested launch works.
+func TestContainerEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines" "$ROOTFS/nspawn" "$ROOTFS/inner"
+cp "$NSPAWN" "$ROOTFS/nspawn/slinit-nspawn"
+for d in usr bin lib lib64 sbin; do
+	if [ -L /$d ]; then ln -s "$(readlink /$d)" "$ROOTFS/inner/$d"
+	elif [ -d /$d ]; then mkdir -p "$ROOTFS/inner/$d" && mount --rbind /$d "$ROOTFS/inner/$d"
+	fi
+done
+export HOST_SECRET=hunter2 TERM=xterm
+echo "== env"
+"$NSPAWN" --name t15 --boot "$ROOTFS" --machine-dir "$DIR/machines" --setenv FOO=bar -E HOST_SECRET=overridden --init /usr/bin/env </dev/null
+echo "== nested"
+"$NSPAWN" --name t16 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /nspawn/slinit-nspawn -- --name inner --boot /inner --machine-dir /tmp --init /bin/sh -- -c 'echo NESTED-RAN' </dev/null
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	env, nested, _ := strings.Cut(out, "== nested")
+	vars := map[string]string{}
+	for _, l := range strings.Split(env, "\n") {
+		if k, v, ok := strings.Cut(l, "="); ok {
+			vars[k] = v
+		}
+	}
+	for k, want := range map[string]string{"container": "slinit-nspawn", "HOME": "/root", "USER": "root",
+		"PATH": defaultPath, "TERM": "dumb", "FOO": "bar", "HOST_SECRET": "overridden"} {
+		if vars[k] != want {
+			t.Errorf("%s=%q in the container, want %q", k, vars[k], want)
+		}
+	}
+	for k := range vars {
+		if strings.HasPrefix(k, "_SLINIT_NSPAWN_") || strings.HasPrefix(k, "NSPAWN") || k == "ROOTFS" || k == "DIR" {
+			t.Errorf("the launcher's %s reached the container", k)
+		}
+	}
+	if !strings.Contains(nested, "NESTED-RAN") {
+		t.Error("slinit-nspawn inside the container did not launch its own container")
 	}
 }

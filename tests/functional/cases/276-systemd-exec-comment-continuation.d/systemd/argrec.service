@@ -1,0 +1,9 @@
+[Unit]
+Description=comment inside an ExecStart continuation
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/276-record-args --first \
+#  --debug --insecure \
+; --semicolon-commented \
+  --last
