@@ -51,6 +51,7 @@ func main() {
 		sysctlDirs = prefixDirs(opts.root, sysctlDirs)
 		legacySysctlConf = filepath.Join(opts.root, legacySysctlConf)
 		procSysRoot = filepath.Join(opts.root, procSysRoot)
+		createMissing = true
 	}
 
 	paths := opts.files
@@ -58,6 +59,9 @@ func main() {
 		paths = discover(sysctlDirs, legacySysctlConf)
 	}
 	res := applyFiles(paths, opts.strict, opts.verbose)
+	for _, w := range res.warnings {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	for _, e := range res.errors {
 		fmt.Fprintln(os.Stderr, e)
 	}

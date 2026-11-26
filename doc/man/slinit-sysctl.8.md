@@ -46,9 +46,19 @@ the first separator is **.**, dots and slashes are swapped; if it is
 **/**, the key is used as is. So a dot inside a name — the VLAN
 interface *eth0.100* — is written **net.ipv4.conf.eth0/100.rp_filter**
 or **net/ipv4/conf/eth0.100/rp_filter**. A leading **-** on the key
-marks the assignment as best-effort: a failed write (missing tunable,
-kernel refuses the value) is counted separately and does not fail
+marks the assignment as best-effort: a failed write (kernel refuses
+the value, missing tunable) is counted as ignored and does not fail
 the pass.
+
+The **key** may be a glob (**\***, **?**, **[...]**), in either
+separator spelling. It is expanded against **/proc/sys** and the value
+is written to every match. A line **-key** with no **=** is an
+exclusion: globs skip that key. A key that has its own assignment
+anywhere in the configuration is skipped by every glob too, whatever
+the order of the lines, so an explicit setting always wins over a
+glob. As in **systemd-sysctl**, every file feeds one set of
+settings: a later assignment of a key replaces an earlier one, and a
+later **-key** cancels an earlier assignment of that key.
 
 Examples:
 
@@ -59,20 +69,32 @@ net.ipv4.ip_forward = 1
 # Multi-value tunables preserve internal whitespace.
 kernel.printk = 4 4 1 7
 
-# Best-effort: skip silently if the tunable is absent.
+# Best-effort: skip silently if the write fails.
 -vm.swappiness = 60
+
+# Every interface but "all" gets loose reverse-path filtering.
+net.ipv4.conf.*.rp_filter = 2
+-net.ipv4.conf.all.rp_filter
 ```
 
-Wildcards (**\***, **?**) in keys are **not** supported and reject the
-line — v1 does not expand them. A line that cannot be parsed (no
-**=**, empty key, wildcard) makes the whole file it is in be skipped
-and counted as an error; the other files are still applied.
+A line that cannot be parsed (no **=** and no leading **-**, empty
+key, a **.** or **..** element, a leading **/**) is reported with its
+file and line and skipped; the rest of the file still applies, and the
+pass exits 1, as **systemd-sysctl** does.
+
+A tunable the running kernel does not have (ENOENT), including a glob
+that matches nothing, is ignored with a warning on stderr. A write the
+kernel refuses for permission (EROFS, EACCES, EPERM — how container
+managers protect sysctls) is ignored silently (shown under
+**--verbose**). **--strict** turns both back into errors.
 
 # OPTIONS
 
 **-s**, **--strict**
-:   Disregard the leading **-** on keys. Every failed write becomes
-    an error. Useful for auditing a config against the current kernel.
+:   Every failed write is an error: a missing tunable, a refused
+    write, and — unlike **systemd-sysctl**, where **-** still wins —
+    a write to a **-**-prefixed key. Useful for auditing a config
+    against the current kernel.
 
 **-v**, **--verbose**
 :   Emit a one-line summary (**applied=N ignored=M errors=E**) plus
@@ -82,7 +104,9 @@ and counted as an error; the other files are still applied.
 :   Prefix *DIR* onto every hardcoded path — the four scan roots,
     the legacy /etc/sysctl.conf, and **/proc/sys**. Values are then
     written as files under *DIR*/proc/sys (whose directories must
-    exist). Useful for previewing a config in a fixture tree; never
+    exist; a missing file is created, which never happens against the
+    real **/proc/sys**). Globs expand against the files already
+    there. Useful for previewing a config in a fixture tree; never
     needed in production. *FILE* arguments are not prefixed.
 
 **-h**, **--help**
@@ -94,8 +118,9 @@ and counted as an error; the other files are still applied.
 # EXIT STATUS
 
 - **0**: every assignment applied cleanly.
-- **1**: at least one non-ignored write failed (or a config file was
-  malformed).
+- **1**: at least one non-ignored write failed, a config file could
+  not be opened, or a line could not be parsed (the other lines were
+  still applied).
 - **2**: bad usage / unknown flag.
 
 # EXAMPLES

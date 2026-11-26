@@ -40,13 +40,12 @@ func TestParseLineHappyPath(t *testing.T) {
 
 func TestParseLineRejectsBad(t *testing.T) {
 	bad := []string{
-		"",                     // empty
-		"no equals",            // missing '='
-		"= 1",                  // empty key
-		"- = 1",                // key is only the dash prefix
-		"net.*.forwarding = 1", // wildcard
-		"/net.ipv4 = 1",        // leading slash
-		"net..ipv4 = 1",        // consecutive dots produce '//' after normalization
+		"",              // empty
+		"no equals",     // missing '='
+		"= 1",           // empty key
+		"- = 1",         // key is only the dash prefix
+		"/net.ipv4 = 1", // leading slash
+		"net..ipv4 = 1", // consecutive dots produce '//' after normalization
 	}
 	for _, in := range bad {
 		if _, err := parseLine(in); err == nil {
@@ -63,9 +62,9 @@ func TestParseFileSkipsBlankAndComments(t *testing.T) {
 net.ipv4.ip_forward = 1
 -vm.swappiness = 60
 `
-	specs, err := parseFile(strings.NewReader(body), "fixture")
-	if err != nil {
-		t.Fatal(err)
+	specs, errs := parseFile(strings.NewReader(body), "fixture")
+	if len(errs) != 0 {
+		t.Fatal(errs)
 	}
 	if len(specs) != 2 {
 		t.Fatalf("len=%d, want 2", len(specs))
@@ -82,14 +81,44 @@ net.ipv4.ip_forward = 1
 	}
 }
 
-func TestParseFilePropagatesLineNoInError(t *testing.T) {
-	body := "net.core.somaxconn = 1024\ninvalid line without equals\n"
-	_, err := parseFile(strings.NewReader(body), "fx")
-	if err == nil {
-		t.Fatal("expected error")
+// A bad line is reported with file:line and skipped; the lines
+// around it are still returned (systemd-sysctl logs and goes on).
+// The old parser returned nil on the first bad line, so a single
+// unsupported line dropped the whole file.
+func TestParseFileSkipsBadLineKeepsRest(t *testing.T) {
+	body := "net.core.somaxconn = 1024\ninvalid line without equals\nvm.swappiness = 5\n"
+	specs, errs := parseFile(strings.NewReader(body), "fx")
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want exactly one", errs)
 	}
-	if !strings.Contains(err.Error(), "fx:2") {
-		t.Errorf("err missing 'fx:2': %v", err)
+	if !strings.Contains(errs[0].Error(), "fx:2") {
+		t.Errorf("err missing 'fx:2': %v", errs[0])
+	}
+	if len(specs) != 2 || specs[0].key != "net/core/somaxconn" || specs[1].key != "vm/swappiness" {
+		t.Errorf("specs = %+v, want somaxconn and swappiness", specs)
+	}
+}
+
+// Globs are keys like any other; `-key` without '=' is an exclusion.
+func TestParseLineGlobAndExclusion(t *testing.T) {
+	g, err := parseLine("net.ipv4.conf.*.rp_filter = 2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.key != "net/ipv4/conf/*/rp_filter" || !g.hasValue || g.value != "2" || !isGlob(g.key) {
+		t.Errorf("glob spec: %+v", g)
+	}
+	x, err := parseLine("-net.ipv4.conf.all.rp_filter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if x.key != "net/ipv4/conf/all/rp_filter" || x.hasValue || x.ignoreErrors {
+		t.Errorf("exclusion spec: %+v", x)
+	}
+	for _, bad := range []string{"-", "-  ", "net.ipv4.conf.all.rp_filter", "-net/../x"} {
+		if s, err := parseLine(bad); err == nil {
+			t.Errorf("parseLine(%q) accepted: %+v", bad, s)
+		}
 	}
 }
 
