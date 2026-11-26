@@ -231,7 +231,65 @@ func convertScript(path, wrapper string) (*slinitConfig, []warning, error) {
 var (
 	varAssignRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
 	funcDefRe   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*(\{)?\s*$`)
+
+	// logicAssignRe finds an assignment to a variable the converter maps
+	// anywhere in a line: after a separator (`[ -n "$x" ] && pidfile=…`,
+	// a case arm `*) pidfile=…;;`), behind export/local/readonly, or as a
+	// ${var:=default} expansion.
+	logicAssignRe = regexp.MustCompile(`(?:^|[\s;&|()!{])(?:(?:export|local|readonly)\s+)?(` +
+		mappedVarAlt + `)\+?=|\$\{(` + mappedVarAlt + `):?=`)
 )
+
+// mappedVars are the script variables the converter turns into
+// directives. Their value has to be a literal known before the script
+// runs; anything else is left to openrc-run.
+var mappedVars = []string{
+	"command", "command_args", "command_args_foreground", "command_user",
+	"command_background", "supervisor", "directory", "chroot", "pidfile",
+	"stopsig", "umask", "respawn_delay", "respawn_max", "respawn_period",
+	"no_new_privs",
+}
+
+var mappedVarAlt = strings.Join(mappedVars, "|")
+
+// shellBlockDelta is how far a top-level line opens (+) or closes (-)
+// an if/case/for/while/until block, counted on the line with its
+// quoted text removed so a quoted "if" does not count.
+func shellBlockDelta(line string) int {
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' && i+1 < len(line) {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '\\':
+			i++
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			i = len(line)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	d := 0
+	for _, w := range strings.FieldsFunc(b.String(), func(r rune) bool {
+		return r == ' ' || r == '\t' || r == ';' || r == '&' || r == '|' || r == '(' || r == ')'
+	}) {
+		switch w {
+		case "if", "case", "for", "while", "until":
+			d++
+		case "fi", "esac", "done":
+			d--
+		}
+	}
+	return d
+}
 
 // parseOpenrcScript is a coarse shell-aware scan. It finds top-level
 // variable assignments (before any function opens), notes which
@@ -250,6 +308,18 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 	inFunc := ""
 	braceDepth := 0
 	var dependBody []string
+
+	// Mapped variables assigned in shell logic — inside an if/case/loop
+	// at top level, behind && or ||, or in a function body — whose value
+	// is only known when the script runs. The plain top-level assignment
+	// the scan keeps is then not the one OpenRC uses.
+	logicSet := map[string]bool{}
+	noteLogic := func(line string) {
+		for _, m := range logicAssignRe.FindAllStringSubmatch(line, -1) {
+			logicSet[m[1]+m[2]] = true
+		}
+	}
+	blockDepth := 0
 
 	scanner := bufio.NewScanner(strings.NewReader(script))
 	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20)
@@ -275,6 +345,9 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 			continue
 		}
 		if inFunc != "" {
+			if inFunc != "depend" {
+				noteLogic(line)
+			}
 			// Track brace depth cheaply.
 			braceDepth += strings.Count(line, "{") - strings.Count(line, "}")
 			if inFunc == "depend" && line != "{" && line != "}" {
@@ -287,17 +360,34 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 			continue
 		}
 
-		// Top-level assignment.
-		if m := varAssignRe.FindStringSubmatch(line); m != nil {
+		// Top-level assignment. One inside an if/case/loop is logic.
+		if m := varAssignRe.FindStringSubmatch(line); m != nil && blockDepth == 0 {
 			vars[m[1]] = stripQuotes(m[2])
 			continue
 		}
-		// Anything else at top-level (`. /etc/rc.conf`, `source X`,
-		// bare commands) is script logic — flag once and continue
-		// so we still see the rest.
-		if !strings.HasPrefix(line, ".") && !strings.HasPrefix(line, "source ") &&
-			!strings.HasPrefix(line, "[[ ") && !strings.HasPrefix(line, "[ ") {
-			// tolerated silently for now
+		// Anything else at top level (`. /etc/rc.conf`, a test, an
+		// if/case/loop) is script logic: what it assigns is known only
+		// when the script runs.
+		noteLogic(line)
+		blockDepth += shellBlockDelta(line)
+		if blockDepth < 0 {
+			blockDepth = 0
+		}
+	}
+
+	// A mapped value the shell has to compute — $VAR from conf.d or the
+	// environment, ${x:-default}, `cmd` or $(cmd) — or one assigned in
+	// shell logic cannot be written into the file: slinit expands $VAR
+	// in command from its own environment when it loads the service, so
+	// command_args="${FOO_OPTS} -f" silently lost FOO_OPTS, and upstream
+	// rarpd's if/else turned into a command with neither -f nor -a. Such
+	// a script runs through openrc-run, which evaluates it as OpenRC does.
+	var dynamic []string
+	for _, k := range mappedVars {
+		if logicSet[k] {
+			dynamic = append(dynamic, fmt.Sprintf("%s is assigned in shell logic (if/case/loop, && or a function)", k))
+		} else if v, ok := vars[k]; ok && strings.ContainsAny(v, "$`") {
+			dynamic = append(dynamic, fmt.Sprintf("%s=%q needs the shell to expand it", k, v))
 		}
 	}
 
@@ -374,7 +464,7 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 			customFuncs = append(customFuncs, fn)
 		}
 	}
-	if len(customFuncs) > 0 {
+	if len(customFuncs) > 0 || len(dynamic) > 0 {
 		cfg.command = fmt.Sprintf("%s %s start", wrapper, cfg.scriptPath)
 		cfg.stopCommand = fmt.Sprintf("%s %s stop", wrapper, cfg.scriptPath)
 		// bgprocess makes no sense when we're running openrc-run
@@ -415,9 +505,16 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 			warns = append(warns, warning{"NOTE", fmt.Sprintf(
 				"%s left to %s, which applies them itself", strings.Join(left, ", "), wrapper)})
 		}
-		warns = append(warns, warning{"NOTE",
-			fmt.Sprintf("custom shell functions %v — wrapped via %s (requires the binary at runtime)",
-				customFuncs, wrapper)})
+		if len(customFuncs) > 0 {
+			warns = append(warns, warning{"NOTE",
+				fmt.Sprintf("custom shell functions %v — wrapped via %s (requires the binary at runtime)",
+					customFuncs, wrapper)})
+		} else {
+			warns = append(warns, warning{"WARN", fmt.Sprintf(
+				"%s: its value is known only when the script runs, so the script is wrapped via %s "+
+					"(requires the binary at runtime) — write the values in to run the daemon directly",
+				strings.Join(dynamic, "; "), wrapper)})
+		}
 	} else {
 		// command_background=yes is the opposite of a forking daemon: the
 		// daemon stays in the foreground and start-stop-daemon backgrounds

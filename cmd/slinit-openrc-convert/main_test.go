@@ -528,3 +528,64 @@ func TestUpstreamScriptsLoad(t *testing.T) {
 		}
 	}
 }
+
+// A mapped value the shell computes, or one assigned in shell logic,
+// is known only when the script runs. slinit expands $VAR in command
+// from its own environment at load time, so command_args="${FOO_OPTS}
+// -f" silently lost FOO_OPTS, and the scan kept the textually last of
+// rarpd's if/else assignments, turning it into a command with neither
+// -f nor -a. Such a script must be wrapped, with a WARN.
+func TestDynamicValuesAreWrapped(t *testing.T) {
+	for _, tc := range []struct{ name, body, why string }{
+		{"confd-var", "command=/usr/sbin/d\ncommand_args=\"${FOO_OPTS} -f\"\ncommand_background=yes\n", "command_args="},
+		{"cmd-subst", "command=/usr/sbin/d\ncommand_args=\"--id $(cat /etc/id)\"\ncommand_background=yes\n", "command_args="},
+		{"backtick-pidfile", "command=/usr/sbin/d\npidfile=`cat /etc/d.pidpath`\n", "pidfile="},
+		{"rarpd-if-else", "command=/usr/sbin/rarpd\ncommand_args=\"-f\"\ncommand_background=YES\n" +
+			"if [ -z \"$rarpd_interface\" ]; then\n\tcommand_args=\"-f -a\"\nelse\n\tcommand_args=\"-f eth0\"\nfi\n", "command_args is assigned in shell logic"},
+		{"case-arm", "command=/usr/sbin/syslogd\ncase \"$RC_UNAME\" in\n\tFreeBSD)\tpidfile=/var/run/syslog.pid;;\n\t*)\t\tpidfile=/var/run/syslogd.pid;;\nesac\n", "pidfile is assigned in shell logic"},
+		{"and-list", "command=/usr/sbin/d\ncommand_background=yes\n[ -n \"$X\" ] && command_args=-v\n", "command_args is assigned in shell logic"},
+		{"default-expansion", "command=/usr/sbin/d\ncommand_background=yes\n: ${command_user:=nobody}\n", "command_user is assigned in shell logic"},
+		{"helper-function", "command=/usr/sbin/d\ncommand_background=yes\n_setup() {\n\tcommand_args=-v\n}\n_setup\n", "command_args is assigned in shell logic"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+			warns := parseOpenrcScript(cfg, "#!/sbin/openrc-run\n"+tc.body, "/usr/sbin/openrc-run")
+			svc, out := loadConverted(t, cfg)
+			if svc.Type() != service.TypeScripted || !strings.Contains(out, "openrc-run /etc/init.d/d start") {
+				t.Errorf("not wrapped:\n%s", out)
+			}
+			found := false
+			for _, w := range warns {
+				found = found || (w.level == "WARN" && strings.Contains(w.msg, tc.why) && strings.Contains(w.msg, "wrapped"))
+			}
+			if !found {
+				t.Errorf("no WARN saying %q forced the wrapper: %v", tc.why, warns)
+			}
+		})
+	}
+}
+
+// Literal values outside shell logic still convert directly, even
+// with logic around them that touches nothing mapped or a quoted "if".
+func TestLiteralValuesStayDirect(t *testing.T) {
+	script := "#!/sbin/openrc-run\ndescription=\"start if needed; done\"\n" +
+		"command=/usr/sbin/d\ncommand_args=\"-f --conf /etc/d.conf\"\ncommand_background=yes\n" +
+		"if [ -e /etc/x ]; then\n\textra=1\nfi\nport=\"${RC_SVCNAME#*.}\"\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	if cfg.svcType != "process" || cfg.command != "/usr/sbin/d -f --conf /etc/d.conf" {
+		t.Errorf("type %s command %q, want process running /usr/sbin/d -f --conf /etc/d.conf", cfg.svcType, cfg.command)
+	}
+}
+
+// No upstream script may convert to a command slinit would expand at
+// load time, losing what the shell would have put there.
+func TestUpstreamCommandsAreLiteral(t *testing.T) {
+	for name, text := range convertUpstream(t) {
+		for _, ln := range strings.Split(text, "\n") {
+			if !strings.HasPrefix(ln, "#") && strings.ContainsAny(ln, "$`") {
+				t.Errorf("%s: shell expansion in the converted file: %q\n%s", name, ln, text)
+			}
+		}
+	}
+}

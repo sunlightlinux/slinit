@@ -62,6 +62,16 @@ Variables such as **required_files**, **required_dirs**,
 **capabilities**, **output_log** and **extra_commands** are reported
 as not mapped.
 
+Only literal values are mapped. A mapped variable whose value the
+shell has to compute (a **$VAR** set in */etc/conf.d*, a
+**${x:-default}**, **\`cmd\`** or **$(cmd)**), or one assigned in shell
+logic (inside an **if**, **case** or loop, behind **&&** or **||**, as
+**${x:=default}**, or in a function body), is known only when the
+script runs: slinit would expand a **$VAR** in **command** from its own
+environment when it loads the service, and the converter cannot tell
+which branch OpenRC takes. Such a script is wrapped like one with
+custom functions (below), with a warning naming the variable.
+
 A script that defines any of the shell functions **start**, **stop**,
 **start_pre**, **start_post**, **stop_pre**, **stop_post**,
 **restart**, **status** or **reload** cannot be translated. It becomes
