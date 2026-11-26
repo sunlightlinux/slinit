@@ -435,7 +435,9 @@ what tells you the oldest slinit your configuration will run on. See
     **ready-check-command** poll of that start receive; before, the
     generator ran again for each hook and each poll. So a variable set
     with **slinitctl setenv** after the start reaches the hooks only at
-    the next start, as it does the main process.
+    the next start, as it does the main process. A service without an
+    **env-generator** is not affected: its hooks get the environment as
+    it is when each one runs, **slinitctl setenv** included.
 
 **pass-environment**=*NAME*...
 :   Allow-list filter applied to the inherited environment, the

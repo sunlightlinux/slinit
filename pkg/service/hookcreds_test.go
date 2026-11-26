@@ -306,3 +306,55 @@ func TestCronLockWaitPastIntervalIsNotAFailure(t *testing.T) {
 		t.Error("the next tick, with the lock free, did not run the command")
 	}
 }
+
+// Without an env-generator a hook's environment is computed when it
+// runs, as before the start environment was cached: slinitctl setenv on
+// a running instance reached its finish, pre-stop, stop and control
+// hooks, and freezing the environment for every service took that away.
+func TestHookEnvFollowsSetenvWithoutGenerator(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	s.SetEnvVar("SLINIT_HOOKTEST_V", "1")
+	s.launchEnv() // the fork of a start
+	s.SetEnvVar("SLINIT_HOOKTEST_V", "2")
+	if env := s.hookEnv(); !envHas(env, "SLINIT_HOOKTEST_V=2") {
+		t.Errorf("setenv after the start did not reach the hooks: %v", env)
+	}
+}
+
+// A pre-start-command that fails leaves the environment it was given
+// marked for a fork that never came; the next start took it for its own
+// and its process saw variables changed since.
+func TestPreStartFailureDropsTheStartEnv(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	s.SetEnvVar("SLINIT_HOOKTEST_V", "1")
+	s.prepareStartEnv()
+	s.discardStartEnv() // what BringUp does when pre-start-command fails
+	s.SetEnvVar("SLINIT_HOOKTEST_V", "2")
+	if env := s.launchEnv(); !envHas(env, "SLINIT_HOOKTEST_V=2") {
+		t.Errorf("the start after a failed pre-start reused its environment: %v", env)
+	}
+}
+
+// The same through BringUp: the start after a failed pre-start-command
+// gives its process the environment as it is now.
+func TestStartAfterFailedPreStartSeesNewEnv(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out")
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	s.SetEnvVar("SLINIT_HOOKTEST_V", "1")
+	s.SetPreStartCommand([]string{"/bin/false"})
+	s.SetCommand([]string{"/bin/sh", "-c", `echo "$SLINIT_HOOKTEST_V" > ` + out + "; exec sleep 30"})
+	set.AddService(s)
+	set.StartService(s)
+	waitState(t, s, StateStopped, 5*time.Second)
+	s.SetEnvVar("SLINIT_HOOKTEST_V", "2")
+	s.SetPreStartCommand(nil)
+	set.StartService(s)
+	if got := waitForFile(out); got != "2" {
+		t.Errorf("the process saw %q after a failed pre-start; want 2", got)
+	}
+	set.StopService(s)
+	waitState(t, s, StateStopped, 5*time.Second)
+}

@@ -144,6 +144,7 @@ func (s *ProcessService) activateOnDemandLocked() {
 		if err := s.runHookCommand(s.preStartCommand, "pre-start-command"); err != nil {
 			s.services.logger.Error("Service '%s': pre-start-command failed: %v",
 				s.serviceName, err)
+			s.discardStartEnv()
 			s.rearmOnDemandLocked()
 			return
 		}

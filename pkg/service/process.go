@@ -92,9 +92,9 @@ type ProcessService struct {
 
 	// startEnv is the environment computed for the current start —
 	// env-file, env-dir, setenv variables and the env-generator's
-	// output. The main process gets it, and so do the hooks and every
-	// ready-check poll of that start: buildEnv ran the env-generator
-	// again for each of them. startEnvFresh marks an environment
+	// output. The main process gets it, and, when an env-generator is
+	// configured, so do the hooks and every ready-check poll of that
+	// start: buildEnv ran the generator again for each of them. startEnvFresh marks an environment
 	// computed ahead of the fork (for pre-start-command) that the fork
 	// has not used yet. envMu guards both: the post-start-command and
 	// ready-check goroutines read startEnv.
@@ -1736,6 +1736,7 @@ func (s *ProcessService) BringUp() bool {
 		if err := s.runHookCommand(s.preStartCommand, "pre-start-command"); err != nil {
 			s.services.logger.Error("Service '%s': pre-start-command failed: %v",
 				s.serviceName, err)
+			s.discardStartEnv()
 			return false
 		}
 	}
@@ -2256,14 +2257,32 @@ func (s *ProcessService) launchEnv() []string {
 	return env
 }
 
+// discardStartEnv drops the environment prepareStartEnv kept for a fork
+// that is not going to happen (pre-start-command failed), so a later
+// start does not take it for its own.
+func (s *ProcessService) discardStartEnv() {
+	s.envMu.Lock()
+	s.startEnvFresh = false
+	s.envMu.Unlock()
+}
+
 // hookEnv returns the environment for a command run on behalf of the
 // current start: post-start-command, ready-check-command,
-// finish-command, pre-stop-hook, stop-command, control-command-*. It is
-// the start's environment, so the env-generator runs once per start —
-// the man page's "at start time" — rather than once per hook and per
-// ready-check poll, under the scheduling lock for most of them. Only a
-// service never started computes one here.
+// finish-command, pre-stop-hook, stop-command, control-command-*.
+//
+// With an env-generator it is the start's environment, so the generator
+// runs once per start — the man page's "at start time" — rather than
+// once per hook and per ready-check poll, under the scheduling lock for
+// most of them. Only a service never started computes one here.
+//
+// Without one it is computed afresh, as it always was: nothing costly
+// runs, and a variable set with slinitctl setenv reaches the next hook
+// of the running instance. Freezing it for every service took that
+// away.
 func (s *ProcessService) hookEnv() []string {
+	if s.envGenerator == "" {
+		return s.buildEnv()
+	}
 	s.envMu.Lock()
 	env := s.startEnv
 	s.envMu.Unlock()
