@@ -114,6 +114,17 @@ func RunAdhocStarted(cmd *exec.Cmd, started func(pid int)) error {
 		started(cmd.Process.Pid)
 	}
 	err := waitAdhoc(cmd)
+	if cmd.ProcessState == nil {
+		// PID 1's reaper collected the child, so cmd.Wait() failed and
+		// os keeps the Process's pidfd until a GC: hundreds of them
+		// under a busy health check. Here, unlike in WaitAdhoc, the
+		// wait has returned and nobody else holds cmd, so Release is
+		// safe — but it sets Pid to -1, and callers kill the group by
+		// -cmd.Process.Pid after this returns (cron), so put it back.
+		pid := cmd.Process.Pid
+		_ = cmd.Process.Release()
+		cmd.Process.Pid = pid
+	}
 	if defaultDelay && errors.Is(err, exec.ErrWaitDelay) {
 		// The command exited 0; only its output outlived it.
 		return nil

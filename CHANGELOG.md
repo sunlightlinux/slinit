@@ -557,6 +557,13 @@ verified with `git tag -v`.
   is released as soon as the wait reports no status. Hooks, health checks
   and cron commands still leave theirs to the collector: releasing it
   there also cleared the pid their callers kill the process group by.
+- **PID 1 kept a pidfd for every hook, health check or cron command its
+  orphan reaper collected first**: the same leak for commands run by
+  RunAdhoc. Measured with slinit as PID 1 and the collector off: a
+  service with pre-start, post-start, pre-stop and finish hooks, 2000
+  start/stop cycles, 602 pidfds open (none after the fix). The handle is
+  now released once the wait has returned, and the command's pid is
+  kept for the callers that kill its process group afterwards.
 
 ### Changed
 

@@ -51,6 +51,17 @@ func TestReapedChildDoesNotKeepItsPidfd(t *testing.T) {
 	})
 }
 
+// The same leak for ad-hoc commands: pre/post-start and stop hooks,
+// health checks, cron and conditions all go through RunAdhoc. Measured
+// with slinit as PID 1 and GOGC=off: a service with four hooks started
+// and stopped 2000 times left 602 pidfds open; none as a user
+// instance. The cmd's Pid must still survive (TestReapedAdhocKeepsItsPid).
+func TestReapedRunAdhocDoesNotKeepItsPidfd(t *testing.T) {
+	underHotReaper(t, func() error {
+		return RunAdhoc(exec.Command("/bin/true"))
+	})
+}
+
 // An ad-hoc command's *exec.Cmd belongs to its caller, and callers kill
 // the command's group by -cmd.Process.Pid after the wait (cron on a
 // timeout, the logger supervisor on stop). Releasing the Process when
