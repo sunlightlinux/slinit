@@ -196,9 +196,11 @@ Regex filters (each POSIX extended, --skip- variants exclude):
   -p, --point-regex REGEX        keep matching mountpoints
   -P, --skip-point-regex REGEX   drop matching mountpoints
 
-Netdev filters (consult /etc/fstab for _netdev flag):
-  -e, --netdev                   only entries flagged _netdev in fstab
-  -E, --nonetdev                 only entries known to fstab without _netdev
+Netdev filters (consult /etc/fstab for _netdev flag, as OpenRC):
+  -e, --netdev                   drop mounts fstab lists without _netdev
+  -E, --nonetdev                 drop mounts fstab lists with _netdev
+                                 mounts absent from fstab go to the regexen,
+                                 unless MOUNTPOINTs are given (then dropped)
 
 Test seams (non-standard):
       --proc-mounts PATH         alternative mount table

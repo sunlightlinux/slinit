@@ -63,10 +63,10 @@ exclude any entry that matches.
 
 **-p**, **--point-regex** *REGEX*  /  **-P**, **--skip-point-regex** *REGEX*
 
-Netdev-filter mode (**--netdev** / **--nonetdev**, see below) short-
-circuits the **fstype**, **node**, and **options** regex chain — that
-matches OpenRC's flag precedence so scripts that combine both keep
-the same behaviour.
+When a netdev filter (**--netdev** / **--nonetdev**, see below)
+applies to an entry, it alone decides and the **fstype**, **node**
+and **options** regexes are skipped for that entry; when it does not
+apply, the regexes are used as usual. This is OpenRC's precedence.
 
 # NETDEV FILTERS
 
@@ -74,13 +74,21 @@ Whether a mountpoint is a "network device" is decided by looking up
 its fstab entry and checking for the **\_netdev** mount option — the
 canonical OpenRC convention.
 
+The filter applies to an entry only when its mountpoint is listed in
+fstab, or when positional mountpoints were given. A mount that fstab
+does not know about is otherwise *not* filtered out: it falls through
+to the regex filters, exactly as in OpenRC's **mountinfo.c**. So
+**--netdev** with no positional arguments prints the **\_netdev**
+entries *and* every mount absent from fstab (**/proc**, **/run**, …);
+give **--fstype-regex** or the mountpoints to narrow it.
+
 **-e**, **--netdev**
-:   Keep only mountpoints flagged **\_netdev** in fstab. Entries not
-    present in fstab are excluded.
+:   Drop mounts that fstab lists without **\_netdev**. With positional
+    mountpoints, also drop those fstab does not list.
 
 **-E**, **--nonetdev**
-:   Keep only mountpoints present in fstab and NOT flagged
-    **\_netdev**.
+:   Drop mounts that fstab lists with **\_netdev**. With positional
+    mountpoints, also drop those fstab does not list.
 
 # POSITIONAL FILTER
 
@@ -134,7 +142,8 @@ Print every ext4 mountpoint (reverse order):
 slinit-mountinfo --fstype-regex '^ext4$'
 ```
 
-Print only local (non-\_netdev) entries:
+Print local mounts: every mount except those fstab tags
+**\_netdev** (mounts absent from fstab are included, as in OpenRC):
 
 ```
 slinit-mountinfo --nonetdev

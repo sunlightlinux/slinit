@@ -107,9 +107,14 @@ cat >"$FSTAB" <<'EOF'
 //nfs.example/share /mnt/nfs nfs _netdev,ro 0 0
 EOF
 
-# --netdev keeps only fstab entries with _netdev.
+# --netdev, as OpenRC's mountinfo: the _netdev test applies only to
+# mounts listed in fstab (or to all when mountpoints are given); a
+# mount fstab does not know falls through, so /, /home are dropped
+# but /tmp, /run, /sys, /proc stay.
 out=$(slinit-mountinfo --proc-mounts "$FIXTURE" --fstab "$FSTAB" --netdev 2>&1)
-assert_eq "$(echo "$out" | tr -d '\n')" "/mnt/nfs" "--netdev keeps _netdev-tagged only"
+assert_eq "$(echo "$out" | tr -d '\n')" "/tmp/mnt/nfs/run/sys/proc" "--netdev drops fstab entries without _netdev"
+out=$(slinit-mountinfo --proc-mounts "$FIXTURE" --fstab "$FSTAB" --netdev /tmp /home /mnt/nfs 2>&1)
+assert_eq "$(echo "$out" | tr -d '\n')" "/mnt/nfs" "--netdev with mountpoints keeps _netdev only"
 
 # --nonetdev keeps fstab entries without _netdev; /mnt/nfs is out.
 out=$(slinit-mountinfo --proc-mounts "$FIXTURE" --fstab "$FSTAB" --nonetdev 2>&1)

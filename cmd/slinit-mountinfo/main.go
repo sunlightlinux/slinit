@@ -137,17 +137,23 @@ func accept(e fstab.Entry, opts options, fstabEntries []fstab.Entry) bool {
 		return false
 	}
 
-	// Netdev filter short-circuits the other regexen (matches
-	// OpenRC's if/else structure).
+	// The netdev test, exactly as process_mount() in OpenRC's
+	// mountinfo.c: it applies only when the mountpoint is in fstab or
+	// positional mountpoints were given; then it alone decides and the
+	// node/fstype/options regexen are skipped. A mount absent from fstab
+	// with no positional arguments falls through to the regexen, so
+	// `mountinfo -e` also lists every mount fstab does not know about.
+	status := mounts.NetdevUnknown
 	if opts.netdev != netIgnore {
-		status := mounts.LookupNetdev(fstabEntries, e.File)
-		if status == mounts.NetdevUnknown {
+		status = mounts.LookupNetdev(fstabEntries, e.File)
+	}
+	netdevApplies := status != mounts.NetdevUnknown || len(opts.mountpoints) > 0
+	if opts.netdev == netYes && netdevApplies {
+		if status != mounts.NetdevYes {
 			return false
 		}
-		if opts.netdev == netYes && status != mounts.NetdevYes {
-			return false
-		}
-		if opts.netdev == netNo && status != mounts.NetdevNo {
+	} else if opts.netdev == netNo && netdevApplies {
+		if status != mounts.NetdevNo {
 			return false
 		}
 	} else {
