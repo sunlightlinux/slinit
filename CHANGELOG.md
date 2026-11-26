@@ -143,6 +143,13 @@ verified with `git tag -v`.
   collection ran their finalizers. Measured: 2 stored fds, 40 restarts,
   81 pipe fds open in slinit (3 after the fix). They are closed right
   after the fork now.
+- **A shared-logger producer's pipe stayed open in PID 1 after every
+  start**: slinit kept its copy of the write end of the pipe the mux
+  hands each `shared-logger` producer, so the mux's reader for that
+  producer never saw end-of-file when the producer exited, and every
+  start left one more fd open until a garbage collection. Measured with
+  the collector off: 30 start/stop cycles, 33 pipe fds in slinit, for
+  process, scripted and bgprocess producers alike (3 after the fix).
 
 ### Changed
 

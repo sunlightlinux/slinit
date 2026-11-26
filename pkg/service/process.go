@@ -3166,6 +3166,8 @@ func (s *ProcessService) startProcess() error {
 			} else {
 				outputPipe.Close()
 			}
+		} else if outputPipe != nil && s.logType == LogToPipe && s.sharedLoggerName != "" {
+			outputPipe.Close() // the mux's pipe for this start
 		}
 		if s.stderrRotator != nil {
 			s.stderrRotator.Close()
@@ -3238,6 +3240,12 @@ func (s *ProcessService) startProcess() error {
 		// dup2 inside the runner; the reader goroutine (started in
 		// startProcess above) sees EOF once every child copy is
 		// closed, exiting the loop and letting the forwarder go.
+		outputPipe.Close()
+	} else if s.logType == LogToPipe && s.sharedLoggerName != "" && outputPipe != nil {
+		// A shared-logger producer gets a new pipe from the mux on
+		// every start, so the parent keeps nothing: holding the write
+		// end kept the mux's reader from ever seeing EOF, and left one
+		// fd per start open until a GC ran its finalizer.
 		outputPipe.Close()
 	}
 

@@ -379,6 +379,13 @@ func (s *ScriptedService) BringUp() bool {
 	s.Record().ApplyProcessAttrs(&params)
 
 	pid, exitCh, err := process.StartProcess(params)
+	// A shared-logger producer gets a new pipe from the mux on every
+	// start, and the child has its own copy of the write end now. Ours
+	// kept the mux's reader from ever seeing EOF and stayed open until
+	// a GC ran its finalizer.
+	if outputPipe != nil && s.logType == LogToPipe && s.sharedLoggerName != "" {
+		outputPipe.Close()
+	}
 	if err != nil {
 		s.exitStatus = noteStartExecFailure(s.Record(), err)
 		if outputPipe != nil && s.logType == LogToBuffer {
