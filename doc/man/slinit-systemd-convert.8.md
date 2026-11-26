@@ -111,10 +111,14 @@ warning: the hook runs with more privilege than the unit asks for.
 
 **TimeoutStartSec** becomes **start-timeout** and **TimeoutStopSec**
 **stop-timeout**; **TimeoutSec** sets both. **infinity** and **0** both
-mean no timeout, as in systemd, and are written as **0**. A
+mean no timeout, as in systemd, and are written as **0**. A value that
+is no time span (**garbage**, **-1**, an empty one) is ignored with a
+warning, as systemd ignores it, and the timeout keeps its earlier value
+or default. A
 **Type=oneshot** unit that sets neither **TimeoutStartSec** nor
-**TimeoutSec** gets **start-timeout = 0**: systemd gives a oneshot no
-start timeout by default, where slinit's default is 60 seconds.
+**TimeoutSec** (to a valid span) gets **start-timeout = 0**: systemd
+gives a oneshot no start timeout by default, where slinit's default is
+60 seconds.
 
 systemd substitutes a variable in an **Exec** line in two places only:
 a word that is **$VAR** and nothing else (its value split into words,

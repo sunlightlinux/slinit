@@ -124,14 +124,33 @@ func TestSystemdStartTimeout(t *testing.T) {
 		// Later lines win, whichever key they are.
 		{"timeoutsec-then-stop", "[Service]\nExecStart=/usr/bin/x\nTimeoutSec=20\nTimeoutStopSec=7\n", 20 * time.Second, 7 * time.Second},
 		{"start-then-timeoutsec", "[Service]\nExecStart=/usr/bin/x\nTimeoutStartSec=3\nTimeoutSec=infinity\n", 0, 0},
+		// A value that is no time span, or none, systemd logs and
+		// ignores: the setting before it, or the default, stays, and a
+		// oneshot keeps no start timeout. It used to fail the unit.
+		{"start-garbage", "[Service]\nExecStart=/usr/bin/x\nTimeoutStartSec=garbage\n", service.DefaultStartTimeout, service.DefaultStopTimeout},
+		{"start-negative", "[Service]\nExecStart=/usr/bin/x\nTimeoutStartSec=4\nTimeoutStartSec=-1\n", 4 * time.Second, service.DefaultStopTimeout},
+		{"oneshot-start-empty", "[Service]\nType=oneshot\nExecStart=/usr/bin/x\nTimeoutStartSec=\n", 0, service.DefaultStopTimeout},
+		{"oneshot-timeoutsec-bogus", "[Service]\nType=oneshot\nExecStart=/usr/bin/x\nTimeoutSec=bogus\n", 0, service.DefaultStopTimeout},
+		{"timeoutsec-empty", "[Service]\nExecStart=/usr/bin/x\nTimeoutSec=\n", service.DefaultStartTimeout, service.DefaultStopTimeout},
+		{"stop-bogus", "[Service]\nExecStart=/usr/bin/x\nTimeoutStopSec=9\nTimeoutStopSec=bogus\n", service.DefaultStartTimeout, 9 * time.Second},
+		{"stop-unit-garbage", "[Service]\nExecStart=/usr/bin/x\nTimeoutStopSec=5x\n", service.DefaultStartTimeout, service.DefaultStopTimeout},
 	}
+	ignoredValue := map[string]bool{"start-garbage": true, "start-negative": true, "oneshot-start-empty": true,
+		"oneshot-timeoutsec-bogus": true, "timeoutsec-empty": true, "stop-bogus": true, "stop-unit-garbage": true}
 	for _, c := range cases {
-		direct, _ := loadSystemdDirect(t, c.unit)
+		direct, got := loadSystemdDirect(t, c.unit)
 		for name, d := range map[string]*ServiceDescription{"converted": parseEmitted(t, c.unit), "direct": direct} {
 			if d.StartTimeout != c.start || d.StopTimeout != c.stop {
 				t.Errorf("%s %s: start-timeout = %v, stop-timeout = %v; want %v, %v",
 					c.name, name, d.StartTimeout, d.StopTimeout, c.start, c.stop)
 			}
+		}
+		ignored := false
+		for _, g := range got {
+			ignored = ignored || strings.HasPrefix(g, "WARN") && strings.Contains(g, "is no time span — ignored")
+		}
+		if want := ignoredValue[c.name]; ignored != want {
+			t.Errorf("%s: WARN that the value is ignored = %v, want %v: %v", c.name, ignored, want, got)
 		}
 	}
 }

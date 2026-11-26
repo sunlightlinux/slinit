@@ -692,20 +692,32 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		}
 	case "RestartSec":
 		cfg.restartDelay = systemdSeconds(val, "")
-	case "TimeoutStopSec":
+	case "TimeoutStopSec", "TimeoutStartSec", "TimeoutSec":
 		// infinity disables the timeout in both; slinit spells it 0.
 		// systemd reads 0 as infinity too (parse_sec_fix_0), and 0 is
-		// slinit's "wait forever".
-		cfg.stopTimeout = systemdSeconds(val, "0")
-	case "TimeoutStartSec", "TimeoutSec":
+		// slinit's "wait forever". A value that is no time span, an
+		// empty one included, systemd logs and ignores
+		// (config_parse_sec_fix_0, config_parse_service_timeout): the
+		// timeout keeps its default, and for a oneshot TimeoutStartSec=
+		// still counts as unset. It used to be passed through and fail
+		// the whole unit.
+		secs, ok := parseSystemdSeconds(val, "0")
+		if !ok {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s=%s is no time span — ignored, as systemd does", key, val)})
+			break
+		}
+		if key == "TimeoutStopSec" {
+			cfg.stopTimeout = secs
+			break
+		}
 		// Was a note only, which the converter hides without --verbose,
 		// so every converted unit got slinit's 60 s default: a unit
 		// asking for longer, or for none, was interrupted after a
 		// minute. TimeoutSec= sets both, as in systemd's
 		// config_parse_service_timeout.
-		cfg.startTimeout, cfg.startTimeoutSet = systemdSeconds(val, "0"), true
+		cfg.startTimeout, cfg.startTimeoutSet = secs, true
 		if key == "TimeoutSec" {
-			cfg.stopTimeout = cfg.startTimeout
+			cfg.stopTimeout = secs
 		}
 	case "PIDFile":
 		cfg.pidFile = val
@@ -1314,9 +1326,18 @@ var systemdUnits = []struct {
 // value that is not a span is passed through for the parser to reject
 // by name.
 func systemdSeconds(v, inf string) string {
+	if s, ok := parseSystemdSeconds(v, inf); ok {
+		return s
+	}
+	return strings.TrimSpace(v)
+}
+
+// parseSystemdSeconds is systemdSeconds that reports whether v is a time
+// span (or, with inf, "infinity"); an empty v is none, as in parse_sec.
+func parseSystemdSeconds(v, inf string) (string, bool) {
 	v = strings.TrimSpace(v)
 	if v == "infinity" && inf != "" {
-		return inf
+		return inf, true
 	}
 	var usec uint64
 	p := v
@@ -1331,11 +1352,11 @@ func systemdSeconds(v, inf string) string {
 			i++
 		}
 		if i == 0 {
-			return v
+			return v, false
 		}
 		whole, err := strconv.ParseUint(p[:i], 10, 64)
 		if err != nil {
-			return v
+			return v, false
 		}
 		p = p[i:]
 		frac := ""
@@ -1345,7 +1366,7 @@ func systemdSeconds(v, inf string) string {
 				j++
 			}
 			if j == 1 {
-				return v
+				return v, false
 			}
 			frac, p = p[1:j], p[j:]
 		}
@@ -1358,7 +1379,7 @@ func systemdSeconds(v, inf string) string {
 			}
 		}
 		if whole > ^uint64(0)/mult {
-			return v
+			return v, false
 		}
 		usec += whole * mult
 		for k, m := 0, mult/10; k < len(frac) && m > 0; k, m = k+1, m/10 {
@@ -1367,13 +1388,13 @@ func systemdSeconds(v, inf string) string {
 		something = true
 	}
 	if !something {
-		return v
+		return v, false
 	}
 	s := strconv.FormatUint(usec/1e6, 10)
 	if r := usec % 1e6; r != 0 {
 		s += strings.TrimRight(fmt.Sprintf(".%06d", r), "0")
 	}
-	return s
+	return s, true
 }
 
 // setMappedList records a list directive: systemd appends each
