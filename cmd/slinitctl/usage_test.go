@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -171,6 +173,40 @@ func TestExitStatuses(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("slinitctl %v: exit %d, want %d", c.args, got, c.want)
+		}
+	}
+}
+
+// --help is output the caller asked for, so it goes to stdout, as
+// dinitctl's does: `slinitctl --help | grep reload` found nothing when
+// it went to stderr. With no command at all the usage text is the error
+// report and stays on stderr.
+func TestHelpGoesToStdout(t *testing.T) {
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no go toolchain")
+	}
+	bin := filepath.Join(t.TempDir(), "slinitctl")
+	if out, err := exec.Command(gobin, "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	for _, c := range []struct {
+		args       []string
+		wantStdout bool
+	}{
+		{[]string{"--help"}, true},
+		{[]string{"-h"}, true},
+		{nil, false},
+	} {
+		var stdout, stderr bytes.Buffer
+		cmd := exec.Command(bin, c.args...)
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		cmd.Run()
+		onStdout := strings.Contains(stdout.String(), "Usage: slinitctl")
+		onStderr := strings.Contains(stderr.String(), "Usage: slinitctl")
+		if onStdout != c.wantStdout || onStderr == c.wantStdout {
+			t.Errorf("slinitctl %v: usage on stdout=%v stderr=%v, want stdout=%v",
+				c.args, onStdout, onStderr, c.wantStdout)
 		}
 	}
 }

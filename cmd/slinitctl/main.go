@@ -162,7 +162,7 @@ func main() {
 			quietMode = true
 			args = args[1:]
 		case args[0] == "--help" || args[0] == "-h":
-			printUsage()
+			printUsage(os.Stdout)
 			os.Exit(0)
 		case args[0] == "--version":
 			fmt.Printf("slinitctl version %s\n", version)
@@ -174,7 +174,7 @@ func main() {
 doneFlags:
 
 	if len(args) == 0 {
-		printUsage()
+		printUsage(os.Stderr)
 		os.Exit(exitUsage)
 	}
 
@@ -558,8 +558,8 @@ doneFlags:
 	}
 }
 
-func printUsage() {
-	fmt.Fprintf(os.Stderr, `Usage: slinitctl [options] <command> [args...]
+func printUsage(w io.Writer) {
+	fmt.Fprintf(w, `Usage: slinitctl [options] <command> [args...]
 
 Options:
   --socket-path, -p PATH   Control socket path

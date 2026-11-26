@@ -142,6 +142,10 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`slinitctl --help` printed to stderr**: `slinitctl --help | less`
+  or `| grep` saw nothing. The usage text asked for with `-h`/`--help`
+  now goes to stdout, as `dinitctl --help` does; the usage printed for
+  a missing command is still an error and stays on stderr.
 - **The shutdown hook runs after the final sweep even at the task
   limit.** The final SIGKILL sweep did not wait for the killed to exit
   and nothing reaped them any more, so every one stayed a zombie until
