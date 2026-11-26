@@ -47,8 +47,7 @@ func cmdStart(opts Options) int {
 
 	// Wipe any stale pidfile so the poll loop below sees only our
 	// supervisor's write. Ignore ENOENT.
-	_ = os.Remove(opts.PidFile)
-	_ = os.Remove(opts.PidFile + ".daemon")
+	removePidfiles(opts)
 
 	cmd := exec.Command(self, append([]string{supervisorMarker}, os.Args[1:]...)...)
 	cmd.Env = scrubEnviron(os.Environ())
@@ -193,22 +192,7 @@ var errBadPIDFile = errors.New("malformed pidfile")
 // A file naming PID 1, this process or its parent is errBadPIDFile:
 // SIGTERM to PID 1 is a reboot under slinit.
 func readTrustedPIDFile(path string) (int, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	var st syscall.Stat_t
-	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
-		return 0, err
-	}
-	if st.Mode&syscall.S_IFMT != syscall.S_IFREG {
-		return 0, fmt.Errorf("pidfile %s is not a regular file: %w", path, errInsecurePIDFile)
-	}
-	if why := process.PIDFileInsecure(&st, os.Getuid(), os.Getgid(), true); why != "" {
-		return 0, fmt.Errorf("%s pidfile %s: %w", why, path, errInsecurePIDFile)
-	}
-	buf, err := io.ReadAll(io.LimitReader(f, 4096))
+	buf, err := readTrustedFile(path)
 	if err != nil {
 		return 0, err
 	}
@@ -222,6 +206,27 @@ func readTrustedPIDFile(path string) (int, error) {
 		return 0, errBadPIDFile
 	}
 	return n, nil
+}
+
+// readTrustedFile reads one of the files the supervisor keeps next to
+// its pidfile, under the checks readTrustedPIDFile describes.
+func readTrustedFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var st syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+		return nil, err
+	}
+	if st.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		return nil, fmt.Errorf("pidfile %s is not a regular file: %w", path, errInsecurePIDFile)
+	}
+	if why := process.PIDFileInsecure(&st, os.Getuid(), os.Getgid(), true); why != "" {
+		return nil, fmt.Errorf("%s pidfile %s: %w", why, path, errInsecurePIDFile)
+	}
+	return io.ReadAll(io.LimitReader(f, 4096))
 }
 
 // errInsecurePIDFile is a pidfile someone other than root or us could

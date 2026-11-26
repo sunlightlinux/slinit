@@ -49,10 +49,15 @@ daemon.
 
 **-K**, **--stop**
 :   Read the supervisor pidfile, deliver **SIGTERM**, and wait for
-    the supervisor to exit (30 seconds, or the total of the **--retry**
-    timeouts given here); if it is still alive then, it is sent
-    **SIGKILL**. The supervisor's own shutdown path stops the daemon
-    and cleans both pidfiles. Sending **SIGHUP** to the supervisor
+    the supervisor to stop the daemon with the stop schedule (see
+    **--retry**) and exit. **--stop** waits as long as the schedule
+    can take plus two seconds (at least 30 seconds when **--stop** is
+    given no **--retry**; without end when the schedule can wait
+    forever). A supervisor still alive then is taken as hung: it is
+    sent **SIGKILL**, and so is its daemon, identified beforehand as
+    the supervisor's child, and the pidfiles are removed. **--stop**
+    fails (exit 4) if the daemon outlives the stop, for instance when
+    the schedule sends no **SIGKILL**. Sending **SIGHUP** to the supervisor
     forwards it to the daemon; while it waits out a respawn delay there
     is no daemon, and **SIGHUP** is ignored.
 
@@ -152,10 +157,12 @@ Go's **time.ParseDuration** style (**500ms**, **2h**).
 # STOP ESCALATION
 
 **-R**, **--retry** *SPEC*
-:   Given with **--start**, the schedule the supervisor uses to stop
-    the daemon when it is told to shut down. Given with **--stop**, it
-    only sets how long **--stop** waits for the supervisor to exit (the
-    sum of the timeouts). Two forms:
+:   The schedule the supervisor uses to stop the daemon when it is
+    told to shut down. Given with **--start**, it is the supervisor's
+    own; given with **--stop**, it replaces that one for this stop.
+    The supervisor publishes its schedule in *PIDFILE***.retry**, and
+    **--stop** hands a replacement over through the same file, which
+    is held to the same ownership checks as the pidfiles. Forms:
 
     - Integer seconds: **--retry 5** is shorthand for
       **--retry TERM/5/KILL/5**.
@@ -218,8 +225,8 @@ skipped:
   (**--signal**)
 - **2**: syntax / bad usage
 - **4**: the supervisor could not be started or did not write its
-  pidfile in time, a signal could not be delivered, the supervisor
-  survived **--stop**, or a pidfile was refused as insecure
+  pidfile in time, a signal could not be delivered, the supervisor or
+  its daemon survived **--stop**, or a pidfile was refused as insecure
 - **5**: stale pidfile: the supervisor (**--stop**) or daemon
   (**--signal**) it names is gone. **--stop** removes the stale
   pidfiles.

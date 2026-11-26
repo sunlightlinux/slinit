@@ -25,12 +25,14 @@ func runSupervisor(opts Options) int {
 		return exitInsufficientPri
 	}
 	superLogf(opts, "supervisor pidfile written pid=%d", os.Getpid())
-	// Both files are removed on clean exit so stale content does not
+	// All three files are removed on exit so stale content does not
 	// linger for the next start.
-	defer func() {
-		_ = os.Remove(opts.PidFile)
-		_ = os.Remove(opts.PidFile + ".daemon")
-	}()
+	defer removePidfiles(opts)
+	// Publish the stop schedule, so --stop knows how long stopping the
+	// daemon may take; a --stop given its own --retry replaces it.
+	if err := writeFileNoFollow(retryFile(opts), effectiveRetry(opts.Retry)+"\n"); err != nil {
+		superLogf(opts, "write %s: %v", retryFile(opts), err)
+	}
 
 	// Signal channel: SIGTERM / SIGINT tell the supervisor to shut the
 	// daemon down and exit. SIGHUP is forwarded to the daemon (config
@@ -101,10 +103,16 @@ func runSupervisor(opts Options) int {
 				switch sig {
 				case syscall.SIGTERM, syscall.SIGINT:
 					// Clean shutdown: kill the daemon and exit.
-					superLogf(opts, "shutdown signal %s → stopping daemon pid=%d",
-						sig, daemonPID)
-					if err := stopDaemon(opts, daemonPID); err != nil {
+					// --stop may have left its own schedule in
+					// the retry file; it replaces the one --start
+					// gave.
+					stopOpts := opts
+					stopOpts.Retry = stopSchedule(opts)
+					superLogf(opts, "shutdown signal %s → stopping daemon pid=%d (%s)",
+						sig, daemonPID, stopOpts.Retry)
+					if err := stopDaemon(stopOpts, daemonPID); err != nil {
 						superLogf(opts, "stop daemon: %v", err)
+						return exitInsufficientPri
 					}
 					return exitOK
 				case syscall.SIGHUP:
@@ -205,14 +213,41 @@ func startDaemon(opts Options) (int, <-chan string, error) {
 	return pid, exitCh, nil
 }
 
-// stopDaemon shuts the daemon down using --retry when provided,
-// otherwise SIGTERM/5/KILL/5. Waits for the process to actually exit.
-func stopDaemon(opts Options, pid int) error {
-	spec := opts.Retry
+// retryFile is where the supervisor publishes its stop schedule and
+// --stop hands it a replacement.
+func retryFile(opts Options) string { return opts.PidFile + ".retry" }
+
+// removePidfiles removes the supervisor pidfile and its companions.
+func removePidfiles(opts Options) {
+	_ = os.Remove(opts.PidFile)
+	_ = os.Remove(opts.PidFile + ".daemon")
+	_ = os.Remove(retryFile(opts))
+}
+
+// effectiveRetry is spec, or the default schedule when it is empty.
+func effectiveRetry(spec string) string {
 	if spec == "" {
-		spec = "TERM/5/KILL/5"
+		return defaultStopSchedule
 	}
-	steps, err := ParseRetry(spec, syscall.SIGTERM)
+	return spec
+}
+
+// stopSchedule is the schedule to stop the daemon with: the one in the
+// retry file when it is trusted and parses, else --start's own.
+func stopSchedule(opts Options) string {
+	if b, err := readTrustedFile(retryFile(opts)); err == nil {
+		spec := trimSpace(string(b))
+		if _, err := ParseRetry(spec, syscall.SIGTERM); err == nil {
+			return spec
+		}
+	}
+	return effectiveRetry(opts.Retry)
+}
+
+// stopDaemon shuts the daemon down using --retry when provided,
+// otherwise defaultStopSchedule. Waits for the process to actually exit.
+func stopDaemon(opts Options, pid int) error {
+	steps, err := ParseRetry(effectiveRetry(opts.Retry), syscall.SIGTERM)
 	if err != nil {
 		return err
 	}
@@ -371,12 +406,18 @@ func waitExit(pid int, timeout time.Duration) bool {
 // followed; a stale regular pid-file is still replaced, which is what
 // O_TRUNC is for.
 func writePIDFile(path string, pid int) error {
+	return writeFileNoFollow(path, strconv.Itoa(pid)+"\n")
+}
+
+// writeFileNoFollow replaces path's contents, refusing a symlink as
+// writePIDFile explains.
+func writeFileNoFollow(path, content string) error {
 	f, err := os.OpenFile(path,
 		os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0644)
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(strconv.Itoa(pid) + "\n"); err != nil {
+	if _, err := f.WriteString(content); err != nil {
 		f.Close()
 		return err
 	}

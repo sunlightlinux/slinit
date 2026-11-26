@@ -41,6 +41,9 @@ const (
 	// re-exec — matches the ceiling `slinit-start-stop-daemon --notify`
 	// uses.
 	pidfileReadyTimeout = 30 * time.Second
+	// defaultStopSchedule is how the supervisor stops its daemon when
+	// neither --start nor --stop gave --retry.
+	defaultStopSchedule = "TERM/5/KILL/5"
 )
 
 // Options captures the full flag surface. Anything OpenRC accepts is
