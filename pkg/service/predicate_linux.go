@@ -43,6 +43,15 @@ func pathIsMountPoint(path string) (bool, string) {
 	return false, fmt.Sprintf("%q is not a mount point", path)
 }
 
+// predicateRoot prefixes the fixed host paths that the machine
+// predicates read (/proc, /sys, /etc, /run), so a test can point them
+// at a fixture tree. Empty outside tests: each path is read exactly as
+// written.
+var predicateRoot = ""
+
+// hostPath is p under predicateRoot.
+func hostPath(p string) string { return predicateRoot + p }
+
 // bootCondActivePath is the kernel-cmdline snapshot to look for
 // slinit.cond=... in. Overridable at package level for tests that
 // mock a specific cmdline shape.
@@ -94,7 +103,7 @@ func checkBootCond(name string) (bool, string) {
 // "key=value" exactly; we do the same. An empty file means "no kernel
 // cmdline available" which is reported as missing.
 func kernelCmdlineContains(token string) (bool, string) {
-	data, err := os.ReadFile("/proc/cmdline")
+	data, err := os.ReadFile(hostPath("/proc/cmdline"))
 	if err != nil {
 		return false, fmt.Sprintf("/proc/cmdline: %v", err)
 	}
@@ -163,7 +172,7 @@ func detectVirtualization() string {
 		return v
 	}
 	// Hypervisor flag in cpuinfo: set by KVM/QEMU/VMware/Hyper-V/Xen.
-	if data, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+	if data, err := os.ReadFile(hostPath("/proc/cpuinfo")); err == nil {
 		if bytes.Contains(data, []byte("hypervisor")) {
 			// Refine via DMI if available.
 			if v := dmiVirt(); v != "" {
@@ -173,7 +182,7 @@ func detectVirtualization() string {
 		}
 	}
 	// WSL fingerprint.
-	if data, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
+	if data, err := os.ReadFile(hostPath("/proc/sys/kernel/osrelease")); err == nil {
 		s := strings.ToLower(string(data))
 		if strings.Contains(s, "microsoft") {
 			return "wsl"
@@ -186,7 +195,7 @@ func detectContainer() string {
 	if v := os.Getenv("container"); v != "" {
 		return v
 	}
-	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+	if data, err := os.ReadFile(hostPath("/proc/1/cgroup")); err == nil {
 		s := string(data)
 		switch {
 		case strings.Contains(s, "docker"):
@@ -204,7 +213,7 @@ func detectContainer() string {
 
 func dmiVirt() string {
 	dmi := func(file string) string {
-		b, err := os.ReadFile(filepath.Join("/sys/class/dmi/id", file))
+		b, err := os.ReadFile(filepath.Join(hostPath("/sys/class/dmi/id"), file))
 		if err != nil {
 			return ""
 		}
@@ -281,27 +290,27 @@ func checkSecurity(param string) (bool, string) {
 	want := strings.ToLower(strings.TrimSpace(param))
 	switch want {
 	case "selinux":
-		if _, err := os.Stat("/sys/fs/selinux"); err == nil {
+		if _, err := os.Stat(hostPath("/sys/fs/selinux")); err == nil {
 			return true, ""
 		}
 	case "apparmor":
-		if _, err := os.Stat("/sys/kernel/security/apparmor"); err == nil {
+		if _, err := os.Stat(hostPath("/sys/kernel/security/apparmor")); err == nil {
 			return true, ""
 		}
 	case "tomoyo":
-		if _, err := os.Stat("/sys/kernel/security/tomoyo"); err == nil {
+		if _, err := os.Stat(hostPath("/sys/kernel/security/tomoyo")); err == nil {
 			return true, ""
 		}
 	case "smack":
-		if _, err := os.Stat("/sys/fs/smackfs"); err == nil {
+		if _, err := os.Stat(hostPath("/sys/fs/smackfs")); err == nil {
 			return true, ""
 		}
 	case "ima":
-		if _, err := os.Stat("/sys/kernel/security/ima"); err == nil {
+		if _, err := os.Stat(hostPath("/sys/kernel/security/ima")); err == nil {
 			return true, ""
 		}
 	case "audit":
-		if data, err := os.ReadFile("/sys/kernel/security/lsm"); err == nil {
+		if data, err := os.ReadFile(hostPath("/sys/kernel/security/lsm")); err == nil {
 			if strings.Contains(string(data), "audit") {
 				return true, ""
 			}
@@ -311,7 +320,7 @@ func checkSecurity(param string) (bool, string) {
 		// during boot. We look at the TPM binary_bios_measurements log —
 		// a non-empty file means firmware/kernel measured something into
 		// the TPM. Does not require systemd-stub or UKI.
-		st, err := os.Stat("/sys/kernel/security/tpm0/binary_bios_measurements")
+		st, err := os.Stat(hostPath("/sys/kernel/security/tpm0/binary_bios_measurements"))
 		if err != nil {
 			return false, "no TPM binary_bios_measurements log"
 		}
@@ -328,12 +337,12 @@ func checkSecurity(param string) (bool, string) {
 		// enough to confirm the variable is present.
 		const stubPCRVar = "/sys/firmware/efi/efivars/" +
 			"StubPcrKernelImage-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
-		if _, err := os.Stat(stubPCRVar); err != nil {
+		if _, err := os.Stat(hostPath(stubPCRVar)); err != nil {
 			return false, "no StubPcrKernelImage EFI variable (not booted via sd-stub UKI)"
 		}
 		// Reuse the measured-os TPM log check: if the log is empty
 		// the UKI did not actually reach the TPM.
-		if st, err := os.Stat("/sys/kernel/security/tpm0/binary_bios_measurements"); err != nil {
+		if st, err := os.Stat(hostPath("/sys/kernel/security/tpm0/binary_bios_measurements")); err != nil {
 			return false, "no TPM binary_bios_measurements log"
 		} else if st.Size() == 0 {
 			return false, "TPM binary_bios_measurements log is empty"
@@ -351,9 +360,9 @@ func checkSecurity(param string) (bool, string) {
 // indicates an update is pending. param "yes" succeeds when present.
 func checkNeedsUpdate(param string) (bool, string) {
 	pending := false
-	if _, err := os.Stat("/run/systemd/update-on-next-boot"); err == nil {
+	if _, err := os.Stat(hostPath("/run/systemd/update-on-next-boot")); err == nil {
 		pending = true
-	} else if _, err := os.Stat("/run/needs-update"); err == nil {
+	} else if _, err := os.Stat(hostPath("/run/needs-update")); err == nil {
 		pending = true
 	}
 	switch strings.TrimSpace(param) {
@@ -396,19 +405,19 @@ func checkACPower(param string) (bool, string) {
 }
 
 func detectACPower() (bool, bool) {
-	entries, err := os.ReadDir("/sys/class/power_supply")
+	entries, err := os.ReadDir(hostPath("/sys/class/power_supply"))
 	if err != nil || len(entries) == 0 {
 		return false, false
 	}
 	// If any AC adapter reports online=1, we're on AC.
 	for _, e := range entries {
-		typPath := filepath.Join("/sys/class/power_supply", e.Name(), "type")
+		typPath := filepath.Join(hostPath("/sys/class/power_supply"), e.Name(), "type")
 		t, err := os.ReadFile(typPath)
 		if err != nil {
 			continue
 		}
 		if strings.TrimSpace(string(t)) == "Mains" {
-			online, err := os.ReadFile(filepath.Join("/sys/class/power_supply", e.Name(), "online"))
+			online, err := os.ReadFile(filepath.Join(hostPath("/sys/class/power_supply"), e.Name(), "online"))
 			if err != nil {
 				continue
 			}
@@ -419,7 +428,7 @@ func detectACPower() (bool, bool) {
 	}
 	// No Mains-on reported → on battery iff at least one battery exists.
 	for _, e := range entries {
-		typPath := filepath.Join("/sys/class/power_supply", e.Name(), "type")
+		typPath := filepath.Join(hostPath("/sys/class/power_supply"), e.Name(), "type")
 		t, err := os.ReadFile(typPath)
 		if err != nil {
 			continue
