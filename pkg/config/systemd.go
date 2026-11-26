@@ -273,6 +273,59 @@ var (
 	kvRe      = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]*)\s*=\s*(.*)$`)
 )
 
+// joinSystemdLines splits a unit into logical lines the way systemd's
+// config_parse (src/shared/conf-parser.c) does. A comment line, one
+// whose first non-blank character is '#' or ';', is skipped outright,
+// also while a continuation is open: systemd lets a unit comment out
+// one line of a continued value, and joining it in used to turn
+//
+//	ExecStart=/usr/bin/foo \
+//	#  --debug --insecure \
+//	  --bar
+//
+// into a command with "#", "--debug" and "--insecure" for arguments. A
+// comment ending in a backslash neither opens nor extends a
+// continuation. A line continues when it ends in an odd run of
+// backslashes, counted over the value joined so far, with nothing
+// after them, not even blanks; the last backslash becomes a space and
+// the next line is appended as it is. A continuation still open at the
+// end of the file is a line of its own.
+func joinSystemdLines(content string) []string {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20)
+	var joined []string
+	var cont string
+	inCont := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if l := strings.TrimLeft(line, " \t\n\r"); l != "" && (l[0] == '#' || l[0] == ';') {
+			continue
+		}
+		p := line
+		if inCont {
+			p = cont + line
+		}
+		escaped := false
+		for i := 0; i < len(p); i++ {
+			if escaped {
+				escaped = false
+			} else if p[i] == '\\' {
+				escaped = true
+			}
+		}
+		if escaped {
+			cont, inCont = p[:len(p)-1]+" ", true
+			continue
+		}
+		joined = append(joined, p)
+		cont, inCont = "", false
+	}
+	if inCont {
+		joined = append(joined, cont)
+	}
+	return joined
+}
+
 // parseSystemdUnit is a section-aware INI parser that also joins
 // backslash-continued values (systemd allows `Foo=bar \` newline
 // `continuation` as one logical assignment). Only [Unit] and
@@ -282,32 +335,7 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 	var warns []SystemdWarning
 	section := ""
 
-	// Multi-line join: iterate the raw lines, if a line ends with
-	// `\` (after trimming trailing whitespace), fuse it with the
-	// next.
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20)
-	var joined []string
-	var acc strings.Builder
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimRight(line, " \t")
-		if strings.HasSuffix(trimmed, "\\") {
-			acc.WriteString(strings.TrimSuffix(trimmed, "\\"))
-			acc.WriteByte(' ')
-			continue
-		}
-		if acc.Len() > 0 {
-			acc.WriteString(line)
-			joined = append(joined, acc.String())
-			acc.Reset()
-		} else {
-			joined = append(joined, line)
-		}
-	}
-	if acc.Len() > 0 {
-		joined = append(joined, acc.String())
-	}
+	joined := joinSystemdLines(content)
 
 	// State for the multiple-ExecStartPre check.
 	preStartCount := 0

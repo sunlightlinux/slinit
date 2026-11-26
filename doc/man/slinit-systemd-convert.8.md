@@ -22,6 +22,11 @@ service, socket to **socket-listen** on the target service, path to
 **start-on-path-\*** directives, mount to **slinit-mount**(8), target
 to a **type = internal** aggregate. Convert those by hand.
 
+The unit is read as systemd reads it: a line ending in an unescaped
+backslash continues on the next, and a comment line (first non-blank
+character **#** or **;**) is skipped even inside such a continuation,
+so an option commented out of a continued **ExecStart** stays out.
+
 The converter recognises the [Unit], [Service] and [Install] keys that
 have a slinit counterpart, among them **Description**, **Type**
 (**simple**/**exec** → **process**, **forking** → **bgprocess**,
