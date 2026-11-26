@@ -1271,7 +1271,9 @@ func (c *Connection) handleReloadSignal(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	sig := svc.Record().ReloadSignal()
+	// Read under the graph lock: a reload rewrites it there.
+	var sig syscall.Signal
+	c.server.services.WithGraphLock(func() { sig = svc.Record().ReloadSignal() })
 	if sig == 0 {
 		return c.writePacket(RplyNAK, nil)
 	}

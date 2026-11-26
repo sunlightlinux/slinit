@@ -203,6 +203,10 @@ verified with `git tag -v`.
   it. Unpin now travels milestone edges too. Found by the new control
   protocol fuzzer.
 
+- **`reload-signal` no longer races a reload of the service.** It read
+  the configured signal without the graph lock while `reload` rewrote it
+  under that lock. Found by a `-race` stress run of the daemon.
+
 - **The description, metadata and bundle-member queries no longer race a
   reload.** They built their replies from strings and a list that
   `reload` rewrites under the graph lock (the bundle list in place),
