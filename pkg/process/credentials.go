@@ -2,6 +2,7 @@ package process
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -93,7 +94,7 @@ func SetupCredentials(serviceName string, sources []CredentialSource, uid, gid u
 		dst := filepath.Join(dir, s.Name)
 		var data []byte
 		if s.Path != "" {
-			b, err := os.ReadFile(s.Path)
+			b, err := readCredentialFile(s.Path)
 			if err != nil {
 				teardown()
 				return "", fmt.Errorf("credential %q: read %s: %w", s.Name, s.Path, err)
@@ -160,6 +161,30 @@ func makeCredentialsDir(root, dir string) error {
 		return fmt.Errorf("credentials mkdir %s: %w", dir, err)
 	}
 	return nil
+}
+
+// credentialSizeMax is systemd's CREDENTIAL_SIZE_MAX; the tmpfs the
+// credentials go to is no bigger.
+const credentialSizeMax = 1 << 20
+
+// readCredentialFile reads a load-credential source. It runs in PID 1
+// with the service set's lock held, so only a regular file is read
+// (a FIFO would block, a device such as /dev/zero would never end),
+// and no more than credentialSizeMax of it.
+func readCredentialFile(path string) ([]byte, error) {
+	f, err := openRegular(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, credentialSizeMax+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > credentialSizeMax {
+		return nil, fmt.Errorf("larger than %d bytes", credentialSizeMax)
+	}
+	return b, nil
 }
 
 // CleanupCredentials undoes SetupCredentials: umount the tmpfs and

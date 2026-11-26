@@ -118,6 +118,11 @@ verified with `git tag -v`.
 - **A FIFO or terminal named by `condition = file-value` froze PID 1**:
   the check opened and read it with the service set's lock held. It is
   now read without blocking; an empty FIFO reads as empty.
+- **A `load-credential` source that was a FIFO froze PID 1**: the start
+  read it with the service set's lock held and waited for a writer; a
+  source linking to `/dev/zero` was read without end. Sources must now be
+  regular files of at most 1 MiB (systemd's limit, and the size of the
+  credentials tmpfs, so a larger one could not be stored before either).
 
 ## [4.0.3] — 2026-11-26
 
