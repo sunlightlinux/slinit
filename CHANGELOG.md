@@ -33,6 +33,12 @@ requires.
 
 ### Security
 
+- **The converters and slinit-init-maker wrote through symlinks**:
+  run as root into `/etc/slinit.d`, a planted `NAME -> ../victim` (or,
+  for init-maker, a planted `NAME.tmp`) made them rewrite a file outside
+  the output directory. Output is now written to a fresh temporary file
+  and renamed into place, and a symlink at the destination is refused
+  (exit 1). The converters still regenerate existing regular files.
 - **The machine registry trusted a bare pid**: after a container's
   launcher was SIGKILLed its entry stayed, and once the pid was reused
   `machinectl` showed the unrelated process as the container and
@@ -980,6 +986,13 @@ requires.
 
 ### Fixed
 
+- **slinit-runit-convert mistranslated `chpst`**: grouped flags
+  (`-P0`, `-Pu nobody`) lost every letter after the first, so
+  `chpst -Pu nobody daemon` became `command = nobody daemon` with no
+  run-as; and `chpst -e DIR` (an envdir) became `env-file = DIR`, which
+  fails to read, so the service started without its variables. It now
+  parses flags like getopt and emits `env-dir`, resolving a relative
+  directory against the service directory.
 - **slinit-cgtop overstated CPU% on large trees** (about 300% for one
   busy core with 20k cgroups): it divided by `--delay`, not by the time
   between the two reads. `machinectl` also showed root's containers as
