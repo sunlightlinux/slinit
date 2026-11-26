@@ -25,6 +25,7 @@ verified with `git tag -v`.
 ## [Unreleased]
 
 
+
 ### Security
 
 - **Release builds use a supported Go toolchain.** CI, the SLSA builder
@@ -88,6 +89,17 @@ verified with `git tag -v`.
   copying it on each doubling. It is now sized before the first service
   is framed: a list of 4000 services allocates 950 KiB instead of
   1467 KiB per request.
+
+### Changed
+
+- **A FIFO in an `env-dir`, or an `env-file` that is one, froze PID 1**:
+  the start opened it with the service set's lock held and blocked until
+  something opened the other end, stopping every start, stop and
+  control command; an `env-dir` entry linking to `/dev/zero` was read
+  until PID 1 ran out of memory. Both are now read only when they are
+  regular files (symlinks to one are still followed). *Compat:* an
+  `env-file` or `env-dir` entry that is a FIFO, socket or device is
+  now skipped with an error in the log instead of read.
 
 ## [4.0.3] — 2026-11-26
 

@@ -3,10 +3,35 @@ package process
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
+
+// openRegular opens path for reading and refuses anything but a
+// regular file. These files are read by PID 1 with the service set's
+// lock held: a FIFO would block the open until something opened its
+// other end, and a device such as /dev/zero would be read without end.
+// O_NONBLOCK makes the open of a FIFO return at once; it has no effect
+// on the read of a regular file.
+func openRegular(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("%s: not a regular file (%s)", path, fi.Mode().Type())
+	}
+	return f, nil
+}
 
 // ReadEnvFile reads a file of KEY=VALUE environment variable assignments.
 // Lines starting with '#' and blank lines are skipped.
@@ -27,7 +52,7 @@ func ReadEnvFile(path string) (map[string]string, error) {
 // origEnv is the original environment before any env-file processing.
 // If nil, os.Environ() is used as fallback for !import.
 func ReadEnvFileWithOrigEnv(path string, origEnv []string) (map[string]string, error) {
-	f, err := os.Open(path)
+	f, err := openRegular(path)
 	if err != nil {
 		return nil, fmt.Errorf("open env-file: %w", err)
 	}
@@ -121,9 +146,14 @@ func ReadEnvDir(dirPath string) (map[string]string, error) {
 		}
 
 		filePath := filepath.Join(dirPath, name)
-		data, err := os.ReadFile(filePath)
+		f, err := openRegular(filePath)
 		if err != nil {
 			continue // skip unreadable files
+		}
+		data, err := io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			continue
 		}
 
 		if len(data) == 0 {

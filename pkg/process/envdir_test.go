@@ -140,3 +140,30 @@ func TestReadEnvDirErrors(t *testing.T) {
 		t.Errorf("empty dir: %q, %v; want an empty non-nil map", env, err)
 	}
 }
+
+// An env-dir entry that resolves to a device used to be read to its
+// end: /dev/zero has none, so PID 1 allocated until it died. Only
+// regular files are read; the symlink to one still is (runit follows
+// symlinks in an envdir).
+func TestReadEnvDirSkipsDevices(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Symlink("/dev/zero", filepath.Join(dir, "ZERO")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "target"), []byte("v\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target", filepath.Join(dir, "LINKED")); err != nil {
+		t.Fatal(err)
+	}
+	env, err := ReadEnvDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := env["ZERO"]; ok {
+		t.Error("ZERO (a device) was read")
+	}
+	if env["LINKED"] != "v" {
+		t.Errorf("LINKED = %q, want v", env["LINKED"])
+	}
+}
