@@ -33,6 +33,14 @@ requires.
 
 ### Security
 
+- **slinit-seedrng followed symlinks in the seed directory**: a
+  `seed.no-credit` symlink made root create or truncate any file, a
+  `seed.credit` symlink had its target credited as entropy, and a FIFO
+  blocked boot with the directory lock held. Seeds are now opened with
+  `O_NOFOLLOW|O_NONBLOCK`, must be regular files, are read up to 512
+  bytes (a longer one is truncated, not lost) and the new seed is
+  written to a fresh inode. A seed directory not owned by the caller or
+  writable by group/others is refused.
 - **Hook scripts ran as root whoever owned them.** Anything executable
   under `/etc/slinit/hooks.d/<point>/`, `/etc/rc.local.d/` or
   `/etc/rc.local` ran; a directory or script left group- or
@@ -935,6 +943,16 @@ requires.
 
 ### Fixed
 
+- **slinit-monitor split a substituted value into several arguments**:
+  `%n`, `%s` and `%v` were replaced in the whole command line before it
+  was split, so a value with spaces or quotes became extra (even
+  option-like) arguments, and a `%v` inside a service name was expanded
+  again. The command is now split first and each argument substituted
+  once, as dinit-monitor does.
+- **slinit-inetd delayed the peer's EOF until the handler exited**: the
+  parent kept its copy of the connection until `wait`. It is closed as
+  soon as the handler starts, like classic inetd; the connection still
+  counts against the limits until the handler exits.
 - **slinit-killall5 killed the script that called it inside a PID
   namespace whose session leader is outside** (a container): getsid(0)
   is 0 there and the own-session guard only protected sessions above 0.
