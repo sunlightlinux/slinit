@@ -350,3 +350,30 @@ func TestPostStartCommandRunsDoNotOverlap(t *testing.T) {
 		t.Errorf("the second post-start-command run (pid %d) ended too", pid2)
 	}
 }
+
+// One ready-check attempt that hangs must not hold the whole watch: it
+// is ended at readyCheckAttemptTimeout and the next poll can pass. With
+// no start-timeout the service otherwise stayed STARTING for good.
+func TestReadyCheckHungAttemptIsRetried(t *testing.T) {
+	old := readyCheckAttemptTimeout.Load()
+	readyCheckAttemptTimeout.Store(300 * time.Millisecond)
+	t.Cleanup(func() { readyCheckAttemptTimeout.Store(old) })
+	for _, st := range []time.Duration{0, 5 * time.Second} {
+		set, _ := newTestSet()
+		s := NewProcessService(set, "rchung")
+		marker := filepath.Join(t.TempDir(), "first")
+		// The first run hangs, every later run passes.
+		s.SetReadyCheckCommand([]string{"/bin/sh", "-c",
+			"if [ -e " + marker + " ]; then exit 0; fi; : > " + marker + "; exec sleep 100"},
+			50*time.Millisecond)
+		s.SetStartTimeout(st)
+		s.SetCommand([]string{"/bin/sleep", "30"})
+		set.AddService(s)
+		set.StartService(s)
+		if got := waitState(t, s, StateStarted, 3*time.Second); got != StateStarted {
+			t.Errorf("start-timeout %v: state %v after a hung first attempt, want STARTED", st, got)
+		}
+		set.StopService(s)
+		waitState(t, s, StateStopped, 5*time.Second)
+	}
+}

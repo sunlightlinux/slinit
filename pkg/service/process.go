@@ -3818,6 +3818,12 @@ func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}, start
 	}
 }
 
+// readyCheckAttemptTimeout bounds one ready-check attempt. Atomic, so a
+// test can change it while a watch from an earlier test still runs.
+var readyCheckAttemptTimeout atomicDuration
+
+func init() { readyCheckAttemptTimeout.Store(30 * time.Second) }
+
 // runReadyCheckOnce executes the configured ready-check-command exactly
 // once and reports whether it exited 0.
 func (s *ProcessService) runReadyCheckOnce() bool {
@@ -3826,9 +3832,16 @@ func (s *ProcessService) runReadyCheckOnce() bool {
 
 // runReadyCheck runs one ready-check attempt, ended by ctx (the end of
 // the watch or the start-timeout's deadline) with its process group
-// killed. The immediate first check and the polling loop share it.
-// hook-timeout does not bound it: a slow check is still a check.
+// killed, and by readyCheckAttemptTimeout. The immediate first check and
+// the polling loop share it. hook-timeout does not bound it: a slow check
+// is still a check.
 func (s *ProcessService) runReadyCheck(ctx context.Context) bool {
+	// Each attempt also has a bound of its own, well above hook-timeout,
+	// so one attempt that hangs (a stalled connect) is retried instead of
+	// holding the whole watch: with no start-timeout it would otherwise
+	// never end, and with one it would use it all up.
+	ctx, cancel := context.WithTimeout(ctx, readyCheckAttemptTimeout.Load())
+	defer cancel()
 	cmd := newHookCmd(ctx, s.readyCheckCommand)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.hookCmdEnv()
