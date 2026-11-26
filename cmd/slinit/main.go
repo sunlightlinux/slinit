@@ -1059,7 +1059,7 @@ func main() {
 		}
 	}
 	if effectiveEnvFile != "" {
-		fileEnv, err := process.ReadEnvFile(effectiveEnvFile)
+		fileEnv, err := process.ReadStartupEnvFile(effectiveEnvFile)
 		if err != nil {
 			// Implicit fallback: quietly skip on error (operator
 			// didn't ask for this file explicitly). Explicit --env-file:

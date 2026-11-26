@@ -26,11 +26,19 @@ func openRegular(path string) (*os.File, error) {
 		f.Close()
 		return nil, err
 	}
-	if !fi.Mode().IsRegular() {
+	if !fi.Mode().IsRegular() && !isDevNull(fi) {
 		f.Close()
 		return nil, fmt.Errorf("%s: not a regular file (%s)", path, fi.Mode().Type())
 	}
 	return f, nil
+}
+
+// isDevNull reports whether fi is /dev/null, which every reader of
+// these files has always taken as an empty file (an env-dir entry
+// linked to it unsets the variable, as in runit).
+func isDevNull(fi os.FileInfo) bool {
+	null, err := os.Stat(os.DevNull)
+	return err == nil && os.SameFile(fi, null)
 }
 
 // ReadEnvFile reads a file of KEY=VALUE environment variable assignments.
@@ -52,7 +60,19 @@ func ReadEnvFile(path string) (map[string]string, error) {
 // origEnv is the original environment before any env-file processing.
 // If nil, os.Environ() is used as fallback for !import.
 func ReadEnvFileWithOrigEnv(path string, origEnv []string) (map[string]string, error) {
-	f, err := openRegular(path)
+	return readEnvFile(path, origEnv, openRegular)
+}
+
+// ReadStartupEnvFile reads slinit's own --env-file. That is read once,
+// before any service is managed and with no lock held, so unlike a
+// service's env-file it may be a pipe (`slinit -u --env-file <(...)`)
+// and is opened as a plain file.
+func ReadStartupEnvFile(path string) (map[string]string, error) {
+	return readEnvFile(path, nil, os.Open)
+}
+
+func readEnvFile(path string, origEnv []string, open func(string) (*os.File, error)) (map[string]string, error) {
+	f, err := open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open env-file: %w", err)
 	}

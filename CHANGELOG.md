@@ -61,6 +61,16 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`/dev/null` is an empty file again for env-file, env-dir and
+  load-credential.** The opens that keep a FIFO from freezing PID 1
+  (unreleased) also refused `/dev/null`: an `env-file = /dev/null`
+  logged an error on every start, an env-dir entry linked to `/dev/null`
+  (runit's way to unset a variable) no longer unset it, and
+  `load-credential` from `/dev/null` failed the start. slinit's own
+  `--env-file`, read once at start-up with no lock held, again accepts a
+  pipe (`slinit -u --env-file <(...)`), which made a user-mode slinit
+  exit.
+
 - **`/etc/hostname` is read the way systemd reads it.** As PID 1, slinit
   passed the whole file to `sethostname`, so a comment line above the
   name became part of the hostname, and `host.example.com.` kept its
