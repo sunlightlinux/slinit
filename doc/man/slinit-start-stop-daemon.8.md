@@ -48,9 +48,12 @@ At least one of **--exec**, **--pidfile**, or **--name** must be given.
 When multiple are provided, a process must satisfy **all** of them.
 
 **-x**, **--exec** *PATH*
-:   Match processes whose **/proc/PID/exe** symlink resolves to *PATH*,
-    including one still running a *PATH* since replaced or removed
-    (the link then reads "*PATH* (deleted)").
+:   Match processes whose **/proc/PID/exe** is the same file as *PATH*
+    (device and inode, as Debian compares them), so any spelling of
+    the path matches: on a merged-/usr system **/usr/sbin/foo** finds
+    a daemon the kernel reports as **/usr/bin/foo**. A process still
+    running a *PATH* since replaced or removed (the link then reads
+    "*PATH* (deleted)") is matched by the path string instead.
     Also names the binary to spawn on **--start**.
 
 **-p**, **--pidfile** *PATH*

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestReadPIDFileBasic(t *testing.T) {
@@ -202,4 +203,103 @@ func TestExecMatchesDeletedBinary(t *testing.T) {
 	if processMatches(pid, MatchCriteria{Exec: bin + "2", UID: -1}) {
 		t.Error("matched a different path")
 	}
+}
+
+// startCopiedSleep copies sleep(1) into dir/bin/<name>, makes dir/sbin
+// a symlink to bin (the merged-/usr layout) and starts it through the
+// sbin spelling. Returns the pid and the sbin path.
+func startCopiedSleep(t *testing.T, name string) (int, string) {
+	t.Helper()
+	src, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep binary")
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Skip(err)
+	}
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("bin", filepath.Join(dir, "sbin")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bin", name), data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	viaSbin := filepath.Join(dir, "sbin", name)
+	cmd := exec.Command(viaSbin, "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("copied sleep does not run: %v", err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	// Wait for the exec to land so /proc/PID/exe is the copy.
+	for i := 0; i < 50; i++ {
+		if l, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); filepath.Base(l) == name {
+			return pid, viaSbin
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Skip("copied sleep never exec'd (multi-call binary?)")
+	return 0, ""
+}
+
+// TestExecMatchThroughSymlinkedDir is the merged-/usr case: the daemon
+// was started as dir/sbin/foo, the kernel reports dir/bin/foo, and
+// --exec dir/sbin/foo must still find it (Debian compares dev+inode).
+func TestExecMatchThroughSymlinkedDir(t *testing.T) {
+	pid, viaSbin := startCopiedSleep(t, "mydaemon")
+	pids, err := FindMatchingPIDs(MatchCriteria{Exec: viaSbin, UID: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range pids {
+		if p == pid {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("--exec %s did not match pid %d (exe=%s); got %v",
+			viaSbin, pid, mustReadlink("/proc/"+strconv.Itoa(pid)+"/exe"), pids)
+	}
+
+	// A different file with the same content is NOT the same executable.
+	other := filepath.Join(t.TempDir(), "mydaemon")
+	data, _ := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(viaSbin)), "bin", "mydaemon"))
+	if err := os.WriteFile(other, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if processMatches(pid, MatchCriteria{Exec: other, UID: -1}) {
+		t.Error("a copy at another inode must not match")
+	}
+}
+
+// TestExecMatchReplacedBinary: an upgrade replaced the binary, so the
+// running image is a deleted inode no stat of --exec reaches; the
+// string fallback (" (deleted)" stripped) must still match it.
+func TestExecMatchReplacedBinary(t *testing.T) {
+	pid, viaSbin := startCopiedSleep(t, "mydaemon")
+	binPath := filepath.Join(filepath.Dir(filepath.Dir(viaSbin)), "bin", "mydaemon")
+	data, _ := os.ReadFile(binPath)
+	if err := os.Remove(binPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binPath, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if !processMatches(pid, MatchCriteria{Exec: binPath, UID: -1}) {
+		t.Errorf("replaced binary: --exec %s should still match (exe=%s)",
+			binPath, mustReadlink("/proc/"+strconv.Itoa(pid)+"/exe"))
+	}
+}
+
+func mustReadlink(p string) string {
+	s, _ := os.Readlink(p)
+	return s
 }
