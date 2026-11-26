@@ -51,16 +51,26 @@ func TestReapedChildDoesNotKeepItsPidfd(t *testing.T) {
 	})
 }
 
-// The same for an ad-hoc command (hooks, health checks, cron): its wait
-// had the same unknown-status branch.
-func TestReapedAdhocDoesNotKeepItsPidfd(t *testing.T) {
-	underHotReaper(t, func() error {
-		err := RunAdhoc(exec.Command("/bin/true"))
-		if err != nil {
-			return err
+// An ad-hoc command's *exec.Cmd belongs to its caller, and callers kill
+// the command's group by -cmd.Process.Pid after the wait (cron on a
+// timeout, the logger supervisor on stop). Releasing the Process when
+// the reaper won set that Pid to -1, so the group kill became kill(1)
+// and the group's other members survived. The wait must leave it.
+func TestReapedAdhocKeepsItsPid(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test: 300 process starts")
+	}
+	stop := startHotReaper()
+	defer stop()
+	for i := 0; i < 300; i++ {
+		cmd := exec.Command("/bin/true")
+		if err := RunAdhoc(cmd); err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
 		}
-		return nil
-	})
+		if cmd.Process.Pid <= 0 {
+			t.Fatalf("iteration %d: cmd.Process.Pid = %d after the wait; a group kill by it signals the wrong process", i, cmd.Process.Pid)
+		}
+	}
 }
 
 // underHotReaper runs start 300 times with a PID-1-style reaper and the
@@ -71,25 +81,7 @@ func underHotReaper(t *testing.T, start func() error) {
 		t.Skip("stress test: 300 process starts")
 	}
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))
-
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			var st syscall.WaitStatus
-			pid, err := syscall.Wait4(-1, &st, syscall.WNOHANG, nil)
-			if pid > 0 && err == nil {
-				DefaultExitRouter.Route(pid, st)
-			}
-		}
-	}()
-	defer func() { close(stop); <-done }()
+	defer startHotReaper()()
 
 	before := openPidfds(t)
 	const n = 300
@@ -109,4 +101,27 @@ func underHotReaper(t *testing.T, start func() error) {
 	if leaked > 0 {
 		t.Errorf("%d pidfds still open after %d exits under a reaper; want 0", leaked, n)
 	}
+}
+
+// startHotReaper runs a reaper the way PID 1 does (Wait4(-1) then Route)
+// until the returned func is called.
+func startHotReaper() func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			var st syscall.WaitStatus
+			pid, err := syscall.Wait4(-1, &st, syscall.WNOHANG, nil)
+			if pid > 0 && err == nil {
+				DefaultExitRouter.Route(pid, st)
+			}
+		}
+	}()
+	return func() { close(stop); <-done }
 }

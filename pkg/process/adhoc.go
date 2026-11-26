@@ -196,9 +196,11 @@ func waitAdhoc(cmd *exec.Cmd) error {
 		default:
 			// No status: either the reaper took the child (ECHILD) or
 			// something else went wrong. Say so rather than passing a
-			// phantom failure to the caller. A failed Wait keeps the
-			// Process's pidfd: let it go, or it stays open until a GC.
-			cmd.Process.Release()
+			// phantom failure to the caller. The Process keeps its
+			// pidfd until a GC: Release would close it, but it also
+			// sets cmd.Process.Pid to -1 under callers that kill the
+			// group by -cmd.Process.Pid afterwards (cron, the logger
+			// supervisor), which then signalled 1 instead.
 			waitDone <- result{err, false}
 		}
 	}()

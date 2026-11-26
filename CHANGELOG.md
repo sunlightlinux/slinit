@@ -209,12 +209,13 @@ verified with `git tag -v`.
   the collector off: 30 start/stop cycles, 33 pipe fds in slinit, for
   process, scripted and bgprocess producers alike (3 after the fix).
 - **PID 1 kept a pidfd for every child its orphan reaper collected
-  first**: when the reaper won the race with a service's (or a hook's,
-  health check's, cron command's) own wait, that wait failed and Go kept
-  the process's pidfd until a garbage collection. Measured with slinit as
-  PID 1 and the collector off: a crash-looping service, 150 restarts, 40
-  pidfds open (none after the fix). The handle is released as soon as
-  the wait reports no status.
+  first**: when the reaper won the race with a service's own wait, that
+  wait failed and Go kept the process's pidfd until a garbage collection.
+  Measured with slinit as PID 1 and the collector off: a crash-looping
+  service, 150 restarts, 40 pidfds open (none after the fix). The handle
+  is released as soon as the wait reports no status. Hooks, health checks
+  and cron commands still leave theirs to the collector: releasing it
+  there also cleared the pid their callers kill the process group by.
 
 ### Changed
 
