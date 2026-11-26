@@ -53,7 +53,11 @@ When multiple are provided, a process must satisfy **all** of them.
     the path matches: on a merged-/usr system **/usr/sbin/foo** finds
     a daemon the kernel reports as **/usr/bin/foo**. A process still
     running a *PATH* since replaced or removed (the link then reads
-    "*PATH* (deleted)") is matched by the path string instead.
+    "*PATH* (deleted)") is matched by the path string instead. When
+    *PATH* is itself a symlink (a busybox applet such as
+    **/usr/sbin/crond** -> **/bin/busybox**) only its directory is
+    resolved and the name compared, as OpenRC does: the link's target
+    is the multi-call binary every applet runs.
     Also names the binary to spawn on **--start**.
 
 **-p**, **--pidfile** *PATH*

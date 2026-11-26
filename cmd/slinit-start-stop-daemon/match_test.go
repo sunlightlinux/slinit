@@ -337,3 +337,18 @@ func TestNameLengthWarning(t *testing.T) {
 		t.Errorf("warning = %q", w)
 	}
 }
+
+// TestExecSymlinkAppletNotMatchedByInode: on busybox systems an applet
+// is a symlink to the multi-call binary (/usr/sbin/crond ->
+// /bin/busybox). --exec naming the applet must not match every other
+// process running that binary, as an inode compare would.
+func TestExecSymlinkAppletNotMatchedByInode(t *testing.T) {
+	pid, viaSbin := startCopiedSleep(t, "multicall")
+	applet := filepath.Join(t.TempDir(), "crond")
+	if err := os.Symlink(viaSbin, applet); err != nil {
+		t.Fatal(err)
+	}
+	if processMatches(pid, MatchCriteria{Exec: applet, UID: -1}) {
+		t.Errorf("--exec %s (a symlink to the running binary) matched pid %d", applet, pid)
+	}
+}

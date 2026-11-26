@@ -26,7 +26,10 @@ type MatchCriteria struct {
 	// when Exec is empty or does not exist (an upgrade removed it):
 	// matching then falls back to comparing path strings.
 	execInfo os.FileInfo
-	prepared bool
+	// execResolved is Exec with its directory resolved, set instead of
+	// execInfo when Exec is itself a symlink; matched by name.
+	execResolved string
+	prepared     bool
 }
 
 // prepare stats Exec once so a /proc scan does not re-stat it for
@@ -36,10 +39,23 @@ func (m MatchCriteria) prepare() MatchCriteria {
 		return m
 	}
 	m.prepared = true
-	if m.Exec != "" {
-		if fi, err := os.Stat(m.Exec); err == nil {
-			m.execInfo = fi
+	if m.Exec == "" {
+		return m
+	}
+	if li, err := os.Lstat(m.Exec); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		// --exec is itself a symlink: on busybox systems an applet
+		// such as /usr/sbin/crond -> /bin/busybox. Its inode is the
+		// multi-call binary every applet runs, so an inode match
+		// would take ash, getty and syslogd for crond. Resolve the
+		// directory only (which still covers merged /usr) and
+		// compare names, as OpenRC does.
+		if dir, err := filepath.EvalSymlinks(filepath.Dir(m.Exec)); err == nil {
+			m.execResolved = filepath.Join(dir, filepath.Base(m.Exec))
 		}
+		return m
+	}
+	if fi, err := os.Stat(m.Exec); err == nil {
+		m.execInfo = fi
 	}
 	return m
 }
@@ -161,7 +177,7 @@ func sameExecutable(m MatchCriteria, got, statPath string) bool {
 	if got == "" && statPath == "" {
 		return false
 	}
-	if got == m.Exec {
+	if got == m.Exec || (m.execResolved != "" && got == m.execResolved) {
 		return true
 	}
 	if m.execInfo == nil {
