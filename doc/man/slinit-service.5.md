@@ -226,12 +226,22 @@ what tells you the oldest slinit your configuration will run on. See
     a possible restart. It runs as the service's **run-as** user, or as
     root with the **+** prefix (since 4.0.3).
 
+    The exit is acted on — the service restarted, stopped or failed —
+    only once it has finished, as systemd does with *ExecStopPost=*. It
+    runs outside slinit's scheduling lock (since 4.0.3; before, every
+    other service's starts and stops waited for it), and a stop that
+    arrives while it runs waits for it too.
+
 **pre-start-command**=[**+**]*program* [*args*...]
-:   systemd-style *ExecStartPre=*: a program executed synchronously
-    before the main **command** is forked. A non-zero exit fails the
-    start. Runs after sandbox / required-paths checks but before
+:   systemd-style *ExecStartPre=*: a program executed before the main
+    **command** is forked; the fork waits for it. A non-zero exit fails
+    the start. Runs after sandbox / required-paths checks but before
     fork+exec, so a failed pre-hook never leaves a half-started
     process behind. **+=** appends arguments. Process services only.
+
+    The service is *STARTING* while it runs. A stop that arrives then
+    kills it (its process group) and the start ends there, the service
+    going *STOPPED* once the hook is gone.
 
     Like systemd's, it runs with the service's credentials: the
     **run-as** user and group and the **supplementary-groups**, the
@@ -283,9 +293,14 @@ what tells you the oldest slinit your configuration will run on. See
     that is already ready does not wait for a tick.
 
 **pre-stop-hook**=[**+**]*program* [*args*...]
-:   Hook run before the stop signal is delivered. It runs as the
-    service's **run-as** user, or as root with the **+** prefix (since
-    4.0.3).
+:   Hook run before the stop signal is delivered (or the stop-command
+    run), with the service's process ID as its last argument. It runs
+    as the service's **run-as** user, or as root with the **+** prefix
+    (since 4.0.3). The service is *STOPPING* while it runs. A start
+    asked for meanwhile waits for the stop to finish and then starts
+    the service again. If the process exits on its own while the hook
+    runs, the exit is handled when the hook has finished, and no stop
+    signal is sent.
 
 **working-dir**=*path*
 :   Working directory for the service.
@@ -475,11 +490,14 @@ service's **run-as** user.
 
     The generator runs as the service's **run-as** user (it ran as root
     before), so that user must be able to execute it. It is bounded like
-    the synchronous hooks: past **hook-timeout** its process group is
+    the other hooks: past **hook-timeout** its process group is
     killed and the start goes on without its output, and output larger
-    than 64 KiB counts as a failure. It runs while the start holds
-    slinit's scheduling lock; before these bounds a generator that hung
-    held up every other service's start and stop for as long as it hung.
+    than 64 KiB counts as a failure. It runs outside slinit's scheduling
+    lock (since 4.0.3), with the service in *STARTING*; before, it ran
+    inside it, and a generator that hung held up every other service's
+    start and stop for as long as it hung. One case still runs it
+    inside the lock: a service with an **exec-condition**, whose
+    environment is computed before its conditions are checked.
 
     It runs once per start (before **pre-start-command** when there is
     one, otherwise just before the fork). The environment computed then
@@ -767,9 +785,10 @@ error. Repeat the line for several targets.
 
     The service waits in *STARTING*, and the wait is a timer: slinit
     holds no lock during it, so other services start and stop normally.
-    Prefer it to `pre-start-command = /bin/sleep N`, which does the same
-    thing from inside the scheduling lock and stalls every other
-    service's transitions for the duration.
+    Prefer it to `pre-start-command = /bin/sleep N`, which spends a
+    process and counts against **hook-timeout**. (Before 4.0.3 that
+    hook also ran inside the scheduling lock and stalled every other
+    service's transitions for the duration.)
 
     A stop arriving during the wait cancels it; the service never
     launches. Set both this and **restart-delay** and a restart waits
@@ -789,7 +808,7 @@ error. Repeat the line for several targets.
     before it; a stop arriving during it cancels the start.
 
 **hook-timeout**=*duration*
-:   (since 3.0.5) How long each synchronous hook of a `type = process`
+:   (since 3.0.5) How long each hook of a `type = process`
     service may run: **pre-start-command**, **post-start-command**,
     **finish-command**, **pre-stop-hook** and **control-command-**\*,
     and the **env-generator**. Default five seconds. It does not bound
@@ -801,15 +820,21 @@ error. Repeat the line for several targets.
     was killed after five seconds, and for **pre-start-command** that
     fails the start outright.
 
-    Mind what the budget buys. These hooks run inside slinit's
-    scheduling lock (except **post-start-command**, which runs
-    asynchronously and only shares the timeout), so the timeout is also how long one service's hook
-    can hold up *other* services' starts and stops: with a
+    Mind what the budget buys. The service's own transition waits for
+    its hook: a pre-start-command holds it in *STARTING*, a
+    pre-stop-hook in *STOPPING*, a finish-command holds back the restart
+    or the end of the stop. Set this to the time the hook genuinely
+    needs, not to a comfortable margin.
+
+    Other services are not held up (since 4.0.3). Until then these hooks
+    ran inside slinit's scheduling lock, so the timeout was also how
+    long one service's hook could hold up every other service's starts
+    and stops, and every control request that changes state: with a
     pre-start-command that sleeps, an unrelated `slinitctl start` was
     measured waiting 4 seconds for the remainder of the 5-second
-    default. Read-only queries such as `slinitctl list` stay
-    responsive. Set this to the time the hook genuinely needs, not to a
-    comfortable margin.
+    default. A shutdown's final kill ends a hook still running, and
+    **slinitctl reload** refuses a service while one of these hooks
+    runs, naming it; retry once it has finished.
 
     A hook killed at the deadline now says so, naming the timeout —
     previously the log read only `signal: killed`, which named the
@@ -2594,6 +2619,11 @@ watch; the service remains startable via `slinitctl start`.
     (**control-command-TERM**), or from **slinitctl pause** /
     **continue** (*STOP* / *CONT*). It runs as the service's **run-as**
     user, or as root with the **+** prefix (since 4.0.3).
+
+    It runs outside slinit's scheduling lock, bounded by
+    **hook-timeout**. In a stop, the service stays *STOPPING* while it
+    runs and the stop-timeout is armed when it has finished, as it is
+    after a signal.
 
 ## VTTY (sunlight-os)
 

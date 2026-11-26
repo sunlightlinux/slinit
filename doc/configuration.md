@@ -310,7 +310,7 @@ accepted. List-valued settings accept `+=` to append.
 | `stop-timeout` | seconds | Time between `term-signal` and SIGKILL (default 10; 0 waits forever) |
 | `term-signal` | signal | Signal used for a graceful stop |
 | `runtime-max-sec` | Go duration | Hard cap on time spent *started*; the service is stopped when it is reached |
-| `pre-start-command` | [+]program [args…] | Runs before `command`; synchronous, a non-zero exit fails the start. Runs as `run-as`; a leading `+` runs it as root (systemd `ExecStartPre=+`) |
+| `pre-start-command` | [+]program [args…] | Runs before `command`, which waits for it; a non-zero exit fails the start. Runs as `run-as`; a leading `+` runs it as root (systemd `ExecStartPre=+`) |
 | `post-start-command` | [+]program [args…] | Runs right after the fork, before readiness is confirmed; asynchronous, result only logged. Runs as `run-as`, or as root with `+` |
 | `finish-command` | [+]program [args…] | Runs after the process exits, before any restart. Runs as `run-as`, or as root with `+` |
 | `pre-stop-hook` | [+]program [args…] | Runs before SIGTERM; receives the PID as an argument. Runs as `run-as`, or as root with `+` |
