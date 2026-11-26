@@ -19,7 +19,17 @@ func TestApplySchedKeepsNiceLevel(t *testing.T) {
 	}
 	defer func() { cmd.Process.Kill(); cmd.Wait() }()
 	pid := cmd.Process.Pid
-	if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, 5); err != nil {
+	// Relative to the nice we run at: unprivileged, only raising works,
+	// and a test run under `nice -n 10` would get EPERM for an absolute 5.
+	cur, err := unix.Getpriority(unix.PRIO_PROCESS, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int32(20-cur) + 4
+	if want > 19 {
+		want = 19
+	}
+	if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, int(want)); err != nil {
 		t.Fatal(err)
 	}
 	if err := applySched(pid, unix.SCHED_BATCH, 0); err != nil {
@@ -32,7 +42,7 @@ func TestApplySchedKeepsNiceLevel(t *testing.T) {
 	if attr.Policy != unix.SCHED_BATCH {
 		t.Errorf("policy %d, want SCHED_BATCH", attr.Policy)
 	}
-	if attr.Nice != 5 {
-		t.Errorf("nice %d after applySched, want 5", attr.Nice)
+	if attr.Nice != want {
+		t.Errorf("nice %d after applySched, want %d", attr.Nice, want)
 	}
 }
