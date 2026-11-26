@@ -2664,6 +2664,13 @@ func runDebugShellRespawnLoop(ttyPath string, logger *logging.Logger, stopCh <-c
 	}
 }
 
+// mountCandidates and mountAllTimeout are variables so a test can run
+// mountLocalFsBestEffort against a stand-in mount.
+var (
+	mountCandidates = []string{"/bin/mount", "/usr/bin/mount", "/sbin/mount"}
+	mountAllTimeout = 30 * time.Second
+)
+
 // mountLocalFsBestEffort runs `mount -a` to bring up /etc/fstab entries
 // before dropping into a rescue shell. Called for Rescue mode only —
 // Emergency skips this so a broken fstab / hanging network mount can't
@@ -2674,9 +2681,8 @@ func runDebugShellRespawnLoop(ttyPath string, logger *logging.Logger, stopCh <-c
 // unreachable NFS or iSCSI target; the shell comes up regardless. Skip
 // silently when mount(8) isn't installed (minimal container image).
 func mountLocalFsBestEffort(logger *logging.Logger) {
-	candidates := []string{"/bin/mount", "/usr/bin/mount", "/sbin/mount"}
 	var mount string
-	for _, p := range candidates {
+	for _, p := range mountCandidates {
 		if _, err := os.Stat(p); err == nil {
 			mount = p
 			break
@@ -2686,10 +2692,15 @@ func mountLocalFsBestEffort(logger *logging.Logger) {
 		logger.Warn("bootmode=rescue: no mount(8) found; skipping local-fs mount")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), mountAllTimeout)
 	defer cancel()
-	logger.Notice("bootmode=rescue: running %s -a (30s timeout)", mount)
+	logger.Notice("bootmode=rescue: running %s -a (%v timeout)", mount, mountAllTimeout)
 	cmd := exec.CommandContext(ctx, mount, "-a")
+	// The timeout kills mount itself, but a helper it forked (a
+	// mount.nfs stuck on an unreachable server) still holds the
+	// output pipe, and CombinedOutput would wait for that pipe for
+	// ever. WaitDelay gives up on it.
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
 	if err != nil {

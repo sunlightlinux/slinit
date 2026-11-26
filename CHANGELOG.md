@@ -154,6 +154,12 @@ verified with `git tag -v`.
   behind (a setsid'd child, a daemonised helper) holds that pipe open.
   Nothing read the new pipe: `slinitctl catlog` never showed the new
   run, and once 64 KiB were written the service hung in `write(1)`.
+- **Rescue mode could hang before the shell on a mount that never
+  finishes.** `mount -a` runs with a 30 s timeout so that an unreachable
+  NFS server cannot keep the operator out, but the timeout killed only
+  `mount`: a helper it had forked (`mount.nfs`) still held its output
+  pipe, and slinit waited for that pipe for ever. It now gives up on the
+  output 2 s after the timeout and starts the shell.
 
 - **A FIFO named in `required-files` froze PID 1**: the readability check
   opened it and waited for a writer with the service set's lock held.
