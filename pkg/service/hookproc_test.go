@@ -242,28 +242,61 @@ func TestReadyCheckKilledWhenTheWatchEnds(t *testing.T) {
 	}
 }
 
-// One ready-check attempt that hung was the last: the watch waited on it
-// and never polled again. Each attempt is now bounded by hook-timeout.
-func TestReadyCheckAttemptBounded(t *testing.T) {
+// hook-timeout cut each ready-check attempt short, so a check that
+// legitimately takes longer than it (pg_isready -t 10) never passed. An
+// attempt now runs until the start would time out.
+func TestReadyCheckAttemptNotCutAtHookTimeout(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "rcslow")
+	s.SetHookTimeout(200 * time.Millisecond)
+	s.SetReadyCheckCommand([]string{"/bin/sh", "-c", "sleep 1"}, 50*time.Millisecond)
+	s.SetStartTimeout(10 * time.Second)
+	s.SetCommand([]string{"/bin/sleep", "30"})
+	set.AddService(s)
+	set.StartService(s)
+	if st := waitState(t, s, StateStarted, 5*time.Second); st != StateStarted {
+		t.Errorf("state %v: a 1s ready-check was cut at a 200ms hook-timeout", st)
+	}
+	set.StopService(s)
+	waitState(t, s, StateStopped, 5*time.Second)
+}
+
+// The case from the report, at the defaults: a 6s check (past the 5s
+// default hook-timeout) with start-timeout 20s passes.
+func TestReadyCheckSlowerThanDefaultHookTimeoutPasses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("takes 6s")
+	}
+	set, _ := newTestSet()
+	s := NewProcessService(set, "rcslow6")
+	s.SetReadyCheckCommand([]string{"/bin/sh", "-c", "sleep 6"}, time.Second)
+	s.SetStartTimeout(20 * time.Second)
+	s.SetCommand([]string{"/bin/sleep", "30"})
+	set.AddService(s)
+	set.StartService(s)
+	if st := waitState(t, s, StateStarted, 12*time.Second); st != StateStarted {
+		t.Errorf("state %v: a 6s ready-check with start-timeout 20s did not pass", st)
+	}
+	set.StopService(s)
+	waitState(t, s, StateStopped, 5*time.Second)
+}
+
+// An attempt that hangs is still bounded: by the start-timeout, with
+// hook-timeout far beyond it and no stop coming, its process group is
+// killed when the start times out.
+func TestReadyCheckAttemptBoundedByStartTimeout(t *testing.T) {
 	set, _ := newTestSet()
 	s := NewProcessService(set, "rcbound")
-	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "pid")
-	mark := filepath.Join(dir, "tried")
-	s.SetHookTimeout(300 * time.Millisecond)
-	// The first attempt hangs; any later one passes.
-	s.SetReadyCheckCommand([]string{"/bin/sh", "-c",
-		"test -e " + mark + " && exit 0; touch " + mark + "; " + backgroundedSleep(pidFile, "44.7")[2]},
-		50*time.Millisecond)
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	s.SetHookTimeout(time.Minute)
+	s.SetReadyCheckCommand(backgroundedSleep(pidFile, "44.7"), 50*time.Millisecond)
+	s.SetStartTimeout(700 * time.Millisecond)
 	s.SetCommand([]string{"/bin/sleep", "30"})
 	set.AddService(s)
 	set.StartService(s)
 	pid := pidFromFile(t, pidFile)
-	if st := waitState(t, s, StateStarted, 3*time.Second); st != StateStarted {
-		t.Errorf("state %v: a hung ready-check attempt blocked the later ones", st)
-	}
-	if !processGone(pid, 2*time.Second) {
-		t.Errorf("the timed-out ready-check attempt (pid %d) is still running", pid)
+	if !processGone(pid, 4*time.Second) {
+		t.Errorf("the hung ready-check attempt (pid %d) outlived the start-timeout", pid)
 	}
 	set.StopService(s)
 	waitState(t, s, StateStopped, 5*time.Second)

@@ -2898,7 +2898,7 @@ func (s *ProcessService) startProcess() error {
 	} else if len(s.readyCheckCommand) > 0 {
 		// Ready-check-command: poll external command until it succeeds
 		s.readyCh = make(chan bool, 1)
-		go s.watchReadyCheck(s.readyCh, s.doneCh)
+		go s.watchReadyCheck(s.readyCh, s.doneCh, s.startTimeout)
 		go s.monitorProcess(exitCh)
 
 		if s.startTimeout > 0 {
@@ -3695,7 +3695,12 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 //
 // ch and done are passed in rather than read from s, for the reason given
 // at watchReadyPipe.
-func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
+//
+// startTimeout is the start-timeout armed with the watch (read by the
+// caller, which holds the lock a reload changes it under). An attempt
+// may run until the start would time out; zero leaves only the end of
+// the watch to end it.
+func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}, startTimeout time.Duration) {
 	interval := s.readyCheckInterval
 	if interval <= 0 {
 		interval = defaultReadyCheckInterval
@@ -3705,8 +3710,14 @@ func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
 	// the process exits or the service is stopped, done closes and the
 	// check's process group is killed. Before, a check that hung kept
 	// running after the service had failed or stopped, and each restart
-	// added another.
+	// added another. The deadline is the start-timeout's own, so an
+	// attempt is never cut short of it: hook-timeout bounded each attempt
+	// for a while, and a check that legitimately takes longer than five
+	// seconds (pg_isready -t 10) never passed.
 	ctx, cancel := context.WithCancel(context.Background())
+	if startTimeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), startTimeout)
+	}
 	defer cancel()
 	go func() {
 		select {
@@ -3748,14 +3759,11 @@ func (s *ProcessService) runReadyCheckOnce() bool {
 	return s.runReadyCheck(context.Background())
 }
 
-// runReadyCheck runs one ready-check attempt, ended by parent or by
-// hook-timeout, whichever comes first, with its process group killed.
-// The immediate first check and the polling loop share it. Without a
-// bound, one check that hung was the last: the watch waited on it and
-// never polled again.
-func (s *ProcessService) runReadyCheck(parent context.Context) bool {
-	ctx, cancel := context.WithTimeout(parent, s.effectiveHookTimeout())
-	defer cancel()
+// runReadyCheck runs one ready-check attempt, ended by ctx (the end of
+// the watch or the start-timeout's deadline) with its process group
+// killed. The immediate first check and the polling loop share it.
+// hook-timeout does not bound it: a slow check is still a check.
+func (s *ProcessService) runReadyCheck(ctx context.Context) bool {
 	cmd := newHookCmd(ctx, s.readyCheckCommand)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.hookEnv()

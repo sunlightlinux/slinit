@@ -246,12 +246,14 @@ what tells you the oldest slinit your configuration will run on. See
 :   A program polled until it exits 0; the service is considered
     started only when the check passes.
 
-    Each attempt may run for **hook-timeout**; one that runs longer has
-    its process group killed and counts as not ready, and the polling
-    goes on. A check under way is likewise killed when the wait for
-    readiness ends — the start timing out, the process exiting, the
-    service being stopped. Before, a check that hung was never polled
-    again and outlived the service, one more with each restart.
+    **hook-timeout** does not apply to it: an attempt may run until the
+    start would time out (**start-timeout**), so a check that
+    legitimately takes a while, such as `pg_isready -t 10`, still
+    passes. A check under way is killed (its process group) when the
+    wait for readiness ends — the start timing out, the process
+    exiting, the service being stopped. With **start-timeout** *0* only
+    those end it. Before, a check that hung was never polled again and
+    outlived the service, one more with each restart.
 
 **ready-check-interval**=*duration*
 :   How often to retry **ready-check-command**, with a unit (*500ms*,
@@ -736,7 +738,9 @@ error. Repeat the line for several targets.
 :   (since 3.0.5) How long each synchronous hook of a `type = process`
     service may run: **pre-start-command**, **post-start-command**,
     **finish-command**, **pre-stop-hook** and **control-command-**\*,
-    and the **env-generator**. Default five seconds.
+    and the **env-generator**. Default five seconds. It does not bound
+    **ready-check-command**, whose attempts are bounded by
+    **start-timeout** instead.
 
     Raise it for a hook that legitimately waits on something — a mount
     appearing, a socket starting to accept. At the default, such a hook
