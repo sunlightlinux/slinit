@@ -33,6 +33,11 @@ requires.
 
 ### Security
 
+- **systemd units: a commented-out line inside a `\` continuation was
+  executed as arguments** (`ExecStart=/usr/bin/foo \` /
+  `#  --insecure \` / `--bar` ran foo with `#` and `--insecure`). Comment
+  lines are now skipped inside a continuation, as systemd does. This
+  affects units loaded directly as well as `slinit-systemd-convert`.
 - **The converters and slinit-init-maker wrote through symlinks**:
   run as root into `/etc/slinit.d`, a planted `NAME -> ../victim` (or,
   for init-maker, a planted `NAME.tmp`) made them rewrite a file outside
@@ -740,6 +745,9 @@ requires.
 
 ### Changed
 
+- **`""` in a `command` (and the other command settings) is now an empty
+  argument**, as in dinit, instead of nothing. *Compat:* a service file
+  that wrote `""` expecting it to vanish now passes an empty argument.
 - **An interrupted or timed-out start could hang for good, and failures
   were reported two or three times.** A stop arriving while a process or
   bgprocess service was STARTING sent SIGINT and left the service
@@ -986,6 +994,21 @@ requires.
 
 ### Fixed
 
+- **systemd units translated Exec lines and timeouts wrongly**:
+  - `TimeoutStartSec=`/`TimeoutSec=` were ignored, so every unit got a
+    60 s start timeout and a long `Type=oneshot` was interrupted;
+    a oneshot now has none by default, as in systemd;
+  - Exec words were split by slinit's rules: `""` vanished, C escapes
+    were lost and `;` between commands became an argument; they are now
+    split as systemd's `extract_first_word` does and written back so the
+    argv is exact;
+  - the `-` (ignore failure), `:` (no expansion) and `|` (shell) prefixes
+    were dropped with a hidden note; `-` and `:` are honoured where slinit
+    can express them, `|` runs through `/bin/sh -c`, and the rest warn;
+  - a unit with `User=` and `ExecStartPre=`/`ExecStartPost=` now warns
+    that slinit runs those hooks as root.
+- **`pre-start-command`/`post-start-command` on a non-process service
+  were ignored silently**; loading one now warns.
 - **slinit-openrc-convert produced services that lost arguments or did
   not load**:
   - a `command_args` built from shell variables or set inside `if`/`case`
