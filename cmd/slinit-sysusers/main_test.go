@@ -239,8 +239,9 @@ func runConfs(t *testing.T, confs map[string]string) (int, []string, string) {
 			t.Fatal(err)
 		}
 	}
-	oldP, oldG, oldL, oldR := passwdFile, groupFile, lookPath, runCmd
-	t.Cleanup(func() { passwdFile, groupFile, lookPath, runCmd = oldP, oldG, oldL, oldR })
+	oldP, oldG, oldL, oldR, oldN := passwdFile, groupFile, lookPath, runCmd, nssLookup
+	t.Cleanup(func() { passwdFile, groupFile, lookPath, runCmd, nssLookup = oldP, oldG, oldL, oldR, oldN })
+	nssLookup = func(db, name string) bool { return nssAccounts[db+":"+name] }
 	passwdFile = filepath.Join(root, "passwd")
 	groupFile = filepath.Join(root, "group")
 	for _, f := range []string{passwdFile, groupFile} {
@@ -363,5 +364,25 @@ func TestFailuresStillCounted(t *testing.T) {
 		if !strings.Contains(stderr, w) {
 			t.Errorf("stderr lacks %q:\n%s", w, stderr)
 		}
+	}
+}
+
+// nssAccounts are the accounts the stubbed name service knows beyond
+// the scratch files, as "passwd:NAME" / "group:NAME".
+var nssAccounts = map[string]bool{}
+
+// TestMemberOfNSSOnlyUser: an m line for a user and a group that exist
+// only through NSS (LDAP, sssd) creates neither locally; a local
+// system account would shadow the network one.
+func TestMemberOfNSSOnlyUser(t *testing.T) {
+	nssAccounts = map[string]bool{"passwd:alice": true, "group:ldapgrp": true}
+	t.Cleanup(func() { nssAccounts = map[string]bool{} })
+	// The fake gpasswd only knows the scratch files, so it refuses
+	// the membership; what matters is that nothing was created.
+	_, cmds, _ := runConfs(t, map[string]string{
+		"x.conf": "m alice ldapgrp\n",
+	})
+	if want := "gpasswd -a alice ldapgrp"; strings.Join(cmds, "\n") != want {
+		t.Errorf("commands:\n got %q\nwant %q", cmds, []string{want})
 	}
 }

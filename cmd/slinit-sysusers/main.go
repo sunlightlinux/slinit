@@ -435,23 +435,30 @@ var (
 	}
 )
 
-func userExists(name string) bool {
-	f, err := os.Open(passwdFile)
+// nssLookup asks the name service switch (getent) whether db
+// ("passwd" or "group") knows name. systemd-sysusers checks through
+// NSS too: an account that lives in LDAP, sssd or userdb exists even
+// though /etc/passwd does not list it, and creating a local system
+// account of the same name would shadow it. A system without getent
+// falls back to the files alone.
+var nssLookup = func(db, name string) bool {
+	bin, err := exec.LookPath("getent")
 	if err != nil {
 		return false
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if idx := strings.IndexByte(sc.Text(), ':'); idx > 0 && sc.Text()[:idx] == name {
-			return true
-		}
-	}
-	return false
+	return exec.Command(bin, db, name).Run() == nil
+}
+
+func userExists(name string) bool {
+	return fileHasName(passwdFile, name) || nssLookup("passwd", name)
 }
 
 func groupExists(name string) bool {
-	f, err := os.Open(groupFile)
+	return fileHasName(groupFile, name) || nssLookup("group", name)
+}
+
+func fileHasName(path, name string) bool {
+	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
