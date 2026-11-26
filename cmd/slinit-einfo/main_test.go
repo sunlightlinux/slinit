@@ -212,10 +212,21 @@ func TestDispatchUnknownApplet(t *testing.T) {
 
 func TestParseSyslogPriorityFormats(t *testing.T) {
 	cases := map[string]syslog.Priority{
-		"info":         syslog.LOG_INFO | syslog.LOG_USER,
+		// OpenRC einfo.c / logger(1) -p order: FACILITY.LEVEL.
+		"daemon.notice": syslog.LOG_NOTICE | syslog.LOG_DAEMON,
+		"user.info":     syslog.LOG_INFO | syslog.LOG_USER,
+		"local0.err":    syslog.LOG_ERR | syslog.LOG_LOCAL0,
+		"AUTH.Warning":  syslog.LOG_WARNING | syslog.LOG_AUTH,
+		"authpriv.crit": syslog.LOG_CRIT | syslog.LOG_AUTHPRIV,
+		"daemon.3":      syslog.LOG_ERR | syslog.LOG_DAEMON,
+		// The LEVEL.FACILITY order slinit used to require still works.
 		"info.daemon":  syslog.LOG_INFO | syslog.LOG_DAEMON,
 		"err.local0":   syslog.LOG_ERR | syslog.LOG_LOCAL0,
 		"warning.mail": syslog.LOG_WARNING | syslog.LOG_MAIL,
+		// Bare level: facility user.
+		"info": syslog.LOG_INFO | syslog.LOG_USER,
+		// Numeric form: the whole priority.
+		"13": 13,
 	}
 	for spec, want := range cases {
 		got, err := parseSyslogPriority(spec)
@@ -227,15 +238,10 @@ func TestParseSyslogPriorityFormats(t *testing.T) {
 			t.Errorf("%q: got %d, want %d", spec, got, want)
 		}
 	}
-	if _, err := parseSyslogPriority("bogus"); err == nil {
-		t.Errorf("expected error for bogus severity")
-	}
-	if _, err := parseSyslogPriority("info.bogus"); err == nil {
-		t.Errorf("expected error for bogus facility")
-	}
-	// Numeric form.
-	if p, err := parseSyslogPriority("13"); err != nil || p != 13 {
-		t.Errorf("numeric: got %d %v", p, err)
+	for _, bad := range []string{"bogus", "info.bogus", "daemon.bogus", "daemon.8", "bogus.info", "daemon.user", "info.notice", "."} {
+		if _, err := parseSyslogPriority(bad); err == nil {
+			t.Errorf("%q: expected an error", bad)
+		}
 	}
 }
 
