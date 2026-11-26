@@ -1193,22 +1193,35 @@ const (
 //
 // Returns ("", "") when every predicate passes or none are configured.
 func (sr *ServiceRecord) CheckPredicates() (PredicateOutcome, string) {
+	// The caller (BringUp) holds queueMu, as prepareHookCmdLocked wants.
+	hp, _ := sr.self.(hookCmdPreparer)
+	prep := prepareExecCondition(hp)
+	res := make([]predResult, len(sr.predicates))
+	for i, p := range sr.predicates {
+		if p.Kind == PredServiceStarted {
+			res[i].ok, res[i].why = sr.checkServiceStarted(p)
+		} else {
+			res[i].ok, res[i].why = p.evaluateWith(prep)
+		}
+	}
+	return combinePredicates(sr.predicates, res)
+}
+
+// predResult is one predicate's answer.
+type predResult struct {
+	ok  bool
+	why string
+}
+
+// combinePredicates is CheckPredicates' verdict from the answers res to
+// preds, one for one.
+func combinePredicates(preds []Predicate, res []predResult) (PredicateOutcome, string) {
 	var (
 		firstSkipReason string
 		failReason      string
 	)
-	for _, p := range sr.predicates {
-		var (
-			ok  bool
-			why string
-		)
-		if p.Kind == PredServiceStarted {
-			ok, why = sr.checkServiceStarted(p)
-		} else {
-			// The caller (BringUp) holds queueMu, as prepareHookCmdLocked wants.
-			hp, _ := sr.self.(hookCmdPreparer)
-			ok, why = p.evaluateWith(prepareExecCondition(hp))
-		}
+	for i, p := range preds {
+		ok, why := res[i].ok, res[i].why
 		if ok {
 			continue
 		}

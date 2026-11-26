@@ -1733,14 +1733,14 @@ func (s *ProcessService) BringUp() bool {
 	// process so dependents see a satisfied dep.
 	//
 	// An environment kept for a fork that never came (an earlier start
-	// that failed before it) is not this start's. An exec-condition runs
-	// with the start's environment, so with an env-generator that is
-	// computed now, once, and the pre-start-command and the fork reuse
-	// it: the generator ran once for the condition and again for the
-	// start.
+	// that failed before it) is not this start's.
 	s.discardStartEnv()
-	if s.envGenerator != "" && s.hasExecCondition() {
-		s.prepareStartEnv()
+	// An exec-condition runs a command, for up to execConditionTimeout:
+	// the predicates are then evaluated off the lock, as a state hook
+	// (execConditionDoneLocked carries the start on).
+	if s.hasExecCondition() {
+		s.startExecConditionLocked()
+		return true
 	}
 	switch outcome, reason := s.CheckPredicates(); outcome {
 	case PredFailed:
@@ -1751,7 +1751,101 @@ func (s *ProcessService) BringUp() bool {
 		s.markSkippedStartReason(reason)
 		return true
 	}
+	return s.bringUpCheckedLocked()
+}
 
+// startExecConditionLocked evaluates the start's predicates, one of
+// them an exec-condition, off the lock: the service stays STARTING
+// meanwhile, and a stop ends the evaluation, killing the command. An
+// exec-condition runs with the start's environment, so with an
+// env-generator that is computed first, once, and the pre-start-command
+// and the fork reuse it. A service-started predicate asks about the
+// service set and is answered under the lock, by the completion; the
+// verdict is the one CheckPredicates gives (combinePredicates). Caller
+// holds queueMu.
+func (s *ProcessService) startExecConditionLocked() {
+	preds := s.predicates
+	res := make([]predResult, len(preds))
+	envGen := s.envGenerator != ""
+	// Reads the service's settings when the command is prepared, off
+	// the lock: a reload refuses to change them while a state hook
+	// runs (RunningStateHook).
+	prep := prepareExecCondition(s)
+	s.startStateHookLocked(hookExecCondition,
+		func(ctx context.Context) func() error {
+			return func() error {
+				if envGen {
+					s.prepareStartEnvCtx(ctx)
+				}
+				for i, p := range preds {
+					if ctx.Err() != nil {
+						break
+					}
+					if p.Kind != PredServiceStarted {
+						res[i].ok, res[i].why = p.evaluateCtx(ctx, prep)
+					}
+				}
+				return ctx.Err()
+			}
+		},
+		func(_ error, cancelled bool) {
+			s.execConditionDoneLocked(preds, res, cancelled)
+		})
+}
+
+// execConditionDoneLocked carries a start on once its predicates have
+// been evaluated (startExecConditionLocked): as BringUp did when it
+// evaluated them itself. Caller holds queueMu.
+func (s *ProcessService) execConditionDoneLocked(preds []Predicate, res []predResult, cancelled bool) {
+	switch s.state.Load() {
+	case StateStarting:
+	case StateStopping:
+		// A stop came while the predicates were evaluated, and ended
+		// that: the start ends here, and the stop, which waited for
+		// the hook, goes on.
+		s.discardStartEnv()
+		s.services.AddTransitionQueue(s)
+		return
+	default:
+		s.discardStartEnv()
+		return
+	}
+	if cancelled {
+		// Cancelled with no stop asked for: the shutdown's final kill.
+		s.services.logger.Error("Service '%s': exec-condition ended", s.serviceName)
+		s.discardStartEnv()
+		s.state.Store(StateStopping)
+		s.failedToStart(false, true)
+		return
+	}
+	for i, p := range preds {
+		if p.Kind == PredServiceStarted {
+			res[i].ok, res[i].why = s.checkServiceStarted(p)
+		}
+	}
+	switch outcome, reason := combinePredicates(preds, res); outcome {
+	case PredFailed:
+		s.services.logger.Error("Service '%s': %s", s.serviceName, reason)
+		s.state.Store(StateStopping)
+		s.failedToStart(false, true)
+		return
+	case PredSkip:
+		s.services.logger.Info("Service '%s': skipped (%s)", s.serviceName, reason)
+		s.markSkippedStartReason(reason)
+		return
+	}
+	if !s.bringUpCheckedLocked() {
+		// As callBringUp does for a BringUp that fails.
+		s.state.Store(StateStopping)
+		s.failedToStart(false, true)
+	}
+}
+
+// bringUpCheckedLocked is the rest of BringUp once the start's
+// predicates have passed: required paths, the activation socket, the
+// pre-start-command and the launch. False means the start failed.
+// Caller holds queueMu.
+func (s *ProcessService) bringUpCheckedLocked() bool {
 	// Fail-fast pre-start check: required_files / required_dirs must exist
 	// before we even attempt fork/exec. Produces a clear error instead of
 	// a cryptic ENOENT crash from the child.
@@ -1794,7 +1888,7 @@ func (s *ProcessService) BringUp() bool {
 	// there too, so the pre-start-command sees what the main process
 	// will get and startProcess uses it rather than running the
 	// generator under the lock. An exec-condition may have computed it
-	// already.
+	// already (startExecConditionLocked).
 	if len(s.preStartCommand) > 0 || s.envGenerator != "" {
 		argv := s.preStartCommand
 		cred := s.hookCredential(s.privHooks.PreStart)

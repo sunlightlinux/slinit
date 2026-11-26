@@ -265,7 +265,15 @@ func (p Predicate) Evaluate() (bool, string) {
 // command before it runs: the service's run-as, working directory and
 // environment (see prepareExecCondition). Nil runs it as slinit.
 func (p Predicate) evaluateWith(prep func(*exec.Cmd)) (bool, string) {
-	raw, reason := evalRaw(p, prep)
+	return p.evaluateCtx(context.Background(), prep)
+}
+
+// evaluateCtx is evaluateWith with an exec-condition that ctx can end
+// early. With a ctx that can end, the command gets a process group of
+// its own, which ending it kills (setHookProcessGroup), as the state
+// hooks' commands do.
+func (p Predicate) evaluateCtx(ctx context.Context, prep func(*exec.Cmd)) (bool, string) {
+	raw, reason := evalRaw(ctx, p, prep)
 	if p.Negate {
 		if raw {
 			return false, fmt.Sprintf("%s is true (negated)", p.String())
@@ -278,7 +286,7 @@ func (p Predicate) evaluateWith(prep func(*exec.Cmd)) (bool, string) {
 	return true, ""
 }
 
-func evalRaw(p Predicate, prep func(*exec.Cmd)) (bool, string) {
+func evalRaw(ctx context.Context, p Predicate, prep func(*exec.Cmd)) (bool, string) {
 	switch p.Kind {
 	case PredPathExists:
 		if _, err := os.Stat(p.Param); err != nil {
@@ -390,7 +398,7 @@ func evalRaw(p Predicate, prep func(*exec.Cmd)) (bool, string) {
 			// not its run-as user.
 			prep = withoutCredential(prep)
 		}
-		return checkExecConditionWith(p.Param, prep)
+		return checkExecConditionCtx(ctx, p.Param, prep)
 	case PredBootCond:
 		return checkBootCond(p.Param)
 	case PredFileValue:
@@ -465,16 +473,29 @@ func withoutCredential(prep func(*exec.Cmd)) func(*exec.Cmd) {
 }
 
 func checkExecConditionWith(cmdline string, prep func(*exec.Cmd)) (bool, string) {
+	return checkExecConditionCtx(context.Background(), cmdline, prep)
+}
+
+// checkExecConditionCtx is checkExecConditionWith ended early by parent.
+// A parent that can end (one a state hook runs it with) puts the command
+// in a process group of its own, so ending it ends what it started.
+func checkExecConditionCtx(parent context.Context, cmdline string, prep func(*exec.Cmd)) (bool, string) {
 	if strings.TrimSpace(cmdline) == "" {
 		return false, "exec-condition: empty command"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), execConditionTimeout)
+	ctx, cancel := context.WithTimeout(parent, execConditionTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdline)
 	if prep != nil {
 		prep(cmd)
 	}
+	if parent.Done() != nil {
+		setHookProcessGroup(cmd)
+	}
 	if err := process.RunAdhoc(cmd); err != nil {
+		if parent.Err() != nil {
+			return false, fmt.Sprintf("exec-condition %q: ended: %v", cmdline, parent.Err())
+		}
 		if ctx.Err() == context.DeadlineExceeded {
 			return false, fmt.Sprintf("exec-condition %q timed out after %s", cmdline, execConditionTimeout)
 		}

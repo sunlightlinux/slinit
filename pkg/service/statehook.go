@@ -6,9 +6,10 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
-// The hooks a transition waits on — pre-start-command (and the start's
-// env-generator run), pre-stop-hook, the control-command that stands in
-// for a stop signal, and finish-command — ran synchronously inside
+// The hooks a transition waits on — exec-condition (the start's
+// predicates), pre-start-command (and the start's env-generator run),
+// pre-stop-hook, the control-command that stands in for a stop signal,
+// and finish-command — ran synchronously inside
 // BringUp, BringDown and the exit handler, all of which hold queueMu.
 // For as long as one ran, up to hook-timeout, every other service's
 // transitions and every control-socket request that takes the lock
@@ -52,17 +53,18 @@ import (
 type hookKind uint8
 
 const (
-	hookPreStart    hookKind = iota + 1 // env-generator and pre-start-command
-	hookPreStop                         // pre-stop-hook
-	hookStopControl                     // control-command-<SIG> in place of the stop signal
-	hookFinish                          // finish-command
-	hookEnvGen                          // env-generator of a smooth recovery
+	hookPreStart      hookKind = iota + 1 // env-generator and pre-start-command
+	hookPreStop                           // pre-stop-hook
+	hookStopControl                       // control-command-<SIG> in place of the stop signal
+	hookFinish                            // finish-command
+	hookEnvGen                            // env-generator of a smooth recovery
+	hookExecCondition                     // the start's predicates, with an exec-condition among them
 )
 
 // endsWithStop reports whether a stop ends the hook rather than waiting
 // for it: one that prepares a launch the stop has called off.
 func (k hookKind) endsWithStop() bool {
-	return k == hookPreStart || k == hookEnvGen
+	return k == hookPreStart || k == hookEnvGen || k == hookExecCondition
 }
 
 // parksExit reports whether a main-process exit during the hook waits
@@ -84,6 +86,8 @@ func (k hookKind) String() string {
 		return "finish-command"
 	case hookEnvGen:
 		return "env-generator"
+	case hookExecCondition:
+		return "exec-condition"
 	}
 	return "hook"
 }
