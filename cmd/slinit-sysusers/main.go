@@ -10,6 +10,11 @@
 //	m Name Group                     add user to group
 //	r -    Range                     range reservation (informational, no-op)
 //
+// As systemd-sysusers does, every file is read before anything is
+// created; then all groups are created, then all users, then all
+// memberships, so a line may name a group or user declared later.
+// An m line whose user or group nobody declares creates it.
+//
 // Delegates the actual work to shadow-utils (useradd / groupadd /
 // gpasswd) so /etc/passwd + /etc/group + /etc/shadow locking is
 // handled correctly. Errors when those tools are absent — matches
@@ -20,6 +25,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +50,7 @@ type entry struct {
 	home    string
 	shell   string
 	arg     string // for m: group name; for r: range
+	src     string // file:line it came from, for messages
 }
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -67,7 +74,14 @@ func main() {
 	if dirsFlag != "" {
 		dirs = strings.Split(dirsFlag, ",")
 	}
+	os.Exit(run(dirs, *dryRun, os.Stdout, os.Stderr))
+}
 
+// run reads every file first and only then touches the account
+// database, in the order systemd-sysusers uses: all groups, then all
+// users, then all memberships. A line may therefore refer to a group
+// or user declared later in the same file or in a later file.
+func run(dirs []string, dryRun bool, stdout, stderr io.Writer) int {
 	confs := collect(dirs)
 	names := make([]string, 0, len(confs))
 	for n := range confs {
@@ -76,33 +90,145 @@ func main() {
 	sort.Strings(names)
 
 	var applied, failed int
+	p := newPlan()
 	for _, name := range names {
 		file := confs[name]
 		entries, err := parseFile(file)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "slinit-sysusers: parse %s: %v\n", file, err)
+			fmt.Fprintf(stderr, "slinit-sysusers: parse %s: %v\n", file, err)
 			failed++
 			continue
 		}
 		for _, e := range entries {
-			if *dryRun {
-				fmt.Printf("would %s %s\n", e.kind, e.name)
-				continue
-			}
-			if err := apply(e); err != nil {
-				fmt.Fprintf(os.Stderr, "slinit-sysusers: %s %s: %v\n", e.kind, e.name, err)
-				failed++
-				continue
-			}
-			applied++
+			p.add(e, stderr)
 		}
 	}
-	if !*dryRun {
-		fmt.Fprintf(os.Stderr, "slinit-sysusers: %d applied, %d failed\n", applied, failed)
+	p.addImplicit()
+
+	for _, e := range p.ordered() {
+		if dryRun {
+			fmt.Fprintf(stdout, "would %s %s\n", e.kind, e.name)
+			continue
+		}
+		if err := apply(e); err != nil {
+			fmt.Fprintf(stderr, "slinit-sysusers: %s %s: %v\n", e.kind, e.name, err)
+			failed++
+			continue
+		}
+		applied++
+	}
+	if !dryRun {
+		fmt.Fprintf(stderr, "slinit-sysusers: %d applied, %d failed\n", applied, failed)
 	}
 	if failed > 0 {
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+// plan is the merged content of every file, split by directive type
+// as systemd-sysusers keeps it: one user and one group per name (the
+// first declaration wins), one membership per user/group pair.
+type plan struct {
+	ranges, groups, users, members, other []entry
+	groupIdx, userIdx                     map[string]int
+	memberSeen                            map[[2]string]bool
+}
+
+func newPlan() *plan {
+	return &plan{
+		groupIdx:   make(map[string]int),
+		userIdx:    make(map[string]int),
+		memberSeen: make(map[[2]string]bool),
+	}
+}
+
+func (p *plan) add(e entry, warn io.Writer) {
+	switch e.kind {
+	case "u", "g":
+		list, idx, what := &p.users, p.userIdx, "user"
+		if e.kind == "g" {
+			list, idx, what = &p.groups, p.groupIdx, "group"
+		}
+		if i, ok := idx[e.name]; ok {
+			// Identical lines are fine; a different one loses to the
+			// first, with a warning (systemd-sysusers does the same).
+			if prev := (*list)[i]; !sameEntry(prev, e) {
+				fmt.Fprintf(warn, "slinit-sysusers: %s: conflict with earlier configuration for %s '%s' in %s, ignoring line\n",
+					e.src, what, e.name, prev.src)
+			}
+			return
+		}
+		idx[e.name] = len(*list)
+		*list = append(*list, e)
+	case "m":
+		key := [2]string{e.name, e.arg}
+		if p.memberSeen[key] {
+			return
+		}
+		p.memberSeen[key] = true
+		p.members = append(p.members, e)
+	case "r":
+		p.ranges = append(p.ranges, e)
+	default:
+		p.other = append(p.other, e)
+	}
+}
+
+// sameEntry compares two declarations ignoring where they came from.
+func sameEntry(a, b entry) bool {
+	a.src, b.src = "", ""
+	return a == b
+}
+
+// addImplicit declares the users and groups that m lines name but no
+// u or g line does, as systemd-sysusers' add_implicit() does. A group
+// named by a u line is not added: useradd creates it with the user.
+func (p *plan) addImplicit() {
+	for _, m := range p.members {
+		if _, ok := p.userIdx[m.name]; !ok {
+			p.add(entry{kind: "u", name: m.name, src: m.src}, io.Discard)
+		}
+		if m.arg == "" {
+			continue
+		}
+		_, isUser := p.userIdx[m.arg]
+		_, isGroup := p.groupIdx[m.arg]
+		if !isUser && !isGroup {
+			p.add(entry{kind: "g", name: m.arg, src: m.src}, io.Discard)
+		}
+	}
+}
+
+// ordered returns the entries in application order: ranges, groups,
+// users, memberships, then lines of an unknown type (which fail).
+// A user whose primary group is another user's group (u foo -:bar
+// with u bar but no g bar) comes after that user, whose useradd
+// creates the group.
+func (p *plan) ordered() []entry {
+	out := make([]entry, 0, len(p.ranges)+len(p.groups)+len(p.users)+len(p.members)+len(p.other))
+	out = append(out, p.ranges...)
+	out = append(out, p.groups...)
+	done := make([]bool, len(p.users))
+	var visit func(i int)
+	visit = func(i int) {
+		if done[i] {
+			return
+		}
+		done[i] = true
+		u := p.users[i]
+		if _, isGroup := p.groupIdx[u.gid]; !isGroup && u.gid != "" {
+			if j, ok := p.userIdx[u.gid]; ok {
+				visit(j)
+			}
+		}
+		out = append(out, u)
+	}
+	for i := range p.users {
+		visit(i)
+	}
+	out = append(out, p.members...)
+	return append(out, p.other...)
 }
 
 func collect(dirs []string) map[string]string {
@@ -141,6 +267,7 @@ func parseFile(path string) ([]entry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineno, err)
 		}
+		e.src = fmt.Sprintf("%s:%d", path, lineno)
 		out = append(out, e)
 	}
 	return out, sc.Err()
@@ -231,7 +358,7 @@ func applyUser(e entry) error {
 	if userExists(e.name) {
 		return nil
 	}
-	if _, err := exec.LookPath("useradd"); err != nil {
+	if _, err := lookPath("useradd"); err != nil {
 		return fmt.Errorf("useradd(8) not in PATH — shadow-utils required")
 	}
 	return runCmd("useradd", userAddArgs(e, groupExists)...)
@@ -273,7 +400,7 @@ func applyGroup(e entry) error {
 	if groupExists(e.name) {
 		return nil
 	}
-	if _, err := exec.LookPath("groupadd"); err != nil {
+	if _, err := lookPath("groupadd"); err != nil {
 		return fmt.Errorf("groupadd(8) not in PATH — shadow-utils required")
 	}
 	args := []string{"--system"}
@@ -288,21 +415,28 @@ func applyMembership(e entry) error {
 	if e.arg == "" {
 		return fmt.Errorf("m: missing group name")
 	}
-	if _, err := exec.LookPath("gpasswd"); err != nil {
+	if _, err := lookPath("gpasswd"); err != nil {
 		return fmt.Errorf("gpasswd(8) not in PATH — shadow-utils required")
 	}
 	return runCmd("gpasswd", "-a", e.name, e.arg)
 }
 
-func runCmd(bin string, args ...string) error {
-	cmd := exec.Command(bin, args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
+// The account database and the shadow-utils tools, as variables so
+// tests can point them at a scratch tree and a fake runner.
+var (
+	passwdFile = "/etc/passwd"
+	groupFile  = "/etc/group"
+	lookPath   = exec.LookPath
+	runCmd     = func(bin string, args ...string) error {
+		cmd := exec.Command(bin, args...)
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+)
 
 func userExists(name string) bool {
-	f, err := os.Open("/etc/passwd")
+	f, err := os.Open(passwdFile)
 	if err != nil {
 		return false
 	}
@@ -317,7 +451,7 @@ func userExists(name string) bool {
 }
 
 func groupExists(name string) bool {
-	f, err := os.Open("/etc/group")
+	f, err := os.Open(groupFile)
 	if err != nil {
 		return false
 	}

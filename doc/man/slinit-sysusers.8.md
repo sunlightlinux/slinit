@@ -18,7 +18,15 @@ config from */etc/sysusers.d/\*.conf*, */run/sysusers.d/\*.conf*,
 and */usr/lib/sysusers.d/\*.conf* by default. When the same basename
 exists in more than one directory, */etc* overrides */run*, which
 overrides */usr/lib* (as in systemd). The surviving files from all
-directories are applied in alphabetical order of their basenames.
+directories are read in alphabetical order of their basenames.
+
+As with **systemd-sysusers**, every file is read before anything is
+created; then all groups are created, then all users, then all
+memberships. A line may therefore name a group or user declared
+later in the same file or in a later file. When the same user (or
+the same group) is declared more than once, the first declaration
+wins; a later one that differs is ignored with a warning naming
+both lines.
 
 The tool shells out to **useradd**(8), **groupadd**(8) and
 **gpasswd**(1) for the actual account manipulation, so it inherits
@@ -44,9 +52,10 @@ Directives:
     **-** to let **useradd** pick one (passed to **useradd --uid**).
     With the *uid*:*gid* form, *gid* (a number or a group name) becomes
     the user's primary group (**useradd --gid**); that group must
-    already exist, so declare it with a **g** line in an earlier file
-    or earlier in the same file. Without *gid*, an existing group named
-    *name* becomes the primary group, as with **systemd-sysusers**;
+    already exist or be declared by a **g** line (or be the group of
+    another **u** line) anywhere in the configuration. Without *gid*,
+    a group named *name* — existing or declared by a **g** line —
+    becomes the primary group, as with **systemd-sysusers**;
     otherwise **useradd** creates it. Without *home* no home directory is
     created; without *shell* the shell is */sbin/nologin*.
 
@@ -55,6 +64,10 @@ Directives:
 
 **m** *user* *group*
 :   Add *user* to supplementary group *group* (**gpasswd -a**).
+    If no **u** line declares *user*, it is created as with
+    **u** *user* **-**; if no **g** or **u** line declares *group*,
+    it is created as with **g** *group* **-** (as with
+    **systemd-sysusers**).
 
 **r** — *lo*-*hi*
 :   Accepted and ignored.
@@ -77,8 +90,9 @@ double quotes. Missing fields at end-of-line are treated as **-**
     for staged rollout (**\--dirs=/etc/sysusers.d.new**).
 
 **\--dry-run**
-:   Print each entry as **would u foo**, **would g bar**, etc.,
-    without executing anything, and without checking whether the
+:   Print each entry as **would u foo**, **would g bar**, etc., in
+    the order they would be applied (including users and groups
+    implied by **m** lines), without executing anything, and without checking whether the
     account already exists.
 
 **-h**, **\--help**
