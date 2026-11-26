@@ -24,14 +24,21 @@ type Step struct {
 // noWait as a Step's Timeout sends the signal and moves straight on.
 const noWait time.Duration = -1
 
+// finalSignalGrace is how long a trailing signal with no timeout after
+// it gets before the schedule counts as failed.
+const finalSignalGrace = time.Second
+
 // ParseRetry parses OpenRC's / Debian's --retry schedule. A bare
 // integer N is shorthand for "SIGTERM/N/SIGKILL/N"; otherwise the
 // slash-separated items are signals (TERM, SIGTERM, 15, or any of
 // those with one leading '-', the form start-stop-daemon(8)
 // documents), timeouts in seconds, and at most one "forever", which
 // repeats the items after it until the process is gone. A signal
-// followed directly by another signal is sent without waiting; a
-// trailing signal, or a trailing "forever", waits forever.
+// followed directly by another signal is sent without waiting. A
+// trailing signal is sent and the process given finalSignalGrace, after
+// which the schedule has failed, as OpenRC and Debian end it (and as
+// slinit-start-stop-daemon does); a timeout of 0 checks once. Only a
+// trailing "forever" waits with no deadline.
 func ParseRetry(spec string, defaultSig syscall.Signal) ([]Step, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
@@ -78,6 +85,9 @@ func ParseRetry(spec string, defaultSig syscall.Signal) ([]Step, error) {
 					return nil, fmt.Errorf("timeout %d without preceding signal in %q", n, spec)
 				}
 				pending.Timeout = time.Duration(n) * time.Second
+				if n == 0 {
+					pending.Timeout = noWait
+				}
 				steps = append(steps, pending)
 				pending = Step{}
 				havePending = false
@@ -94,8 +104,11 @@ func ParseRetry(spec string, defaultSig syscall.Signal) ([]Step, error) {
 	}
 	switch {
 	case havePending:
-		// Trailing signal with no timeout: wait forever.
-		pending.Timeout = 0
+		// Trailing signal with no timeout: send it, allow a short
+		// grace for the exit to be seen, then the schedule is over.
+		// Waiting forever here hung --stop (and shutdown) on a daemon
+		// that ignores the signal.
+		pending.Timeout = finalSignalGrace
 		steps = append(steps, pending)
 	case repeatAt == len(steps):
 		// Trailing "forever": nothing to repeat, keep waiting.

@@ -139,3 +139,43 @@ func TestStopDaemonForeverSchedule(t *testing.T) {
 		t.Errorf("daemon pid %d survived the schedule", pid)
 	}
 }
+
+// A trailing signal, or a timeout of 0, must not make --stop wait with
+// no deadline: a daemon that ignores the signal hung --stop and so the
+// shutdown. Only an explicit trailing "forever" is unbounded.
+func TestTrailingSignalScheduleIsBounded(t *testing.T) {
+	for _, spec := range []string{"TERM", "HUP/TERM", "TERM/0", "TERM/0/KILL/1"} {
+		steps, err := ParseRetry(spec, syscall.SIGTERM)
+		if err != nil {
+			t.Fatalf("%s: %v", spec, err)
+		}
+		if _, unbounded := scheduleBudget(steps); unbounded {
+			t.Errorf("--retry %s waits forever", spec)
+		}
+	}
+	steps, err := ParseRetry("TERM/5/forever", syscall.SIGTERM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, unbounded := scheduleBudget(steps); !unbounded {
+		t.Error("--retry TERM/5/forever should be unbounded")
+	}
+
+	cmd := exec.Command("sh", "-c", "trap '' TERM; while :; do sleep 0.1; done")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	time.Sleep(200 * time.Millisecond)
+	steps, _ = ParseRetry("TERM", syscall.SIGTERM)
+	done := make(chan bool, 1)
+	go func() { done <- runSchedule(cmd.Process.Pid, steps) }()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("a daemon ignoring TERM was reported stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("--retry TERM still waiting after 5s on a daemon that ignores TERM")
+	}
+}

@@ -54,8 +54,8 @@ daemon.
     the supervisor to stop the daemon with the stop schedule (see
     **--retry**) and exit. **--stop** waits as long as the schedule
     can take plus two seconds (at least 30 seconds when **--stop** is
-    given no **--retry**; without end when the schedule can wait
-    forever). A supervisor still alive then is taken as hung: it is
+    given no **--retry**; without end only when the schedule ends in
+    **forever**). A supervisor still alive then is taken as hung: it is
     sent **SIGKILL**, and so is its daemon, identified beforehand as
     the supervisor's child, and the pidfiles are removed. **--stop**
     fails (exit 4) if the daemon outlives the stop, for instance when
@@ -183,7 +183,9 @@ Go's **time.ParseDuration** style (**500ms**, **2h**).
       leading **-** (**-TERM/30/-KILL/5**, as **start-stop-daemon**(8)
       writes it). A number without **-** is a timeout in seconds. A
       signal followed directly by another signal is sent without
-      waiting; a trailing signal waits for the exit forever.
+      waiting. A trailing signal is sent and the process given one
+      second, after which the schedule has failed (as in OpenRC and
+      Debian); a timeout of **0** checks once.
     - **forever** (at most once) repeats the items after it until the
       process is gone: **TERM/30/forever/KILL/5** sends **SIGKILL**
       every five seconds after the first thirty. A trailing
