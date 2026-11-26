@@ -110,6 +110,11 @@ verified with `git tag -v`.
   under the service set's lock. *Compat:* lines are now dropped until a
   reader is there (the log-file is retried on each line; the alert-file,
   as for any open failure, is disabled for the rotator's lifetime).
+- **A rotated `log-file` FIFO whose reader stopped reading froze PID 1
+  on the next restart**: the log reader blocked in write with its lock
+  held. The restart now cuts that write off, as it already did for an
+  `output-logger` that stopped reading; the line in flight is lost to
+  the FIFO.
 - **A `standard-input-file` that is a FIFO froze PID 1**: the start
   opened it with the service set's lock held and waited for a writer.
   *Compat:* the service now starts at once with the FIFO as fd 0; a read

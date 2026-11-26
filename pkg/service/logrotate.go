@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -125,6 +126,11 @@ type LogRotator struct {
 	// to open. Reset only when the rotator is torn down; a persistent
 	// path problem would otherwise spam the daemon log per line.
 	alertOpenFailed bool
+
+	// openFiles holds the log-file and alert-file as last opened, for
+	// Close to read without mu: a reader blocked writing to a FIFO
+	// whose reader stopped reading holds mu (see Close).
+	openFiles [2]atomic.Pointer[os.File]
 
 	// State
 	file           *os.File
@@ -834,6 +840,7 @@ func (lr *LogRotator) writeAlertLocked(out []byte) {
 			_ = f.Chown(lr.fileUID, lr.fileGID)
 		}
 		lr.alertFile = f
+		lr.openFiles[1].Store(f)
 	}
 	if _, err := lr.alertFile.Write(out); err != nil && lr.logger != nil {
 		// Don't latch — a transient ENOSPC/EIO on the alert file
@@ -872,6 +879,7 @@ func (lr *LogRotator) openFileLocked() error {
 		lr.currentSize = info.Size()
 	}
 	lr.file = f
+	lr.openFiles[0].Store(f)
 	return nil
 }
 
@@ -1056,6 +1064,13 @@ func (lr *LogRotator) Close() {
 	// is lost to the logger only — the logfile already has it.
 	if d, ok := lr.sink.(interface{ SetWriteDeadline(time.Time) error }); ok {
 		_ = d.SetWriteDeadline(time.Now())
+	}
+	// Likewise a log-file or alert-file that is a FIFO whose reader
+	// stopped reading; the line is lost to it.
+	for i := range lr.openFiles {
+		if f := lr.openFiles[i].Load(); f != nil {
+			_ = f.SetWriteDeadline(time.Now())
+		}
 	}
 	if lr.pipeW != nil {
 		lr.pipeW.Close()
