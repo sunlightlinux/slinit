@@ -293,7 +293,9 @@ With `--output-dir`, this and the other converters (`slinit-openrc-convert`,
 `slinit-immortal-convert`) replace a service file that is already
 there, so a rerun regenerates it, but refuse a symlink at an output
 name rather than write through it. Files are written to a temporary
-name and renamed into place.
+name and renamed into place; a replaced file keeps its mode and (as
+root) its owner, a new one gets 0644 less the umask, as with
+`os.WriteFile`.
 
 ```bash
 # Single service to stdout

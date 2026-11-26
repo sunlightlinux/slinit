@@ -10,13 +10,26 @@
 // goes to a fresh O_EXCL temp file in the destination directory, which
 // is then renamed over the name, and rename replaces a directory entry
 // without following it.
+//
+// The file Write leaves behind looks like the one os.WriteFile would
+// have: a new file gets the requested mode less the process umask (the
+// kernel applies it when the temp file is created; the mode is never
+// widened afterwards), and a file that is replaced keeps its permission
+// bits and, where the caller may set them (as root), its owner and
+// group. Rename installs a new inode, so whatever only the old inode
+// carried does not follow: a hard link to the old file keeps the old
+// content, and extended attributes and ACLs are not copied. That is
+// inherent to replacing a file atomically.
 package atomicfile
 
 import (
 	"errors"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strconv"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -44,21 +57,34 @@ var renameNoReplace = func(from, to string) error {
 }
 
 // Write puts data at dst with the given permission bits. The data is
-// written to a temp file created in dst's directory, synced, chmodded
-// and renamed into place, so dst is either the old file or the whole
-// new one, never a partial write. A symlink or a directory at dst is
-// refused. An existing dst is refused unless overwrite is set; without
-// overwrite the final step is renameat2(RENAME_NOREPLACE), so a file
-// that appears at dst meanwhile is not replaced either.
+// written to a temp file created in dst's directory, synced and renamed
+// into place, so dst is either the old file or the whole new one, never
+// a partial write. A symlink or a directory at dst is refused. An
+// existing dst is refused unless overwrite is set; without overwrite
+// the final step is renameat2(RENAME_NOREPLACE), so a file that appears
+// at dst meanwhile is not replaced either.
+//
+// A new dst gets mode less the umask, as os.WriteFile gives it. An
+// existing dst that is replaced keeps its owner, group and permission
+// bits, as os.WriteFile (which truncates in place) keeps them; the
+// only bits mode adds are execute bits for a class that may already
+// read the file, so a generated script asked for at 0755 still runs.
 func Write(dst string, data []byte, mode fs.FileMode, overwrite bool) (err error) {
-	if err := checkDest(dst, overwrite); err != nil {
+	old, err := checkDest(dst, overwrite)
+	if err != nil {
 		return err
 	}
 	dir, base := filepath.Split(dst)
 	if dir == "" {
 		dir = "."
 	}
-	tmp, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	createMode := mode.Perm()
+	if old != nil {
+		// Never more open than either: the final bits are set
+		// before any data is written.
+		createMode &= old.Mode().Perm()
+	}
+	tmp, err := createTemp(dir, "."+base+".tmp-", createMode)
 	if err != nil {
 		return err
 	}
@@ -68,11 +94,13 @@ func Write(dst string, data []byte, mode fs.FileMode, overwrite bool) (err error
 			os.Remove(tmpName)
 		}
 	}()
-	if _, err = tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
+	if old != nil {
+		if err = keepAttrs(tmp, old, mode); err != nil {
+			tmp.Close()
+			return err
+		}
 	}
-	if err = tmp.Chmod(mode.Perm()); err != nil {
+	if _, err = tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -93,25 +121,63 @@ func Write(dst string, data []byte, mode fs.FileMode, overwrite bool) (err error
 	return nil
 }
 
+// createTemp is os.CreateTemp with a creation mode: the file is made
+// O_CREATE|O_EXCL with perm, so the kernel applies the umask. Reading
+// the umask instead (umask(2) set and restore) races with every other
+// thread that creates a file meanwhile.
+func createTemp(dir, prefix string, perm fs.FileMode) (*os.File, error) {
+	for try := 0; ; try++ {
+		name := filepath.Join(dir, prefix+strconv.FormatUint(uint64(rand.Uint32()), 10))
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		if errors.Is(err, fs.ErrExist) && try < 10000 {
+			continue
+		}
+		return f, err
+	}
+}
+
+// keepAttrs gives the temp file the owner, group and permission bits of
+// the file it replaces. The owner is set first (chown clears set-id
+// bits). Changing the owner needs privilege; without it the file ends
+// up owned by the caller, as any new file would.
+func keepAttrs(tmp *os.File, old fs.FileInfo, mode fs.FileMode) error {
+	if st, ok := old.Sys().(*syscall.Stat_t); ok {
+		uid, gid := int(st.Uid), int(st.Gid)
+		if uid != os.Geteuid() || gid != os.Getegid() {
+			if err := tmp.Chown(uid, gid); err != nil && !errors.Is(err, fs.ErrPermission) {
+				return err
+			}
+		}
+	}
+	perm := old.Mode().Perm()
+	// Execute bits mode asks for, only where that class can read.
+	perm |= mode.Perm() & 0o111 & (perm >> 2)
+	return tmp.Chmod(perm)
+}
+
 // checkDest refuses a symlink or a directory at dst, and any existing
-// entry when overwrite is false.
-func checkDest(dst string, overwrite bool) error {
+// entry when overwrite is false. It returns the entry that will be
+// replaced, or nil when there is none.
+func checkDest(dst string, overwrite bool) (fs.FileInfo, error) {
 	fi, err := os.Lstat(dst)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	switch {
 	case fi.Mode()&fs.ModeSymlink != 0:
-		return ErrSymlink
+		return nil, ErrSymlink
 	case fi.IsDir():
-		return errors.New("is a directory")
+		return nil, errors.New("is a directory")
 	case !overwrite:
-		return ErrExists
+		return nil, ErrExists
+	case !fi.Mode().IsRegular():
+		// A fifo or device keeps nothing worth copying.
+		return nil, nil
 	}
-	return nil
+	return fi, nil
 }
 
 // install renames tmp to dst. Without overwrite it must not replace an

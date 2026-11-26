@@ -30,7 +30,10 @@ exists stops the run with an error, and files written before it are
 left in place. A symbolic link at an output name stops the run the same
 way, **--force** or not: it is never written through or replaced. Each
 file is written to a fresh temporary name in *DIR* and renamed into
-place, so an interrupted run leaves no partial file.
+place, so an interrupted run leaves no partial file. A file replaced
+with **--force** keeps its permission bits (adding only execute bits,
+for a script, where it was already readable) and, run as root, its
+owner and group; a new file is created with its mode less the umask.
 
 # OPTIONS
 

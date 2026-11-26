@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -171,5 +172,73 @@ func TestWriteIgnoresPlantedTemp(t *testing.T) {
 	}
 	if got := readFile(t, dst); got != "generated\n" {
 		t.Errorf("content = %q", got)
+	}
+}
+
+// A new file gets mode less the umask, as os.WriteFile gives it: the
+// temp file used to be chmodded to the full mode, so umask 077 still
+// produced a world-readable 0644.
+func TestWriteNewFileHonoursUmask(t *testing.T) {
+	writeCases(t, func(t *testing.T) {
+		saved := unix.Umask(0o077)
+		defer unix.Umask(saved)
+		dir := t.TempDir()
+		dst := filepath.Join(dir, "svc")
+		if err := Write(dst, []byte("x\n"), 0o644, false); err != nil {
+			t.Fatal(err)
+		}
+		if fi, _ := os.Stat(dst); fi.Mode().Perm() != 0o600 {
+			t.Errorf("mode = %v under umask 077, want 0600", fi.Mode())
+		}
+	})
+}
+
+// Replacing a file keeps its permission bits, as os.WriteFile (which
+// truncates in place) keeps them: a 0600 file is not opened up to the
+// requested 0644. Execute bits asked for are added only where that
+// class may already read.
+func TestWriteOverwriteKeepsMode(t *testing.T) {
+	for _, c := range []struct {
+		old, req, want fs.FileMode
+	}{
+		{0o600, 0o644, 0o600},
+		{0o640, 0o644, 0o640},
+		{0o600, 0o755, 0o700},
+		{0o644, 0o755, 0o755},
+		{0o755, 0o644, 0o755},
+	} {
+		dir := t.TempDir()
+		dst := filepath.Join(dir, "svc")
+		os.WriteFile(dst, []byte("old\n"), 0o600)
+		os.Chmod(dst, c.old)
+		if err := Write(dst, []byte("new\n"), c.req, true); err != nil {
+			t.Fatal(err)
+		}
+		if fi, _ := os.Stat(dst); fi.Mode().Perm() != c.want {
+			t.Errorf("old %v, requested %v: mode = %v, want %v", c.old, c.req, fi.Mode().Perm(), c.want)
+		}
+		noTemps(t, dir)
+	}
+}
+
+// As root, replacing a file keeps its owner and group; rename would
+// otherwise hand a user's file to root.
+func TestWriteOverwriteKeepsOwner(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to own a file as someone else")
+	}
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "svc")
+	os.WriteFile(dst, []byte("old\n"), 0o644)
+	if err := os.Chown(dst, 65534, 65534); err != nil {
+		t.Skip(err)
+	}
+	if err := Write(dst, []byte("new\n"), 0o644, true); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := os.Stat(dst)
+	st := fi.Sys().(*syscall.Stat_t)
+	if st.Uid != 65534 || st.Gid != 65534 {
+		t.Errorf("owner = %d:%d, want 65534:65534", st.Uid, st.Gid)
 	}
 }

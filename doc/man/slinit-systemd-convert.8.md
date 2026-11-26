@@ -174,6 +174,9 @@ suffix stripped.
     and renamed into place, so an interrupted run never leaves a
     partial file. A symbolic link at an output name is refused, never
     written through or replaced.
+    A replaced file keeps its permission bits (and, run as root, its
+    owner and group); a new one is created with mode 0644 less the
+    umask. A hard link to the old file keeps the old content.
 
 **-dry-run**
 :   With **-output-dir**: print each file that would be written, on
