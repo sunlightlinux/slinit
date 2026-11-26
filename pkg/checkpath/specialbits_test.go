@@ -61,10 +61,13 @@ func TestApplyKeepsSpecialModeBits(t *testing.T) {
 
 // The owner is set before the mode: chown(2) on a regular file clears
 // setuid/setgid, so chmod first and chown second lost them. Changing
-// the owner to another id needs root.
+// the owner to another id needs root. Real root: a user namespace will
+// not do, since every host directory there is owned by the overflow uid
+// and safepath (rightly) refuses the step from it into the test's own
+// directory.
 func TestApplyKeepsSetuidAcrossChown(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("needs root to change a file's owner")
+		t.Skip("needs real root to change a file's owner (a user namespace cannot pass safepath's owner checks)")
 	}
 	p := filepath.Join(t.TempDir(), "helper")
 	if err := os.WriteFile(p, nil, 0o755); err != nil {

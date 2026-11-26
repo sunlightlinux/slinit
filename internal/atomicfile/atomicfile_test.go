@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/internal/nstest"
 )
 
 func readFile(t *testing.T, p string) string {
@@ -222,10 +224,11 @@ func TestWriteOverwriteKeepsMode(t *testing.T) {
 }
 
 // As root, replacing a file keeps its owner and group; rename would
-// otherwise hand a user's file to root.
+// otherwise hand a user's file to root. Not root, it runs as root of a
+// user namespace with the caller's subordinate ids mapped.
 func TestWriteOverwriteKeepsOwner(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("needs root to own a file as someone else")
+	if !nstest.AsRoot(t, nstest.Opts{IDs: true}) {
+		return
 	}
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "svc")

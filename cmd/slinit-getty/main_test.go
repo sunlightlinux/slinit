@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/internal/nstest"
 )
 
 // TestExpandIssue_Basic: no escapes = passthrough. Regression
@@ -196,10 +198,18 @@ func TestTTYMode(t *testing.T) {
 }
 
 // A tty the last session's login gave to its user goes back to root
-// before the next prompt. Needs root to chown; skipped otherwise.
+// before the next prompt. Needs root to chown: not root, it runs as root
+// of a user namespace with the caller's subordinate ids mapped, on a
+// devpts instance of its own (the host's ptys belong to a tty group the
+// namespace cannot map, so chown on them is refused).
 func TestReclaimTTY(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("needs root to chown a tty")
+	if !nstest.AsRoot(t, nstest.Opts{IDs: true, Mount: true}) {
+		return
+	}
+	if nstest.Inside() {
+		if err := unix.Mount("devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666"); err != nil {
+			t.Skipf("mount a devpts instance in the user namespace: %v", err)
+		}
 	}
 	ptmx, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY, 0)
 	if err != nil {

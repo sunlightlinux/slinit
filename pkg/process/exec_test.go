@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/internal/nstest"
 )
 
 // --- Namespace / clone flags tests ---
@@ -173,12 +175,20 @@ func TestStartProcessLockFileContention(t *testing.T) {
 
 // --- Chroot test ---
 
+// chroot needs CAP_SYS_CHROOT: not root, the test runs as root of a user
+// namespace, which has it.
 func TestStartProcessChroot(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("chroot requires root")
+	if !nstest.AsRoot(t, nstest.Opts{}) {
+		return
 	}
 
-	// Use /tmp as chroot target (it exists and has /bin/true in host)
+	// Into an empty directory the command cannot be found: the chroot was
+	// applied before exec.
+	if _, _, err := StartProcess(ExecParams{Command: []string{"/bin/true"}, Chroot: t.TempDir()}); err == nil {
+		t.Fatal("StartProcess into an empty chroot succeeded; the chroot was not applied")
+	}
+
+	// Into / the command is where it always is.
 	params := ExecParams{
 		Command: []string{"/bin/true"},
 		Chroot:  "/",
