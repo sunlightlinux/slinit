@@ -805,6 +805,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 					return
 				}
 				// No status to report. Say so rather than inventing one.
+				// A failed Wait keeps the Process's pidfd: let it go, or
+				// it stays open until a GC runs the Process's cleanup.
+				cmd.Process.Release()
 				waitDone <- waitResult{known: false}
 			}
 		}()
