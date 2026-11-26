@@ -94,7 +94,8 @@ program gets its path as argv[0]. **:** is kept exactly: every **$** is
 doubled, in **command-argv0** too, so slinit expands no variable
 either. **|** runs the rest as one
 **/bin/sh -c** script (systemd uses the login shell of **User=**, and
-**/bin/sh** when it has none; with **@**, argv[0] is **-/bin/sh**). **-** on
+**/bin/sh** when it has none; with **@**, argv[0] is **-/bin/sh**),
+after substituting variables in each word as above. **-** on
 **ExecStartPre**, and on the **ExecStart** of a **oneshot**, runs the
 command through **/bin/sh -c '"$@" || :'**, so that its failure,
 a missing program included, is ignored as in systemd; on **ExecStartPost**
@@ -115,12 +116,23 @@ mean no timeout, as in systemd, and are written as **0**. A
 **TimeoutSec** gets **start-timeout = 0**: systemd gives a oneshot no
 start timeout by default, where slinit's default is 60 seconds.
 
-Variables in an **Exec** line are not what they are under systemd,
-which substitutes **$VAR** and **${VAR}** from the unit's
-**Environment** and **EnvironmentFile** when it runs the command:
-slinit expands them when the service file is loaded, from its own
-environment, so one the env-file sets comes out empty. Each such line
-is warned about (**$$** is a literal **$** on both sides). slinit reads
+systemd substitutes a variable in an **Exec** line in two places only:
+a word that is **$VAR** and nothing else (its value split into words,
+none if it is empty or unset), and **${VAR}** anywhere in a word (its
+value as one argument); **$$** is a **$**. Every other **$** is text to
+systemd: **$VAR** inside a word, such as the **$HOME** of
+**sh -c 'echo $HOME'**, **$1**, **$@**, **${VAR:-default}**, an
+unclosed **${**. slinit expands every **$** when the service file is
+loaded, so those are written **$$** and reach the command as systemd
+passes them on; the path of the command is never expanded, as in
+systemd. A word that is **$** followed by no valid name (**$1**,
+**$HOME/x**) is dropped, and a **${...}** with no valid name inside
+becomes empty, as systemd does at run time, with a warning. The
+variables systemd would substitute are not what they are under
+systemd, which takes them from the unit's **Environment** and
+**EnvironmentFile** when it runs the command: slinit expands them when
+the service file is loaded, from its own environment, so one the
+env-file sets comes out empty. Each such line is warned about. slinit reads
 a single **env-file**: of several **EnvironmentFile** lines the last is
 kept, with a warning. slinit has no **$MAINPID**: an **ExecStop** of
 the form **kill** [**-s** *SIG*] **$MAINPID** becomes

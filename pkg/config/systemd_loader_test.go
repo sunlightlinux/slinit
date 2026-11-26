@@ -499,6 +499,10 @@ ExecStart=/usr/bin/k
 KillSignal=SIGUSR2
 ExecStop=/bin/kill -USR2 $MAINPID
 `)
+	writeUnit(t, units, "b.service", `[Service]
+ExecStart=/usr/bin/b
+ExecStop=/bin/kill -s QUIT ${MAINPID}
+`)
 	writeUnit(t, units, "w.service", `[Service]
 ExecStart=/usr/bin/w
 ExecStop=/usr/bin/wctl stop ${MAINPID}
@@ -521,6 +525,7 @@ ExecStop=/usr/bin/wctl stop ${MAINPID}
 		"q": syscall.SIGQUIT,
 		"u": syscall.SIGTERM, // the default: USR1 is no stop signal
 		"k": syscall.SIGUSR2, // KillSignal= names it, so it is the stop signal
+		"b": syscall.SIGQUIT, // ${MAINPID} as well as $MAINPID
 	} {
 		d, _, err := dl.findAndParse(name)
 		if err != nil {

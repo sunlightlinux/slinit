@@ -80,8 +80,7 @@ type SystemdConfig struct {
 	// The ExecStart= command with "-": ignoring its failure needs the
 	// type, which may come later in the unit (finishExecStart).
 	commandIgnoreFailure bool
-	commandArgv          []string
-	commandLiteral       bool
+	commandArgv          []string // in slinit's $ syntax
 
 	// The hook had "+": systemd too runs it with full privileges.
 	preStartPriv, postStartPriv bool
@@ -982,15 +981,13 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 			// has no way to say otherwise; the shell ignores it instead.
 			argv = ignoreFailureArgv(argv)
 		}
-		value, ok := slinitCommandValue(argv, c.noEnvExpand)
+		value, ok := slinitCommandValue(argv)
 		if !ok {
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
 				"%s=%s: an argument holds a newline, which a slinit command setting cannot — command dropped", key, val)})
 			continue
 		}
-		if !c.noEnvExpand {
-			warns = append(warns, warnExecVars(key, value)...)
-		}
+		warns = append(warns, warnExecVars(key, c.refs, c.bad)...)
 		warns = append(warns, execPrefixNotes(key, val, c.execPrefixes)...)
 		switch key {
 		case "ExecStart":
@@ -1004,22 +1001,22 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 			}
 			cfg.command, cfg.argv0 = value, ""
 			if c.cmd.hasArgv0 {
-				if v, why, ok := slinitArgv0Value(c.cmd.argv0, c.noEnvExpand); ok {
+				if v, why, ok := slinitArgv0Value(c.cmd.argv0); ok {
 					cfg.argv0 = v
 				} else {
 					warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
 						"%s=%s: argv[0] %q dropped — %s; the program gets its path as argv[0]", key, val, c.cmd.argv0, why)})
 				}
 			}
-			cfg.commandIgnoreFailure, cfg.commandArgv, cfg.commandLiteral = c.ignoreFailure, c.cmd.argv, c.noEnvExpand
+			cfg.commandIgnoreFailure, cfg.commandArgv = c.ignoreFailure, c.cmd.argv
 		case "ExecStop":
 			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
 			// slinit has no $MAINPID: it would expand to nothing. The
 			// usual `kill -s SIG $MAINPID` is what term-signal does; any
 			// other use cannot act on the right process. With ":" it is
 			// no variable but text.
-			if !c.noEnvExpand && (strings.Contains(value, "$MAINPID") || strings.Contains(value, "${MAINPID}")) {
-				if sig, ok := killMainPID(value); ok {
+			if slices.Contains(c.refs, "$MAINPID") || slices.Contains(c.refs, "${MAINPID}") {
+				if sig, ok := killMainPID(argv); ok {
 					// Decided once KillSignal=, which may follow, is known.
 					cfg.stopSignal, cfg.stopLine = sig, val
 				} else {
@@ -1053,8 +1050,9 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 
 // ignoreFailureArgv runs argv through a shell that turns any failure,
 // a missing program or a signal included, into success, as systemd's
-// "-" prefix does. "$@" passes the words on untouched; slinit leaves
-// "$@" alone, @ starting no variable name.
+// "-" prefix does. "$@" passes the words on untouched; like argv, it is
+// in slinit's $ syntax, where "$@" needs no doubling: @ starts no
+// variable name, and slinit leaves the $ alone.
 func ignoreFailureArgv(argv []string) []string {
 	return append([]string{"/bin/sh", "-c", `"$@" || :`, "sh"}, argv...)
 }
@@ -1069,7 +1067,7 @@ func (cfg *SystemdConfig) finishExecStart() []SystemdWarning {
 		return nil
 	}
 	if cfg.svcType == "scripted" {
-		if v, ok := slinitCommandValue(ignoreFailureArgv(cfg.commandArgv), cfg.commandLiteral); ok {
+		if v, ok := slinitCommandValue(ignoreFailureArgv(cfg.commandArgv)); ok {
 			cfg.command = v
 			return []SystemdWarning{{"NOTE", `ExecStart= "-": run through /bin/sh -c '"$@" || :' so that its failure is ignored, as in systemd`}}
 		}
@@ -1149,52 +1147,35 @@ func warnArgv0(key, argv0 string) []SystemdWarning {
 		"%s=@: argv[0] %q dropped — slinit sets argv[0] (command-argv0) only for the main command of a process or bgprocess service", key, argv0)}}
 }
 
-// warnExecVars warns about the $VAR and ${VAR} references in an Exec
-// line. systemd substitutes them from Environment= and EnvironmentFile=
-// when it runs the command; slinit expands them when the file is
-// loaded, from slinit's own environment, so a variable the unit's
-// env-file sets comes out empty. $$ is a literal $ on both sides.
-func warnExecVars(key, cmd string) []SystemdWarning {
-	var refs []string
-	for i := 0; i < len(cmd); i++ {
-		if cmd[i] != '$' || i+1 >= len(cmd) {
-			continue
-		}
-		if cmd[i+1] == '$' {
-			i++
-			continue
-		}
-		j := i + 1
-		if cmd[j] == '{' {
-			if k := strings.IndexByte(cmd[j:], '}'); k >= 0 {
-				j += k + 1
-			}
-		} else {
-			for j < len(cmd) && (cmd[j] == '_' || cmd[j] >= 'A' && cmd[j] <= 'Z' ||
-				cmd[j] >= 'a' && cmd[j] <= 'z' || cmd[j] >= '0' && cmd[j] <= '9') {
-				j++
-			}
-		}
-		if j > i+1 {
-			refs = append(refs, cmd[i:j])
-		}
-		i = j - 1
+// warnExecVars warns about the variables systemd would substitute in
+// an Exec line: refs, the $VAR and ${VAR} references left for slinit to
+// expand, and bad, those with no valid name. systemd substitutes them
+// from Environment= and EnvironmentFile= when it runs the command;
+// slinit expands them when the file is loaded, from slinit's own
+// environment, so a variable the unit's env-file sets comes out empty.
+// Every other $, which systemd keeps as text, is written $$ and needs no
+// warning.
+func warnExecVars(key string, refs, bad []string) []SystemdWarning {
+	var warns []SystemdWarning
+	if len(refs) > 0 {
+		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+			"%s= uses %s — systemd takes these from the unit's environment when it runs the command; "+
+				"slinit expands them when the file is loaded, from its own environment, not the env-file, "+
+				"so they are likely empty — write the values in, or run the command through a shell script that reads the file",
+			key, strings.Join(refs, " "))})
 	}
-	if len(refs) == 0 {
-		return nil
+	if len(bad) > 0 {
+		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+			"%s= uses %s, no valid variable name — systemd expands it to nothing, and drops an argument that is only that; so does the conversion",
+			key, strings.Join(bad, " "))})
 	}
-	return []SystemdWarning{{"WARN", fmt.Sprintf(
-		"%s= uses %s — systemd takes these from the unit's environment when it runs the command; "+
-			"slinit expands them when the file is loaded, from its own environment, not the env-file, "+
-			"so they are likely empty — write the values in, or run the command through a shell script that reads the file",
-		key, strings.Join(refs, " "))}}
+	return warns
 }
 
 // killMainPID recognises `kill [-s SIG | -SIG] $MAINPID` and returns the
 // signal it sends (TERM if none is named), which slinit's term-signal
 // delivers to the main process the same way.
-func killMainPID(cmd string) (string, bool) {
-	f := strings.Fields(cmd)
+func killMainPID(f []string) (string, bool) {
 	if len(f) < 2 || filepath.Base(f[0]) != "kill" ||
 		(f[len(f)-1] != "$MAINPID" && f[len(f)-1] != "${MAINPID}") {
 		return "", false

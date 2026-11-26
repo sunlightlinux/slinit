@@ -21,7 +21,10 @@ import (
 // systemd splits it, and each word is written back in the form slinit's
 // parser turns into that same word.
 
-// execCommand is one command of an Exec*= line.
+// execCommand is one command of an Exec*= line. Its words are in
+// slinit's $ syntax (sdEnvWord): a $ that systemd leaves as text is
+// written $$, and a variable systemd would substitute is left for
+// slinit to expand.
 type execCommand struct {
 	argv     []string // what runs, path first
 	argv0    string   // with @: argv[0] in place of the path
@@ -246,10 +249,14 @@ loop:
 	return p, w[i:]
 }
 
-// parsedExec is one command of an Exec*= line with its prefixes.
+// parsedExec is one command of an Exec*= line with its prefixes, and
+// the variables systemd would substitute in it: refs those left for
+// slinit to expand, bad those with no valid name, which systemd expands
+// to nothing.
 type parsedExec struct {
 	execPrefixes
-	cmd execCommand
+	cmd       execCommand
+	refs, bad []string
 }
 
 // parseExecLine splits an Exec*= value into its commands the way
@@ -329,15 +336,24 @@ func parseExecLine(cfg *SystemdConfig, key, val string) (cmds []parsedExec, warn
 		}
 
 		c := parsedExec{execPrefixes: pre}
+		// systemd substitutes variables in the argv it runs, argv[0]
+		// included, but not in the path it executes (exec_invoke): the
+		// path keeps every $ as text.
+		envWords := func(words []string) []string {
+			out, refs, bad := systemdEnvArgv(words, pre.noEnvExpand)
+			c.refs, c.bad = append(c.refs, refs...), append(c.bad, bad...)
+			return out
+		}
 		switch {
 		case pre.viaShell:
-			// The shell runs the rest, joined with spaces, as one -c
-			// script; with nothing to run, the shell itself. With @
-			// its argv[0] is the shell's path with a "-" in front, the
+			// The shell runs the rest, its variables substituted word
+			// by word and then joined with spaces, as one -c script;
+			// with nothing to run, the shell itself. With @ its
+			// argv[0] is the shell's path with a "-" in front, the
 			// login-shell convention (exec_invoke in exec-invoke.c).
 			c.cmd.argv = []string{path}
-			if len(args) > 0 {
-				c.cmd.argv = append(c.cmd.argv, "-c", strings.Join(args, " "))
+			if words := envWords(args); len(words) > 0 {
+				c.cmd.argv = append(c.cmd.argv, "-c", strings.Join(words, " "))
 			}
 			if pre.separateArgv0 {
 				c.cmd.argv0, c.cmd.hasArgv0 = "-"+path, true
@@ -345,10 +361,17 @@ func parseExecLine(cfg *SystemdConfig, key, val string) (cmds []parsedExec, warn
 		case len(args) == 0:
 			return refuse("empty executable name or zeroeth argument")
 		case pre.separateArgv0:
-			c.cmd.argv = append([]string{path}, args[1:]...)
-			c.cmd.argv0, c.cmd.hasArgv0 = args[0], true
+			c.cmd.argv = append([]string{literalDollars(path)}, envWords(args[1:])...)
+			// A $VAR argv[0] systemd splits, and the words after the
+			// first become arguments; slinit gives command-argv0 the
+			// whole value. One that comes to nothing leaves argv[0]
+			// empty here.
+			c.cmd.hasArgv0 = true
+			if w := envWords(args[:1]); len(w) > 0 {
+				c.cmd.argv0 = w[0]
+			}
 		default:
-			c.cmd.argv = args
+			c.cmd.argv = append([]string{literalDollars(path)}, envWords(args[1:])...)
 		}
 		cmds = append(cmds, c)
 		if !semicolon {
@@ -357,25 +380,25 @@ func parseExecLine(cfg *SystemdConfig, key, val string) (cmds []parsedExec, warn
 	}
 }
 
-// slinitCommandValue writes argv as the value of a slinit command
-// setting (command, stop-command, pre-start-command, ...) that the
-// parser splits back into exactly argv. A word with a blank, a quote, a
-// backslash or a control character, and an empty word, is written in
-// double quotes, with " and \ escaped by a backslash, which slinit's
-// parser removes inside quotes as outside. With literal, every $ is
-// doubled, so that no variable is expanded (systemd's ":" prefix);
-// otherwise $VAR and ${VAR} are left for slinit to expand as before,
-// and only "$/", which is a word-splitting variable in slinit but plain
-// text in systemd, is escaped. A newline cannot be written in a value
-// of one line; ok is false if a word holds one.
-func slinitCommandValue(argv []string, literal bool) (value string, ok bool) {
+// slinitCommandValue writes argv, its words in slinit's $ syntax
+// (execCommand), as the value of a slinit command setting (command,
+// stop-command, pre-start-command, ...) that the parser splits back into
+// exactly argv, its variables expanded. A word with a blank, a quote, a
+// backslash or a control character, an empty word, and one holding a
+// ${VAR}, is written in double quotes, with " and \ escaped by a
+// backslash, which slinit's parser removes inside quotes as outside: a
+// ${VAR} is one argument in systemd, whatever its value, and one that is
+// empty or unset an empty argument. A word that is a lone $VAR stays
+// unquoted, so that slinit splits its value into words as systemd does.
+// A newline cannot be written in a value of one line; ok is false if a
+// word holds one.
+func slinitCommandValue(argv []string) (value string, ok bool) {
 	parts := make([]string, len(argv))
 	for i, w := range argv {
 		if strings.ContainsRune(w, '\n') {
 			return "", false
 		}
-		w = escapeDollars(w, literal)
-		if w != "" && !strings.ContainsFunc(w, func(r rune) bool {
+		if w != "" && !strings.Contains(w, "${") && !strings.ContainsFunc(w, func(r rune) bool {
 			return r == '"' || r == '\'' || r == '\\' || unicode.IsSpace(r) || unicode.IsControl(r)
 		}) {
 			parts[i] = w
@@ -401,9 +424,9 @@ func slinitCommandValue(argv []string, literal bool) (value string, ok bool) {
 // control character (a newline would end the line and start a setting
 // of its own) or starting or ending with a blank cannot be written, and
 // neither can an empty one, which slinit reads as no command-argv0. ok
-// is false then, with why. The $ are escaped as in the command, since
-// slinit expands variables in command-argv0 too.
-func slinitArgv0Value(argv0 string, literal bool) (value, why string, ok bool) {
+// is false then, with why. argv0 is in slinit's $ syntax already
+// (execCommand), which command-argv0 expands as the command does.
+func slinitArgv0Value(argv0 string) (value, why string, ok bool) {
 	switch {
 	case argv0 == "":
 		return "", "it is empty, which command-argv0 cannot express", false
@@ -412,32 +435,112 @@ func slinitArgv0Value(argv0 string, literal bool) (value, why string, ok bool) {
 	case strings.TrimSpace(argv0) != argv0:
 		return "", "it starts or ends with a blank, which slinit trims from a command-argv0 value", false
 	}
-	return escapeDollars(argv0, literal), "", true
+	return argv0, "", true
 }
 
-// escapeDollars doubles the $ of w that slinit would expand but systemd
-// would not: every one with literal, else only the one in "$/".
-func escapeDollars(w string, literal bool) string {
-	if strings.IndexByte(w, '$') < 0 {
-		return w
+// literalDollars writes w in slinit's $ syntax with no variable: every
+// $ doubled.
+func literalDollars(w string) string { return strings.ReplaceAll(w, "$", "$$") }
+
+// isEnvName is systemd's env_name_is_valid: ASCII letters, digits and
+// _, not starting with a digit. slinit reads a $NAME the same way.
+func isEnvName(s string) bool {
+	if s == "" || s[0] >= '0' && s[0] <= '9' {
+		return false
 	}
-	if literal {
-		return strings.ReplaceAll(w, "$", "$$")
+	for i := 0; i < len(s); i++ {
+		if !isVarChar(s[i], false) {
+			return false
+		}
+	}
+	return true
+}
+
+// systemdEnvArgv writes argv, words of a systemd command, in slinit's $
+// syntax, each by sdEnvWord, leaving out the words systemd erases. With
+// literal (the ":" prefix) every $ is text.
+func systemdEnvArgv(argv []string, literal bool) (out, refs, bad []string) {
+	for _, w := range argv {
+		if literal {
+			out = append(out, literalDollars(w))
+			continue
+		}
+		v, r, b, drop := sdEnvWord(w)
+		refs, bad = append(refs, r...), append(bad, b...)
+		if !drop {
+			out = append(out, v)
+		}
+	}
+	return out, refs, bad
+}
+
+// sdEnvWord writes one word of a systemd command in slinit's $ syntax,
+// following replace_env_argv (src/basic/env-util.c), where systemd
+// substitutes:
+//
+//   - a word that is "$NAME" and nothing else, by the variable's value
+//     split into words (none if it is unset or empty);
+//   - "${NAME}" anywhere in a word, by the value as it is;
+//   - "$$" by "$".
+//
+// Every other $ is text: "$NAME" inside a word (the shell's "echo $HOME"
+// in sh -c), "$1", "$@", "${A:-x}" (an unsupported form, left alone as a
+// whole), an unclosed "${". slinit expands all of these when the file is
+// loaded, so their $ are doubled. "${NAME}" and a whole-word "$NAME"
+// are left for slinit, which expands them alike. A "${...}" whose
+// content is no valid name expands to nothing in systemd, and a word
+// that is "$" followed by no valid name ("$1", "$HOME/x", "$") is
+// erased: so they are here (drop), with the name in bad.
+func sdEnvWord(w string) (out string, refs, bad []string, drop bool) {
+	if strings.IndexByte(w, '$') < 0 {
+		return w, nil, nil, false
+	}
+	if w[0] == '$' && (len(w) == 1 || w[1] != '{' && w[1] != '$') {
+		if isEnvName(w[1:]) {
+			return w, []string{w}, nil, false
+		}
+		return "", nil, []string{w}, true
 	}
 	var b strings.Builder
-	for i := 0; i < len(w); i++ {
-		if w[i] == '$' && i+1 < len(w) {
-			switch w[i+1] {
-			case '$':
-				b.WriteString("$$")
-				i++
-				continue
-			case '/':
-				b.WriteString("$$")
+	for i := 0; i < len(w); {
+		if w[i] != '$' {
+			b.WriteByte(w[i])
+			i++
+			continue
+		}
+		switch {
+		case i+1 < len(w) && w[i+1] == '$':
+			b.WriteString("$$")
+			i += 2
+			continue
+		case i+1 < len(w) && w[i+1] == '{':
+			// The name runs to the first "}". A ":" before it is
+			// syntax systemd does not support here, and with no "}"
+			// at all there is no name: either way the text up to the
+			// ":" (or the end), a "$$" in it included, is kept as it
+			// is, and systemd reads on after the ":".
+			k := strings.IndexAny(w[i+2:], "}:")
+			if k >= 0 && w[i+2+k] == '}' {
+				name := w[i+2 : i+2+k]
+				if isEnvName(name) {
+					b.WriteString(w[i : i+3+k])
+					refs = append(refs, w[i:i+3+k])
+				} else {
+					bad = append(bad, w[i:i+3+k])
+				}
+				i += 3 + k
 				continue
 			}
+			end := len(w)
+			if k >= 0 {
+				end = i + 3 + k
+			}
+			b.WriteString(literalDollars(w[i:end]))
+			i = end
+			continue
 		}
-		b.WriteByte(w[i])
+		b.WriteString("$$")
+		i++
 	}
-	return b.String()
+	return b.String(), refs, bad, false
 }

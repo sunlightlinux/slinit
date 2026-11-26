@@ -185,7 +185,7 @@ func TestExecStartPrefixStripping(t *testing.T) {
 			t.Errorf("parseExecLine(%q) = %v, %v", c.in, cmds, err)
 			continue
 		}
-		got, _ := slinitCommandValue(cmds[0].cmd.argv, false)
+		got, _ := slinitCommandValue(cmds[0].cmd.argv)
 		if got != c.want {
 			t.Errorf("parseExecLine(%q) = %q, want %q", c.in, got, c.want)
 		}
