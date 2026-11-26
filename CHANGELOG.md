@@ -160,6 +160,18 @@ verified with `git tag -v`.
   SIGKILL cannot end (stuck in uninterruptible sleep) now holds the
   shutdown for that grace (3s by default, `--shutdown-grace`) once more.
 
+- **`add-dep` no longer leaves a running service on a hard dependency
+  that is down.** A `depends-on` edge from a service that is up to one
+  that is not STARTED was installed, and the target asked to start; one
+  that failed left the dependent STARTED on a STOPPED hard dependency
+  still counted as required, and one that waits (a triggered service)
+  left it STARTED on one that never came up. The edge is now refused
+  with NAK, as dinit refuses it; start the target first. Found by the
+  new control protocol fuzzer. *Compat:* `slinitctl add-dep A depends-on
+  B` with A running and B not started now fails ("add-dep failed")
+  instead of starting B; a stopped A, a started B and the soft kinds
+  are unchanged.
+
 - **A milestone dependency of a pinned service could never be stopped
   again.** `start --pin` on a service whose `depends-ms` dependency was
   still starting passed the pin to that dependency; once it had started

@@ -573,7 +573,9 @@ service name or rejected.
     `waits-for`/`soft`, `depends-ms`/`milestone`, `prepared-by`,
     `before`, `after`) from *from* to *to*. `prepared-by` behaves as
     a hard dependency that also cascades a restart from *from* back to
-    *to* — see **slinit-service**(5).
+    *to* — see **slinit-service**(5). A hard kind (`depends-on`,
+    `prepared-by`) from a service that is not stopped to one that is not
+    started is refused, as **dinitctl**(8) refuses it: start *to* first.
 
     **Both argument orders work** (since 3.0.0). slinitctl has always
     taken *from* *kind* *to*; **dinitctl**(8) takes *kind* *from* *to*,
