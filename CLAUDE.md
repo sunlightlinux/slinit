@@ -122,10 +122,11 @@ For multi-step tasks, state a brief plan:
 - `./tests/k8s/run.sh` — 10 cases running the same image as a pod on a local
   `kind` cluster.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
-  single target. 45 repo-wide: 27 in `tests/fuzz/`, 18 beside the code
+  single target. 46 repo-wide: 27 in `tests/fuzz/`, 19 beside the code
   they exercise (converters, killall5, sysusers/tmpfiles, the
   `pkg/timedate` and `pkg/hostname` parsers, the syslog parser, the
-  fd-store glob, `pkg/config`, `pkg/service` state machine), so
+  fd-store glob, `pkg/config`, `pkg/service` state machine, the
+  `pkg/control` server), so
   `./tests/fuzz` alone is not all of them. CI's fuzz matrix must list
   every package holding one; `tools/stats/fuzzmatrix_test.go` checks it.
 - `./slinit-check <svc>` — offline config linter. Takes a service

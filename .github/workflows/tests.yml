@@ -361,6 +361,7 @@ jobs:
         package:
           - tests/fuzz
           - pkg/config
+          - pkg/control
           - pkg/hostname
           - pkg/journal
           - pkg/process
