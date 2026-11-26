@@ -232,6 +232,14 @@ verified with `git tag -v`.
   The stop now drops the service's activation first, as dinit's does.
   Found by the new control protocol fuzzer.
 
+- **A stop in a restart delay no longer leaves a hard dependent
+  starting for good.** The two fixes above call the restart off; a
+  `depends-on` dependent that had started during the delay kept waiting
+  for a restart that would not come, stayed STARTING, and held the
+  service on the active count, so a second stop changed nothing and a
+  shutdown waited for it. The stop now stops such dependents, as dinit's
+  does, and their release settles the service.
+
 - **`slinitctl add-dep`/`rm-dep` with `prepared-by` work.** slinitctl
   accepted the kind and slinitctl(8) documents it, but the daemon took
   only the kinds up to `after` and refused every prepared-by request, so

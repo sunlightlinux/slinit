@@ -2995,6 +2995,11 @@ func (sr *ServiceRecord) abandonPendingRestart() {
 		// Settled now, that release would find a STOPPED service with
 		// nothing pending, and the count would never come down.
 		sr.restartPending = true
+		// Tell that dependent, as doStop would (dinit stops the
+		// hard dependents here): left waiting for a restart that
+		// will not come, it stayed STARTING for good and never let
+		// go.
+		sr.stopDependents(false, false)
 		return
 	}
 	sr.settleInactive()
