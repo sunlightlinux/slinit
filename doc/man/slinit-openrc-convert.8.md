@@ -68,7 +68,11 @@ A script that defines any of the shell functions **start**, **stop**,
 a **scripted** service whose **command** is *WRAPPER script* **start**
 and whose **stop-command** is *WRAPPER script* **stop**, so the
 original init.d script keeps doing the work; **-wrapper** sets
-*WRAPPER* (default */usr/sbin/openrc-run*).
+*WRAPPER* (default */usr/sbin/openrc-run*). The wrapper reads the
+script's variables itself, so **pidfile**, **command_user**,
+**directory**, **umask**, **stopsig**, **no_new_privs** and the
+**respawn_\*** settings are left out of such a file (with a note),
+and it gets no **restart**.
 
 Single-input mode writes to standard output. Batch mode
 (**--output-dir**) writes one file per input into *DIR*, named

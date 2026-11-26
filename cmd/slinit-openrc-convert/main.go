@@ -380,10 +380,41 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 		// bgprocess makes no sense when we're running openrc-run
 		// (which is a scripted lifecycle wrapper).
 		cfg.svcType = "scripted"
-		// Discard restart-delay / limit-count values we may have
-		// grabbed from vars — openrc-run manages the daemon's
-		// lifetime, slinit's restart* directives duplicate that
-		// and cause spurious respawn.
+		// Discard what we grabbed from the script's variables:
+		// openrc-run reads them itself when it runs the script, so
+		// here they would only duplicate it — restart* would respawn
+		// behind its back, run-as would run openrc-run itself as the
+		// daemon's user — and they are taken verbatim from shell, so
+		// a value like ${respawn_period:-60} or /run/${RC_SVCNAME}.pid
+		// made the converted file fail to load.
+		var left []string
+		for _, f := range []struct {
+			name string
+			val  *string
+		}{
+			{"pidfile", &cfg.pidFile},
+			{"command_user", &cfg.runAs},
+			{"directory", &cfg.workingDir},
+			{"stopsig", &cfg.termSignal},
+			{"umask", &cfg.umask},
+			{"respawn_delay", &cfg.restartDelay},
+			{"respawn_max", &cfg.restartLimitCount},
+			{"respawn_period", &cfg.restartLimitCounti},
+		} {
+			if *f.val != "" {
+				left = append(left, f.name)
+				*f.val = ""
+			}
+		}
+		if cfg.noNewPrivs {
+			left = append(left, "no_new_privs")
+			cfg.noNewPrivs = false
+		}
+		cfg.restart = ""
+		if len(left) > 0 {
+			warns = append(warns, warning{"NOTE", fmt.Sprintf(
+				"%s left to %s, which applies them itself", strings.Join(left, ", "), wrapper)})
+		}
 		warns = append(warns, warning{"NOTE",
 			fmt.Sprintf("custom shell functions %v — wrapped via %s (requires the binary at runtime)",
 				customFuncs, wrapper)})

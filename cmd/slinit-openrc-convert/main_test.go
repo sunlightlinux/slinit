@@ -427,3 +427,104 @@ func TestDependSoftReferencesLoad(t *testing.T) {
 		t.Errorf("missing dependencies %v\n%s", want, buf.String())
 	}
 }
+
+// A wrapped script hands its variables to openrc-run, which reads them
+// itself; the converter used to copy them into the file anyway, as
+// shell text, so upstream agetty came out as `restart-limit-interval =
+// ${respawn_period:-60}` and `pid-file = /run/${RC_SVCNAME}.pid` and did
+// not load, and a command_user became run-as on openrc-run itself.
+func TestWrappedScriptLeavesVariablesToOpenrcRun(t *testing.T) {
+	script := `#!/sbin/openrc-run
+supervisor=supervise-daemon
+respawn_period="${respawn_period:-60}"
+respawn_max=3
+respawn_delay=2
+command=/sbin/agetty
+command_user=nobody
+directory=/var/lib/d
+umask=022
+stopsig=SIGHUP
+no_new_privs=yes
+pidfile="/run/${RC_SVCNAME}.pid"
+
+start_pre() {
+	:
+}
+`
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	svc, out := loadConverted(t, cfg)
+	if svc.Type() != service.TypeScripted {
+		t.Errorf("type = %v, want scripted\n%s", svc.Type(), out)
+	}
+	for _, k := range []string{"pid-file", "restart", "run-as", "working-dir", "umask", "term-signal", "no-new-privs"} {
+		if strings.Contains(out, k) {
+			t.Errorf("wrapped script emits %s, which openrc-run applies itself:\n%s", k, out)
+		}
+	}
+}
+
+// upstreamScripts finds OpenRC's own init.d scripts: $OPENRC_SRC, or an
+// openrc checkout beside any directory above this one. Tests that sweep
+// them skip when there is none; the scripts are not copied into this
+// tree.
+func upstreamScripts() []string {
+	dirs := []string{}
+	if d := os.Getenv("OPENRC_SRC"); d != "" {
+		dirs = append(dirs, d)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		for d := wd; ; d = filepath.Dir(d) {
+			dirs = append(dirs, filepath.Join(d, "openrc"))
+			if d == filepath.Dir(d) {
+				break
+			}
+		}
+	}
+	for _, d := range dirs {
+		if ins, _ := filepath.Glob(filepath.Join(d, "init.d", "*.in")); len(ins) > 0 {
+			return ins
+		}
+	}
+	return nil
+}
+
+// convertUpstream converts every upstream OpenRC init.d script and
+// returns name → emitted file.
+func convertUpstream(t *testing.T) map[string]string {
+	t.Helper()
+	ins := upstreamScripts()
+	if len(ins) == 0 {
+		t.Skip("no OpenRC checkout found (set OPENRC_SRC)")
+	}
+	dir := t.TempDir()
+	out := map[string]string{}
+	for _, in := range ins {
+		name := strings.TrimSuffix(filepath.Base(in), ".in")
+		data, err := os.ReadFile(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cfg, _, err := convertScript(p, "/usr/sbin/openrc-run")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var buf bytes.Buffer
+		emitSlinitFile(&buf, cfg)
+		out[name] = buf.String()
+	}
+	return out
+}
+
+// Every script OpenRC ships must convert to a file slinit loads.
+func TestUpstreamScriptsLoad(t *testing.T) {
+	for name, text := range convertUpstream(t) {
+		if _, err := config.Parse(strings.NewReader(text), name, name); err != nil {
+			t.Errorf("%s: converted file does not load: %v\n%s", name, err, text)
+		}
+	}
+}
