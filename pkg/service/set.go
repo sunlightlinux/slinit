@@ -675,11 +675,19 @@ func (ss *ServiceSet) ContinueService(svc *ProcessService) bool {
 // StartOnceService starts the service for one run, not restarted when
 // it stops (`slinitctl once`). Its restart setting is left alone: the
 // next ordinary start restores it.
-func (ss *ServiceSet) StartOnceService(svc Service) {
+//
+// It refuses, returning false, once a shutdown has begun, checking under
+// the same hold of queueMu for the reason StartServiceUnlessShuttingDown
+// gives.
+func (ss *ServiceSet) StartOnceService(svc Service) bool {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
+	if ss.IsShuttingDown() {
+		return false
+	}
 	svc.Record().StartOnce()
 	ss.processQueuesLocked()
+	return true
 }
 
 // StopAllServices stops all services (for shutdown).

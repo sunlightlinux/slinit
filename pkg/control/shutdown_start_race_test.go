@@ -19,10 +19,10 @@ import (
 // final shutdown that way in every run. The check and the start must be
 // one step under queueMu, as they are in dinit's single-threaded loop.
 func TestStartRacingShutdownLeavesNothingStarted(t *testing.T) {
-	for _, startAll := range []bool{false, true} {
-		t.Run(fmt.Sprintf("start-all=%v", startAll), func(t *testing.T) {
+	for _, verb := range []string{"start", "start-all", "once"} {
+		t.Run(verb, func(t *testing.T) {
 			for attempt := 0; attempt < 100; attempt++ {
-				if leftover := startRacingShutdown(t, startAll); leftover != "" {
+				if leftover := startRacingShutdown(t, verb); leftover != "" {
 					t.Fatalf("attempt %d: %s still STARTED after the shutdown stopped everything", attempt, leftover)
 				}
 			}
@@ -30,7 +30,7 @@ func TestStartRacingShutdownLeavesNothingStarted(t *testing.T) {
 	}
 }
 
-func startRacingShutdown(t *testing.T, startAll bool) string {
+func startRacingShutdown(t *testing.T, verb string) string {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()
 	ss := server.services
@@ -70,8 +70,11 @@ func startRacingShutdown(t *testing.T, startAll bool) string {
 					flags = 0x01 // --pin
 				}
 				cmd, payload := CmdStartService, append(EncodeHandle(handles[i]), flags)
-				if startAll {
+				switch verb {
+				case "start-all":
 					cmd, payload = CmdStartAll, nil
+				case "once":
+					cmd, payload = CmdOnceService, EncodeHandle(handles[i])
 				}
 				if WritePacket(conn, cmd, payload) != nil {
 					return

@@ -204,8 +204,8 @@ verified with `git tag -v`.
   protocol fuzzer.
 
 - **A `start` racing a shutdown no longer holds the shutdown for 90
-  seconds.** `start` (with or without `--pin`) and `start-all` checked
-  for a shutdown in progress, then started the service in a separate
+  seconds.** `start` (with or without `--pin`), `start-all` and `once`
+  checked for a shutdown in progress, then started the service in a separate
   step; a shutdown that began in between had already stopped and
   unpinned everything, so the service came up explicitly active, nothing
   stopped it again, and the shutdown waited its full timeout. The check

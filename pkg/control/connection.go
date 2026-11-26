@@ -1364,7 +1364,9 @@ func (c *Connection) handleOnceService(payload []byte) error {
 		return c.writePacket(RplyShuttingDown, nil)
 	}
 	// Start once: set auto-restart to never, then start
-	c.server.services.StartOnceService(svc)
+	if !c.server.services.StartOnceService(svc) {
+		return c.writePacket(RplyShuttingDown, nil)
+	}
 	return c.writePacket(RplyACK, nil)
 }
 
