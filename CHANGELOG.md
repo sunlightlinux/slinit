@@ -1005,14 +1005,20 @@ requires.
   - a hung `env-generator` blocked every start, stop and `slinitctl`
     command (it ran with no timeout under the global lock); it is now
     bounded by `hook-timeout`, its output capped at 64 KiB, and it runs
-    once per start instead of for every hook and ready-check poll;
+    once per start instead of for every hook and ready-check poll (a
+    service without an env-generator still sees `slinitctl setenv` in
+    its hooks at once);
   - a timed-out hook was killed but its children were not; the whole
     process group is killed now;
   - `ready-check-command` had no timeout and kept running after a failed
-    start or a stop; each attempt is bounded and the check ends with the
-    start;
+    start or a stop; it now ends with the start (bounded by
+    `start-timeout`, not `hook-timeout`);
   - `post-start-command` was never cancelled: it outlived the stop and
     overlapped itself across restarts.
+  - hooks that set the service's variables lost slinit's own
+    environment (PATH, HOME, container variables); every hook now gets
+    it, filtered by `pass-environment`/`unset-environment` like the main
+    process.
 - **systemd units translated Exec lines and timeouts wrongly**:
   - `TimeoutStartSec=`/`TimeoutSec=` were ignored, so every unit got a
     60 s start timeout and a long `Type=oneshot` was interrupted;
