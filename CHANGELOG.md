@@ -203,6 +203,11 @@ verified with `git tag -v`.
   it. Unpin now travels milestone edges too. Found by the new control
   protocol fuzzer.
 
+- **`start`, `stop` and `start-all` no longer race a reload over the
+  manual-start flags.** They read `manual`, `refuse-manual-start` and
+  `refuse-manual-stop` without the graph lock while `reload` rewrote
+  them under it. Found by a `-race` stress run of the daemon.
+
 - **A process exiting no longer races a reload of its service.** The
   exit handlers of process, bgprocess and scripted services read the
   service's flags and `inittab-id`/`inittab-line` before taking the

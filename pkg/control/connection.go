@@ -814,8 +814,11 @@ func (c *Connection) handleStartService(payload []byte) error {
 	// refuse-manual-start blocks the direct control-socket path but
 	// not the dependency graph. StartService is only invoked here
 	// from the control connection, so gating at this call site is
-	// exactly the systemd semantics.
-	if svc.Record().RefusesManualStart() {
+	// exactly the systemd semantics. Read under the graph lock: a
+	// reload rewrites it there.
+	var refuses bool
+	c.server.services.WithGraphLock(func() { refuses = svc.Record().RefusesManualStart() })
+	if refuses {
 		if started {
 			return c.writePacket(RplyAlreadySS, nil)
 		}
@@ -928,8 +931,11 @@ func (c *Connection) handleStopService(payload []byte) error {
 
 	// refuse-manual-stop mirrors refuse-manual-start on the shutdown
 	// side. `force` overrides so an operator can still forcibly stop
-	// a runaway service if that's really required.
-	if !force && svc.Record().RefusesManualStop() {
+	// a runaway service if that's really required. Read under the
+	// graph lock: a reload rewrites it there.
+	var refuses bool
+	c.server.services.WithGraphLock(func() { refuses = svc.Record().RefusesManualStop() })
+	if !force && refuses {
 		return c.writePacket(RplyManualRefused, nil)
 	}
 
@@ -1639,8 +1645,13 @@ func (c *Connection) handleStartAll() error {
 			skipped++
 			continue
 		}
+		// Read under the graph lock: a reload rewrites these there.
 		rec := svc.Record()
-		if rec.IsManualStart() || rec.RefusesManualStart() || rec.IsStopPinned() {
+		var skip bool
+		c.server.services.WithGraphLock(func() {
+			skip = rec.IsManualStart() || rec.RefusesManualStart() || rec.IsStopPinned()
+		})
+		if skip {
 			skipped++
 			continue
 		}
