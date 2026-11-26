@@ -102,7 +102,17 @@ svc test-rlim 'command = /bin/sleep 2818' 'rlimit-memlock = 131072' \
     'rlimit-as = 1073741824:2147483648'
 slinitctl --system start test-rlim >/dev/null 2>&1
 wait_for_service test-rlim STARTED 10 || true
-_pid=$(ps -o pid,args 2>/dev/null | awk '$2 == "/bin/sleep" && $3 == "2818" {print $1; exit}')
+# rlimit-as and rlimit-data are set by slinit-runner just before it execs
+# the command, and a process service is STARTED once it is forked, so the
+# process can still be the runner here: under TCG, as in CI, ps showed
+# "/sbin/slinit-runner --rlimit-late=9:... -- /bin/sleep 2818" right after
+# STARTED. Wait for the exec instead of reading ps once.
+_pid=
+for _i in 1 2 3 4 5 6 7 8 9 10; do
+    _pid=$(ps -o pid,args 2>/dev/null | awk '$2 == "/bin/sleep" && $3 == "2818" {print $1; exit}')
+    [ -n "$_pid" ] && break
+    sleep 1
+done
 _lim=$(cat "/proc/$_pid/limits" 2>/dev/null)
 _ml=$(echo "$_lim" | awk '/^Max locked memory/ {print $4, $5}')
 _as=$(echo "$_lim" | awk '/^Max address space/ {print $4, $5}')
