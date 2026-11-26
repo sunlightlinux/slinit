@@ -74,8 +74,13 @@ as not mapped.
 
 A quoted value may run on across lines, and a line ending in a
 backslash continues on the next one, as in the shell; the newlines in
-a value become spaces. A quote left open to the end of the script is
-wrapped (see below) with a warning.
+a value become spaces. The body of a here-document (**<<WORD**,
+**<<-WORD**, **<<'WORD'**, **<<"WORD"**) is skipped up to its
+terminator line (leading tabs stripped with **<<-**), so an apostrophe
+in it opens no quote. A quote or here-document left open to the end of
+the script is wrapped (see below) with a warning; **depend()** is then
+still looked for line by line, and if it cannot be read either, a
+warning says the dependencies were not read.
 
 Only literal values are mapped. A mapped variable whose value the
 shell has to compute (a **$VAR** set in */etc/conf.d*, a

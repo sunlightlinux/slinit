@@ -724,3 +724,79 @@ func TestRestartOnlyUnderSuperviseDaemon(t *testing.T) {
 		})
 	}
 }
+
+// A here-document's body is data: an apostrophe in it opened a quote
+// that ran to the end of the script, so depend() was never read and
+// the converted service lost its dependencies without a word.
+func TestHeredocBodyIsSkipped(t *testing.T) {
+	initd := t.TempDir()
+	for _, n := range []string{"localmount", "net"} {
+		os.WriteFile(filepath.Join(initd, n), []byte("#!/sbin/openrc-run\n"), 0o755)
+	}
+	for _, hd := range []string{
+		"\tcat <<-EOM\n\tDon't forget to edit /etc/foo.conf\n\tEOM\n",
+		"\tcat <<EOM\nDon't forget to edit /etc/foo.conf\nEOM\n",
+		"\tcat <<'EOM'\nDon't forget { to edit /etc/foo.conf\nEOM\n",
+		"\tcat << \"EOM\" >&2\nDon't \"forget\" to edit /etc/foo.conf\nEOM\n",
+		"\tcat <<\\EOM\nDon't forget } to edit /etc/foo.conf\nEOM\n",
+		"\tcat <<-A; cat <<-B\n\tDon't\n\tA\n\tforget's\n\tB\n",
+	} {
+		script := "#!/sbin/openrc-run\ncommand=/usr/bin/foo\npidfile=/run/foo.pid\n\n" +
+			"checkconfig() {\n" + hd + "}\n\ndepend() {\n\tneed localmount\n\tuse net\n}\n"
+		cfg := &slinitConfig{svcType: "bgprocess", restart: "yes", scriptPath: filepath.Join(initd, "foo")}
+		warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+		if cfg.svcType != "bgprocess" || cfg.command != "/usr/bin/foo" {
+			t.Errorf("%q: type %s command %q, want bgprocess /usr/bin/foo (%v)", hd, cfg.svcType, cfg.command, warns)
+		}
+		if strings.Join(cfg.depends, " ") != "localmount" || strings.Join(cfg.waitsFor, " ") != "net" {
+			t.Errorf("%q: depends %v waits-for %v, want [localmount] [net]", hd, cfg.depends, cfg.waitsFor)
+		}
+	}
+}
+
+// <<< and an arithmetic shift open no here-document.
+func TestHeredocsNotHeredoc(t *testing.T) {
+	for _, line := range []string{
+		"read x <<< \"$y\"",
+		"x=$((1 << 2))",
+		"x=$((1<<y))",
+		"echo '<<EOF'",
+		"echo \"<<EOF\"",
+		"echo # <<EOF",
+	} {
+		if hs := heredocs(line); len(hs) != 0 {
+			t.Errorf("%q: heredocs %v, want none", line, hs)
+		}
+	}
+	if hs := heredocs("cat <<-'E O' >x"); len(hs) != 1 || hs[0].word != "E O" || !hs[0].stripTabs {
+		t.Errorf("quoted word: %v", hs)
+	}
+}
+
+// When a script is wrapped because the scan ran off its end, depend()
+// is still read line by line; when even that fails, a WARN says the
+// dependencies were not read.
+func TestUnterminatedStillReadsDepend(t *testing.T) {
+	initd := t.TempDir()
+	os.WriteFile(filepath.Join(initd, "localmount"), []byte("#!/sbin/openrc-run\n"), 0o755)
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/bar\ncommand_args=\"-a\n-b\ndepend() {\n\tneed localmount\n}\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: filepath.Join(initd, "d")}
+	warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	if cfg.svcType != "scripted" {
+		t.Errorf("not wrapped: %q", cfg.command)
+	}
+	if strings.Join(cfg.depends, " ") != "localmount" {
+		t.Errorf("depends %v, want [localmount] (%v)", cfg.depends, warns)
+	}
+
+	script = "#!/sbin/openrc-run\ncommand=/usr/sbin/bar\ncommand_args=\"-a\ndepend() {\n\tneed localmount\n"
+	cfg = &slinitConfig{svcType: "process", restart: "yes", scriptPath: filepath.Join(initd, "d")}
+	warns = parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	found := false
+	for _, w := range warns {
+		found = found || (w.level == "WARN" && strings.Contains(w.msg, "dependencies were not read"))
+	}
+	if !found {
+		t.Errorf("no WARN that the dependencies were not read: %v", warns)
+	}
+}

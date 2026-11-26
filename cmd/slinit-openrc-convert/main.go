@@ -281,6 +281,107 @@ func lineContinues(line string) (open, cont bool) {
 	return quote != 0, false
 }
 
+// heredoc is a here-document a line opens: its body runs from the next
+// line up to a line that is exactly word (after leading tabs, with
+// <<-).
+type heredoc struct {
+	word      string
+	stripTabs bool
+}
+
+// heredocs finds the here-documents a logical line opens, in order:
+// <<WORD, <<-WORD, <<'WORD', <<"WORD", <<\WORD, outside quotes and
+// comments. <<< (a here-string) opens none, and neither does a shift
+// in arithmetic ($((1 << 2))): a word after << that starts with a
+// digit, or a << inside (( )), is not taken for a delimiter.
+func heredocs(line string) []heredoc {
+	var hs []heredoc
+	var quote byte
+	arith := 0
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		case c == '\\':
+			i++
+			continue
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+			continue
+		case c == '\'' || c == '"':
+			quote = c
+			continue
+		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			return hs
+		case strings.HasPrefix(line[i:], "(("):
+			arith++
+			i++
+			continue
+		case strings.HasPrefix(line[i:], "))") && arith > 0:
+			arith--
+			i++
+			continue
+		}
+		if !strings.HasPrefix(line[i:], "<<") {
+			continue
+		}
+		if strings.HasPrefix(line[i:], "<<<") {
+			i += 2
+			continue
+		}
+		j := i + 2
+		h := heredoc{}
+		if j < len(line) && line[j] == '-' {
+			h.stripTabs = true
+			j++
+		}
+		for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
+			j++
+		}
+		// The delimiter word: quoting any part of it only stops
+		// expansion in the body; the quotes are not part of it.
+		var w strings.Builder
+		quotedWord := false
+	word:
+		for ; j < len(line); j++ {
+			c := line[j]
+			switch c {
+			case '\'', '"':
+				end := strings.IndexByte(line[j+1:], c)
+				if end < 0 {
+					break word
+				}
+				w.WriteString(line[j+1 : j+1+end])
+				j += end + 1
+				quotedWord = true
+			case '\\':
+				if j+1 < len(line) {
+					j++
+					w.WriteByte(line[j])
+					quotedWord = true
+				}
+			case ' ', '\t', ';', '&', '|', '<', '>', '(', ')':
+				break word
+			default:
+				w.WriteByte(c)
+			}
+		}
+		i = j - 1
+		h.word = w.String()
+		if h.word == "" || arith > 0 || (!quotedWord && h.word[0] >= '0' && h.word[0] <= '9') {
+			continue
+		}
+		hs = append(hs, h)
+	}
+	return hs
+}
+
 // shellBlockDelta is how far a top-level line opens (+) or closes (-)
 // an if/case/for/while/until block, counted on the line with its
 // quoted text removed so a quoted "if" does not count.
@@ -356,6 +457,7 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 	// was all the scan saw.
 	lines := strings.Split(script, "\n")
 	unterminated := false
+	unterminatedHeredoc := ""
 	for i := 0; i < len(lines); i++ {
 		raw := lines[i]
 		for {
@@ -372,6 +474,27 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 				raw = raw[:len(raw)-1] + lines[i]
 			} else {
 				raw += "\n" + lines[i]
+			}
+		}
+		// A here-document's body is data, not script: an apostrophe
+		// in `Don't forget` opened a quote that ran to the end of the
+		// script and swallowed depend() with it. Skip each body up to
+		// its terminator line.
+		for _, h := range heredocs(raw) {
+			closed := false
+			for i+1 < len(lines) {
+				i++
+				body := lines[i]
+				if h.stripTabs {
+					body = strings.TrimLeft(body, "\t")
+				}
+				if body == h.word {
+					closed = true
+					break
+				}
+			}
+			if !closed {
+				unterminatedHeredoc = h.word
 			}
 		}
 		line := strings.TrimSpace(raw)
@@ -437,6 +560,9 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 	var dynamic []string
 	if unterminated {
 		dynamic = append(dynamic, "a quoted string or continued line runs to the end of the script")
+	}
+	if unterminatedHeredoc != "" {
+		dynamic = append(dynamic, fmt.Sprintf("a here-document (<<%s) runs to the end of the script", unterminatedHeredoc))
 	}
 	for _, k := range mappedVars {
 		if logicSet[k] {
@@ -507,7 +633,22 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 		}
 	}
 
-	// Parse depend() body.
+	// Parse depend() body. When the scan ran off the end of the script
+	// before reaching depend(), look for it line by line: the script is
+	// wrapped, but slinit still orders it only by the dependencies
+	// written into the file, and dropping them was silent.
+	if (unterminated || unterminatedHeredoc != "") && !funcs["depend"] {
+		body, found, closed := rawDependBody(lines)
+		switch {
+		case found && closed:
+			dependBody = body
+			warns = append(warns, warning{"WARN",
+				"depend() read line by line past text the converter could not parse — check the dependencies against the script"})
+		case found:
+			warns = append(warns, warning{"WARN",
+				"dependencies were not read: depend() follows text the converter could not parse — add them by hand"})
+		}
+	}
 	warns = append(warns, parseDepend(cfg, dependBody)...)
 
 	// Fallback decision: if a custom start()/stop()/start_pre()/etc
@@ -757,6 +898,36 @@ func parseDepend(cfg *slinitConfig, body []string) []warning {
 				"mapped as if unconditional, or not at all — review manually", unparsed)})
 	}
 	return warns
+}
+
+// rawDependBody finds depend() in the script's physical lines, without
+// joining quoted or continued lines, for a script whose logical-line
+// scan never got there. closed is false when no line ends its braces.
+func rawDependBody(lines []string) (body []string, found, closed bool) {
+	depth := 0
+	for _, ln := range lines {
+		line := strings.TrimSpace(ln)
+		if !found {
+			m := funcDefRe.FindStringSubmatch(line)
+			if m == nil || m[1] != "depend" {
+				continue
+			}
+			found = true
+			if m[2] == "" {
+				continue
+			}
+			line = m[2]
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		body = append(body, line)
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+		if depth <= 0 {
+			return body, true, true
+		}
+	}
+	return body, found, false
 }
 
 // dependVerbs are the depend() commands parseDepend maps or reports.
