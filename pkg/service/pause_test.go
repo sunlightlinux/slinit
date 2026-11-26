@@ -9,14 +9,8 @@ import (
 	"time"
 )
 
-// pauseLocked and isPausedLocked hold queueMu, as a control connection
-// does, so the race detector sees the test, not the test's own reads.
-func pauseLocked(set *ServiceSet, svc *ProcessService) bool {
-	set.queueMu.Lock()
-	defer set.queueMu.Unlock()
-	return svc.Pause()
-}
-
+// isPausedLocked holds queueMu, as IsPaused requires, so the race
+// detector sees the code under test, not the test's own reads.
 func isPausedLocked(set *ServiceSet, svc *ProcessService) bool {
 	set.queueMu.Lock()
 	defer set.queueMu.Unlock()
@@ -41,7 +35,7 @@ func startPausedSleep(t *testing.T, set *ServiceSet, name string, stopTimeout ti
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 		waitForState(t, svc, StateStopped, 2*time.Second)
 	})
-	if !pauseLocked(set, svc) {
+	if !set.PauseService(svc) {
 		t.Fatal("Pause() on a running service returned false")
 	}
 	waitProcStopped(t, pid)
@@ -123,7 +117,7 @@ func TestPausedFlagClearedWithProcess(t *testing.T) {
 	}
 	pid := svc.PID()
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
-	if !pauseLocked(set, svc) {
+	if !set.PauseService(svc) {
 		t.Fatal("Pause() refused the fresh process")
 	}
 	waitProcStopped(t, pid)

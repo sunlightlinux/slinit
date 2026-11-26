@@ -1197,19 +1197,17 @@ func (c *Connection) handleReloadSignal(payload []byte) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	pid := svc.PID()
-	if pid <= 0 {
+	return c.replySignal(svc, sig)
+}
+
+// replySignal sends sig to svc and answers with the reply the signal and
+// reload-signal commands share.
+func (c *Connection) replySignal(svc service.Service, sig syscall.Signal) error {
+	hasPID, err := c.server.services.SignalService(svc, sig)
+	if !hasPID {
 		return c.writePacket(RplySignalNoPID, nil)
 	}
-
-	if ps, ok := svc.(*service.ProcessService); ok {
-		if ps.SendSignalWithControl(sig) {
-			return c.writePacket(RplyACK, nil)
-		}
-		return c.writePacket(RplySignalErr, []byte("signal failed"))
-	}
-
-	if err := syscall.Kill(pid, sig); err != nil {
+	if err != nil {
 		return c.writePacket(RplySignalErr, []byte(fmt.Sprintf("%v", err)))
 	}
 	return c.writePacket(RplyACK, nil)
@@ -1229,25 +1227,8 @@ func (c *Connection) handleSignal(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	pid := svc.PID()
-	if pid <= 0 {
-		return c.writePacket(RplySignalNoPID, nil)
-	}
-
-	sig := syscall.Signal(sigNum)
-
-	// Use SendSignalWithControl if available (ProcessService supports control-command-*)
-	if ps, ok := svc.(*service.ProcessService); ok {
-		if ps.SendSignalWithControl(sig) {
-			return c.writePacket(RplyACK, nil)
-		}
-		return c.writePacket(RplySignalErr, []byte("signal failed"))
-	}
-
-	if err := syscall.Kill(pid, sig); err != nil {
-		return c.writePacket(RplySignalErr, []byte(fmt.Sprintf("%v", err)))
-	}
-	return c.writePacket(RplyACK, nil)
+	// ProcessService runs control-command-<SIG> in place of the signal.
+	return c.replySignal(svc, syscall.Signal(sigNum))
 }
 
 func (c *Connection) handlePauseService(payload []byte) error {
@@ -1263,7 +1244,7 @@ func (c *Connection) handlePauseService(payload []byte) error {
 	if !ok {
 		return c.writePacket(RplyNAK, nil)
 	}
-	if ps.Pause() {
+	if c.server.services.PauseService(ps) {
 		return c.writePacket(RplyACK, nil)
 	}
 	return c.writePacket(RplyNAK, nil)
@@ -1282,7 +1263,7 @@ func (c *Connection) handleContinueService(payload []byte) error {
 	if !ok {
 		return c.writePacket(RplyNAK, nil)
 	}
-	if ps.Continue() {
+	if c.server.services.ContinueService(ps) {
 		return c.writePacket(RplyACK, nil)
 	}
 	return c.writePacket(RplyNAK, nil)

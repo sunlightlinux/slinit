@@ -576,6 +576,54 @@ func (ss *ServiceSet) MarkRestartingService(svc Service) {
 	svc.Record().MarkRestarting()
 }
 
+// SignalService sends sig to the service's process (`slinitctl signal`,
+// reload-signal), or runs its control-command-<SIG> when one is set. The
+// pid is read and signalled under queueMu, the lock its exit handler
+// clears it under, so the signal cannot reach a pid the service has
+// already let go of; a control command is run after the lock is let go,
+// since it can take up to the hook timeout. hasPID is false, and nothing
+// is sent, when the service has no process.
+func (ss *ServiceSet) SignalService(svc Service, sig syscall.Signal) (hasPID bool, err error) {
+	ss.queueMu.Lock()
+	var run func()
+	if ps, ok := svc.(*ProcessService); ok {
+		run, hasPID, err = ps.signalWithControl(sig)
+	} else if pid := svc.PID(); pid > 0 {
+		hasPID, err = true, syscall.Kill(pid, sig)
+	}
+	ss.queueMu.Unlock()
+	if run != nil {
+		run()
+	}
+	return hasPID, err
+}
+
+// PauseService stops the service's process with SIGSTOP, or runs its
+// control-command-STOP (`slinitctl pause`). It reports false if there is
+// no process or it is already paused. Locking as SignalService.
+func (ss *ServiceSet) PauseService(svc *ProcessService) bool {
+	ss.queueMu.Lock()
+	run, ok := svc.pause()
+	ss.queueMu.Unlock()
+	if run != nil {
+		run()
+	}
+	return ok
+}
+
+// ContinueService resumes a paused service with SIGCONT, or runs its
+// control-command-CONT (`slinitctl continue`). It reports false if there
+// is no process or it is not paused. Locking as SignalService.
+func (ss *ServiceSet) ContinueService(svc *ProcessService) bool {
+	ss.queueMu.Lock()
+	run, ok := svc.resume()
+	ss.queueMu.Unlock()
+	if run != nil {
+		run()
+	}
+	return ok
+}
+
 // StartOnceService starts the service with auto-restart turned off
 // (`slinitctl once`).
 func (ss *ServiceSet) StartOnceService(svc Service) {

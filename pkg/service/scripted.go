@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,11 @@ type ScriptedService struct {
 	stopPID     int
 	startHandle process.ProcessHandle
 	stopHandle  process.ProcessHandle
+
+	// pidPublished mirrors the PID that PID() reports, for readers that
+	// cannot take queueMu (the rusage query); see ProcessService. Written
+	// by publishPID at the four assignment sites of startPID/stopPID.
+	pidPublished atomic.Int64
 
 	// Timeouts
 	startTimeout time.Duration
@@ -209,11 +215,19 @@ func (s *ScriptedService) SetStopTimeout(d time.Duration) { s.stopTimeout = d }
 
 // PID returns the PID of the currently running command (start or stop).
 func (s *ScriptedService) PID() int {
-	// See ProcessService.PID() — same reentrancy rationale.
+	// See ProcessService.PID() — same reentrancy rationale, and the same
+	// atomic mirror rather than a bare read of startPID/stopPID.
+	return int(s.pidPublished.Load())
+}
+
+// publishPID keeps the mirror in step with whichever pid PID() should
+// report: the start command's, else the stop command's.
+func (s *ScriptedService) publishPID() {
 	if s.startPID > 0 {
-		return s.startPID
+		s.pidPublished.Store(int64(s.startPID))
+		return
 	}
-	return s.stopPID
+	s.pidPublished.Store(int64(s.stopPID))
 }
 
 // runningStopCommand reports whether this service's current PID belongs
@@ -385,6 +399,7 @@ func (s *ScriptedService) BringUp() bool {
 	}
 
 	s.startPID = pid
+	s.publishPID()
 	s.startHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Create utmp entry for the start process
@@ -437,6 +452,7 @@ func (s *ScriptedService) BringDown() {
 	}
 
 	s.stopPID = pid
+	s.publishPID()
 	s.stopHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Monitor the stop command
@@ -566,6 +582,7 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	defer s.services.queueMu.Unlock()
 
 	s.startPID = 0
+	s.publishPID()
 	s.startHandle.Clear()
 	s.cancelTimer()
 	s.recordExit(exit)
@@ -653,6 +670,7 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 	defer s.services.queueMu.Unlock()
 
 	s.stopPID = 0
+	s.publishPID()
 	s.stopHandle.Clear()
 	s.cancelTimer()
 	s.recordExit(exit)

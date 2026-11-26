@@ -3596,23 +3596,34 @@ func (s *ProcessService) execPreStopHook() {
 // The command receives the service PID as an appended argument.
 // Runs synchronously with a timeout.
 func (s *ProcessService) execControlCommand(sigName string, command []string) {
+	s.prepareControlCommand(sigName, command)()
+}
+
+// prepareControlCommand builds the control command for a signal and returns
+// a function that runs it; the caller must call it. Everything the command
+// needs from the service, the pid above all, is read here, so a caller
+// holding queueMu can let the lock go before running the command, which
+// may take up to the hook timeout.
+func (s *ProcessService) prepareControlCommand(sigName string, command []string) func() {
 	args := make([]string, len(command)-1, len(command))
 	copy(args, command[1:])
 	args = append(args, strconv.Itoa(s.pid))
 
 	timeout := s.effectiveHookTimeout()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	cmd := exec.CommandContext(ctx, command[0], args...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
 	s.applyRunAs(cmd)
 
-	s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
-	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
-		s.services.logger.Error("Service '%s': control-command-%s failed: %v",
-			s.serviceName, sigName, err)
+	return func() {
+		defer cancel()
+		s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
+		if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
+			s.services.logger.Error("Service '%s': control-command-%s failed: %v",
+				s.serviceName, sigName, err)
+		}
 	}
 }
 
@@ -3644,58 +3655,65 @@ func signalName(sig syscall.Signal) string {
 	}
 }
 
-// SendSignalWithControl sends a signal to the service, using control-command if configured.
-// Returns true if signal was sent (or control command ran).
-func (s *ProcessService) SendSignalWithControl(sig syscall.Signal) bool {
+// signalWithControl sends sig to the service's process, or, when a
+// control-command-<SIG> is configured, returns that command for the caller
+// to run. Called with queueMu held (ServiceSet.SignalService): the pid is
+// read and signalled under the lock that clears it on exit, and the
+// command, which can run for the hook timeout, is run after the lock is
+// let go. hasPID is false when there is no process.
+func (s *ProcessService) signalWithControl(sig syscall.Signal) (run func(), hasPID bool, err error) {
 	if s.pid <= 0 {
-		return false
+		return nil, false, nil
 	}
 	sigName := signalName(sig)
 	if cmd, ok := s.controlCommands[sigName]; ok && len(cmd) > 0 {
-		s.execControlCommand(sigName, cmd)
-		return true
+		return s.prepareControlCommand(sigName, cmd), true, nil
 	}
-	err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
-	return err == nil
+	return nil, true, process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
 }
 
-// Pause suspends the service process with SIGSTOP (or control-command-STOP).
-func (s *ProcessService) Pause() bool {
+// pause suspends the service process with SIGSTOP, or returns
+// control-command-STOP for the caller to run. Called with queueMu held
+// (ServiceSet.PauseService), with the same split as signalWithControl.
+func (s *ProcessService) pause() (run func(), ok bool) {
 	if s.pid <= 0 || s.paused {
-		return false
+		return nil, false
 	}
 	if cmd, ok := s.controlCommands["STOP"]; ok && len(cmd) > 0 {
-		s.execControlCommand("STOP", cmd)
+		run = s.prepareControlCommand("STOP", cmd)
 	} else {
 		if err := process.SignalProcess(s.pid, syscall.SIGSTOP, s.Flags.SignalProcessOnly); err != nil {
 			s.services.logger.Error("Service '%s': SIGSTOP failed: %v", s.serviceName, err)
-			return false
+			return nil, false
 		}
 	}
 	s.paused = true
 	s.services.logger.Info("Service '%s': paused", s.serviceName)
-	return true
+	return run, true
 }
 
-// Continue resumes a paused service process with SIGCONT (or control-command-CONT).
-func (s *ProcessService) Continue() bool {
+// resume resumes a paused service process with SIGCONT, or returns
+// control-command-CONT for the caller to run. Called with queueMu held
+// (ServiceSet.ContinueService).
+func (s *ProcessService) resume() (run func(), ok bool) {
 	if s.pid <= 0 || !s.paused {
-		return false
+		return nil, false
 	}
 	if cmd, ok := s.controlCommands["CONT"]; ok && len(cmd) > 0 {
-		s.execControlCommand("CONT", cmd)
+		run = s.prepareControlCommand("CONT", cmd)
 	} else {
 		if err := process.SignalProcess(s.pid, syscall.SIGCONT, s.Flags.SignalProcessOnly); err != nil {
 			s.services.logger.Error("Service '%s': SIGCONT failed: %v", s.serviceName, err)
-			return false
+			return nil, false
 		}
 	}
 	s.paused = false
 	s.services.logger.Info("Service '%s': continued", s.serviceName)
-	return true
+	return run, true
 }
 
-// IsPaused returns whether the service is currently paused.
+// IsPaused returns whether the service is currently paused. Called with
+// queueMu held.
 func (s *ProcessService) IsPaused() bool { return s.paused }
 
 // stopLoggerCommands kills any running output/error logger processes and
