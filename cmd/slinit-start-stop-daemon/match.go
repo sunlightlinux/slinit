@@ -123,14 +123,16 @@ func processMatches(pid int, m MatchCriteria) bool {
 	}
 	if m.Name != "" {
 		nameSrc := commOf(pid)
+		want := commName(m.Name)
 		if m.Interpreted && isInterpreter(exePath) {
 			// Script's argv[1] basename is what an operator thinks of as
 			// the "process name" for an interpreted daemon.
 			if scriptPath := readInterpretedTarget(pid); scriptPath != "" {
 				nameSrc = filepath.Base(scriptPath)
+				want = m.Name // not a comm: never truncated
 			}
 		}
-		if nameSrc != m.Name {
+		if nameSrc != want {
 			return false
 		}
 	}
@@ -176,6 +178,33 @@ func sameExecutable(m MatchCriteria, got, statPath string) bool {
 		return false
 	}
 	return os.SameFile(m.execInfo, fi)
+}
+
+// commLen is the longest task name the kernel keeps (TASK_COMM_LEN
+// 16, NUL included); /proc/PID/comm holds the first 15 bytes.
+const commLen = 15
+
+// commName is what /proc/PID/comm reads for a process named name. A
+// --name longer than that never equalled any comm, so --start
+// launched duplicates and --stop found nothing; it now matches on the
+// first 15 bytes, as the kernel stored them.
+func commName(name string) string {
+	if len(name) > commLen {
+		return name[:commLen]
+	}
+	return name
+}
+
+// nameLengthWarning is the warning for a --name the kernel truncates;
+// "" when it fits. dpkg's start-stop-daemon warns the same way (but
+// still compares the whole name, so it never matches).
+func nameLengthWarning(name string) string {
+	if len(name) <= commLen {
+		return ""
+	}
+	return fmt.Sprintf("warning: --name %q is longer than the %d characters the kernel keeps "+
+		"as a process name; matching on %q (use --exec to match exactly)",
+		name, commLen, commName(name))
 }
 
 func commOf(pid int) string {

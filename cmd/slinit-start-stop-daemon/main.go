@@ -476,6 +476,9 @@ func matchCriteriaFrom(opts Options) (MatchCriteria, error) {
 		UID:         -1,
 		Interpreted: opts.Interpreted,
 	}
+	if w := nameLengthWarning(opts.Name); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	if opts.MatchUser != "" {
 		uid, err := lookupUID(opts.MatchUser)
 		if err != nil {

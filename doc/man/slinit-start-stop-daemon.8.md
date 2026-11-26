@@ -71,7 +71,10 @@ When multiple are provided, a process must satisfy **all** of them.
 
 **-n**, **--name** *NAME*
 :   Match against **/proc/PID/comm** (the kernel task name, truncated
-    to 15 bytes).
+    to 15 bytes). A longer *NAME* is matched on its first 15 bytes,
+    the part the kernel keeps, with a warning on stderr (as dpkg's
+    start-stop-daemon warns); use **--exec** to match exactly. With
+    **--interpreted**, the script name is compared whole.
 
 **-u**, **--user** *USER*
 :   Match processes owned by *USER* (name or uid). On **--start** this

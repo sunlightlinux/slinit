@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -302,4 +303,37 @@ func TestExecMatchReplacedBinary(t *testing.T) {
 func mustReadlink(p string) string {
 	s, _ := os.Readlink(p)
 	return s
+}
+
+// The kernel keeps 15 bytes of a task name, so a longer --name never
+// equalled any /proc/PID/comm: --stop found nothing and --start
+// launched duplicates. It now matches on the stored prefix.
+func TestNameLongerThanCommMatches(t *testing.T) {
+	const long = "longdaemonname-xyz"
+	pid, _ := startCopiedSleep(t, long)
+	if c := commOf(pid); c != long[:15] {
+		t.Skipf("comm = %q, not the 15-byte truncation this test is about", c)
+	}
+	if !processMatches(pid, MatchCriteria{Name: long, UID: -1}) {
+		t.Errorf("--name %s did not match comm %q", long, commOf(pid))
+	}
+	if !processMatches(pid, MatchCriteria{Name: long[:15], UID: -1}) {
+		t.Errorf("--name %s did not match", long[:15])
+	}
+	if processMatches(pid, MatchCriteria{Name: "longdaemonnamX-xyz", UID: -1}) {
+		t.Error("a name differing in the first 15 bytes matched")
+	}
+}
+
+func TestNameLengthWarning(t *testing.T) {
+	if w := nameLengthWarning("sshd"); w != "" {
+		t.Errorf("short name warned: %q", w)
+	}
+	if w := nameLengthWarning("exactly15chars!"); w != "" {
+		t.Errorf("15-byte name warned: %q", w)
+	}
+	w := nameLengthWarning("longdaemonname-xyz")
+	if !strings.Contains(w, "longdaemonname-") || !strings.Contains(w, "--exec") {
+		t.Errorf("warning = %q", w)
+	}
 }
