@@ -206,14 +206,29 @@ func TestExecMatchesDeletedBinary(t *testing.T) {
 	}
 }
 
-// startCopiedSleep copies sleep(1) into dir/bin/<name>, makes dir/sbin
-// a symlink to bin (the merged-/usr layout) and starts it through the
-// sbin spelling. Returns the pid and the sbin path.
+// sleeperEnv makes a copy of this test binary sleep instead of running
+// tests: startCopiedSleep's daemon. sleep(1) itself is not usable there:
+// copied under another name, a multi-call build (busybox, uutils
+// coreutils) dispatches on argv[0], finds no "mydaemon" applet and exits
+// at once, and the tests then looked at a process that was already gone.
+const sleeperEnv = "SLINIT_SSD_TEST_SLEEPER"
+
+func init() {
+	if os.Getenv(sleeperEnv) == "1" {
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+}
+
+// startCopiedSleep copies this test binary, in sleeper mode, into
+// dir/bin/<name>, makes dir/sbin a symlink to bin (the merged-/usr
+// layout) and starts it through the sbin spelling. Returns the pid and
+// the sbin path.
 func startCopiedSleep(t *testing.T, name string) (int, string) {
 	t.Helper()
-	src, err := exec.LookPath("sleep")
+	src, err := os.Executable()
 	if err != nil {
-		t.Skip("no sleep binary")
+		t.Skip(err)
 	}
 	data, err := os.ReadFile(src)
 	if err != nil {
@@ -230,23 +245,32 @@ func startCopiedSleep(t *testing.T, name string) (int, string) {
 		t.Fatal(err)
 	}
 	viaSbin := filepath.Join(dir, "sbin", name)
-	cmd := exec.Command(viaSbin, "30")
+	cmd := exec.Command(viaSbin)
+	cmd.Env = append(os.Environ(), sleeperEnv+"=1")
 	if err := cmd.Start(); err != nil {
-		t.Skipf("copied sleep does not run: %v", err)
+		t.Fatalf("copied sleeper does not run: %v", err)
 	}
 	pid := cmd.Process.Pid
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		<-exited
 	})
-	// Wait for the exec to land so /proc/PID/exe is the copy.
-	for i := 0; i < 50; i++ {
+	// Wait for the exec to land so /proc/PID/exe is the copy, and make
+	// sure it is still running: the tests below need a live process.
+	for i := 0; i < 100; i++ {
+		select {
+		case <-exited:
+			t.Fatal("copied sleeper exited at once")
+		default:
+		}
 		if l, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); filepath.Base(l) == name {
 			return pid, viaSbin
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Skip("copied sleep never exec'd (multi-call binary?)")
+	t.Fatal("copied sleeper never exec'd")
 	return 0, ""
 }
 
