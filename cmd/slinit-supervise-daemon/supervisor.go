@@ -47,6 +47,7 @@ func runSupervisor(opts Options) int {
 	respawn := 0
 	for {
 		daemonPID, waitCh, err := startDaemon(opts)
+		started := time.Now()
 		if err != nil {
 			superLogf(opts, "spawn daemon: %v", err)
 			return exitInsufficientPri
@@ -74,7 +75,7 @@ func runSupervisor(opts Options) int {
 						limiter.count, opts.RespawnPeriod)
 					return exitInsufficientPri
 				}
-				respawn++
+				respawn = nextRespawn(respawn, time.Since(started), opts.RespawnPeriod)
 				delay := backoffDelay(opts, respawn)
 				if delay > 0 {
 					timer := time.NewTimer(delay)

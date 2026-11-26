@@ -156,7 +156,9 @@ daemon.
 
 **--respawn-delay-step** *DURATION*
 :   Additional backoff added per respawn (linear step). Default
-    **128ms**.
+    **128ms**. The step count starts over after a daemon that stayed
+    up for at least **--respawn-period** (12 seconds if that is 0),
+    so occasional crashes do not build up to the cap.
 
 **--respawn-delay-cap** *DURATION*
 :   Ceiling for the stepped backoff. Default **30sec**.
