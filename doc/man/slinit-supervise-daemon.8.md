@@ -39,7 +39,13 @@ daemon.
 :   Fork off a detached supervisor that owns the daemon's lifecycle,
     then wait until the supervisor writes **--pidfile** before
     returning. The daemon PID is recorded alongside the supervisor
-    pidfile as *PIDFILE***.daemon**.
+    pidfile as *PIDFILE***.daemon**. The supervisor is this same
+    program re-executed with a private first argument; no environment
+    variable marks it, so nothing the daemon starts inherits the
+    switch, and a **--stop** or **--signal** run from under a
+    supervised daemon behaves as it does anywhere else. The
+    **SLINIT_SSD_SUPERVISOR** variable older versions used is ignored
+    and removed from the daemon's environment.
 
 **-K**, **--stop**
 :   Read the supervisor pidfile, deliver **SIGTERM**, and wait for

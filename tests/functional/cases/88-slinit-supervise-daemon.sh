@@ -1,9 +1,9 @@
 #!/bin/sh
 # Test: slinit-supervise-daemon detach + supervisor loop against a
 # real short-lived child. Validates: re-exec into supervisor branch
-# (SLINIT_SSD_SUPERVISOR=1), supervisor pidfile, daemon .pidfile
-# companion, respawn on child exit, --signal delivery to daemon,
-# --stop teardown.
+# (private --slinit-internal-supervisor argv marker), supervisor
+# pidfile, daemon .pidfile companion, respawn on child exit, --signal
+# delivery to daemon, --stop teardown.
 
 wait_for_service "boot" "STARTED" 10
 

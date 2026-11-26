@@ -15,7 +15,7 @@ import (
 )
 
 // cmdStart is the top-level --start path. It re-execs the current
-// binary with runnerEnvVar set so the child instance takes the
+// binary with supervisorMarker first so the child instance takes the
 // runSupervisor() branch, then polls the pidfile until the supervisor
 // has written it. This mirrors OpenRC's double-fork daemon layout in
 // spirit — we get a detached supervisor and a synchronous signal
@@ -50,8 +50,8 @@ func cmdStart(opts Options) int {
 	_ = os.Remove(opts.PidFile)
 	_ = os.Remove(opts.PidFile + ".daemon")
 
-	cmd := exec.Command(self, os.Args[1:]...)
-	cmd.Env = append(os.Environ(), runnerEnvVar+"=1")
+	cmd := exec.Command(self, append([]string{supervisorMarker}, os.Args[1:]...)...)
+	cmd.Env = scrubEnviron(os.Environ())
 	// Detach: setsid puts the supervisor in its own session, /dev/null
 	// stdio so the caller's terminal isn't tied up.
 	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)

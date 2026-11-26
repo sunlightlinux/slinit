@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -146,9 +147,9 @@ func startDaemon(opts Options) (int, <-chan string, error) {
 	if opts.ChDir != "" {
 		cmd.Dir = opts.ChDir
 	}
-	if len(opts.Env) > 0 {
-		cmd.Env = append(os.Environ(), opts.Env...)
-	}
+	// Always an explicit environment, so the legacy supervisor switch
+	// is never handed to the daemon even if something put it back.
+	cmd.Env = append(scrubEnviron(os.Environ()), opts.Env...)
 
 	sys := &syscall.SysProcAttr{}
 	if opts.Chroot != "" {
@@ -231,6 +232,18 @@ func stopDaemon(opts Options, pid int) error {
 		}
 	}
 	return fmt.Errorf("daemon pid=%d still alive after retry schedule", pid)
+}
+
+// scrubEnviron returns env without legacySupervisorEnvVar.
+func scrubEnviron(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, legacySupervisorEnvVar+"=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 func setupStdio(cmd *exec.Cmd, opts Options) error {
