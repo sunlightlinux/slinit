@@ -48,8 +48,9 @@ default is **/run/slinit**.
 :   Legacy alias for **service_get_value**.
 
 **service_set_value** *KEY* [*VALUE*]
-:   Persist *VALUE* under *KEY*. If *VALUE* is omitted or empty, the
-    key is deleted.
+:   Persist *VALUE* under *KEY*. If *VALUE* is omitted, the key is
+    deleted; an explicit empty *VALUE* (**""**) is stored as an empty
+    value, as in OpenRC.
 
 **save_options** *KEY* [*VALUE*]
 :   Legacy alias for **service_set_value**.
@@ -94,7 +95,7 @@ start() {
 stop() {
     pidfile=$(service_get_value pidfile) || pidfile=/run/default.pid
     kill "$(cat "$pidfile")"
-    service_set_value pidfile   # empty value → delete
+    service_set_value pidfile   # no value → delete
 }
 ```
 

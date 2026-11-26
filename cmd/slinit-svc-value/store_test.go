@@ -68,22 +68,59 @@ func TestStoreSetThenGetRoundTrip(t *testing.T) {
 	}
 }
 
-func TestStoreSetEmptyValueDeletes(t *testing.T) {
+func TestStoreSetEmptyValueIsStored(t *testing.T) {
 	setStoreEnv(t, "svc")
 	s, _ := newStore()
 	s.Set("key", "value")
-	if _, ok, _ := s.Get("key"); !ok {
-		t.Fatal("precondition: key should exist")
-	}
+	// OpenRC's rc_service_value_set() only unlinks on a NULL value;
+	// "" is written as an empty file. This used to delete the key.
 	if err := s.Set("key", ""); err != nil {
 		t.Fatal(err)
 	}
+	got, ok, err := s.Get("key")
+	if err != nil || !ok || got != "" {
+		t.Errorf("after Set(\"\"): got=%q ok=%v err=%v, want stored empty value", got, ok, err)
+	}
+}
+
+func TestStoreDelete(t *testing.T) {
+	setStoreEnv(t, "svc")
+	s, _ := newStore()
+	s.Set("key", "value")
+	if err := s.Delete("key"); err != nil {
+		t.Fatal(err)
+	}
 	if _, ok, _ := s.Get("key"); ok {
-		t.Error("empty-value Set should delete")
+		t.Error("Delete should remove the key")
 	}
 	// Deleting an already-missing key is a no-op, not an error.
-	if err := s.Set("gone", ""); err != nil {
+	if err := s.Delete("gone"); err != nil {
 		t.Errorf("delete-missing: %v", err)
+	}
+	if err := s.Delete(".."); err == nil {
+		t.Error("Delete(\"..\"): expected error")
+	}
+}
+
+// RC_SVCNAME is a directory component of the store path; a name with
+// a separator or a dot-dot used to escape options/ entirely.
+func TestNewStoreRejectsTraversalServiceName(t *testing.T) {
+	for _, name := range []string{"../../escaped", "..", ".", "a/b"} {
+		dir := setStoreEnv(t, name)
+		s, err := newStore()
+		if err == nil {
+			s.Set("k", "v")
+			t.Errorf("RC_SVCNAME=%q accepted (store service=%q)", name, s.service)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "..", "escaped")); err == nil {
+			t.Errorf("RC_SVCNAME=%q wrote outside RC_SVCDIR", name)
+			os.RemoveAll(filepath.Join(dir, "..", "escaped"))
+		}
+	}
+	t.Setenv("RC_SVCNAME", "")
+	t.Setenv("SLINIT_SERVICENAME", "../evil")
+	if _, err := newStore(); err == nil {
+		t.Error("SLINIT_SERVICENAME=../evil accepted")
 	}
 }
 

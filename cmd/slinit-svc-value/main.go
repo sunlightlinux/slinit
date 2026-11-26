@@ -106,11 +106,17 @@ func runSet(s *store, applet string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "%s: missing key argument\n", applet)
 		return exitBadUsage
 	}
-	value := ""
+	// Only an ABSENT value deletes. An explicit empty string is a
+	// value like any other: OpenRC passes argv[1] (NULL when missing)
+	// straight to rc_service_value_set(), which unlinks on NULL and
+	// writes an empty file on "".
+	var err error
 	if len(argv) >= 2 {
-		value = argv[1]
+		err = s.Set(argv[0], argv[1])
+	} else {
+		err = s.Delete(argv[0])
 	}
-	if err := s.Set(argv[0], value); err != nil {
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", applet, err)
 		return exitFailure
 	}
@@ -134,7 +140,7 @@ func printUsage() {
 
   service_get_value KEY          print stored value for KEY (exit 1 on miss)
   get_options       KEY          alias for service_get_value
-  service_set_value KEY [VALUE]  persist KEY=VALUE; empty VALUE deletes
+  service_set_value KEY [VALUE]  persist KEY=VALUE; no VALUE deletes
   save_options      KEY [VALUE]  alias for service_set_value
   service_export    VAR [VAR...] capture each VAR from env if not stored
 
