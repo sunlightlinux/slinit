@@ -1855,6 +1855,7 @@ func (s *ProcessService) BringDown() {
 	if len(s.stopCommand) > 0 {
 		if s.execStopCommand() {
 			s.stopIssued = true
+			s.resumeForStop()
 			if s.stopTimeout > 0 {
 				s.armTimer(s.stopTimeout, timerStopTimeout)
 			}
@@ -1896,6 +1897,7 @@ func (s *ProcessService) BringDown() {
 			s.logStopSignalFailure(err)
 		}
 	}
+	s.resumeForStop()
 
 	s.stopIssued = true
 
@@ -1910,6 +1912,24 @@ func (s *ProcessService) BringDown() {
 	// Arm stop timeout for SIGKILL escalation
 	if s.stopTimeout > 0 {
 		s.armTimer(s.stopTimeout, timerStopTimeout)
+	}
+}
+
+// resumeForStop sends SIGCONT to a paused service during its stop. A
+// SIGSTOPped process keeps the stop signal pending until it is continued,
+// so only the stop-timeout's SIGKILL would end it, and with stop-timeout
+// = 0 nothing would; a stop-command cannot get an answer from it either.
+// systemd continues every process it sends a stop signal to for the same
+// reason (kill_and_sigcont). The pending signal is delivered as the
+// process wakes. Called with queueMu held.
+func (s *ProcessService) resumeForStop() {
+	if !s.paused {
+		return
+	}
+	s.paused = false
+	if err := process.SignalProcess(s.pid, syscall.SIGCONT, s.Flags.SignalProcessOnly); err != nil &&
+		!errors.Is(err, syscall.ESRCH) {
+		s.services.logger.Error("Service '%s': SIGCONT on stop failed: %v", s.serviceName, err)
 	}
 }
 
