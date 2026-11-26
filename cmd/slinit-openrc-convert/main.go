@@ -229,7 +229,7 @@ func convertScript(path, wrapper string) (*slinitConfig, []warning, error) {
 
 var (
 	varAssignRe = regexp.MustCompile(`(?s)^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
-	funcDefRe   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*(\{)?\s*$`)
+	funcDefRe   = regexp.MustCompile(`(?s)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*(\{.*)?$`)
 
 	// logicAssignRe finds an assignment to a variable the converter maps
 	// anywhere in a line: after a separator (`[ -n "$x" ] && pidfile=…`,
@@ -386,13 +386,14 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 		if m := funcDefRe.FindStringSubmatch(line); m != nil {
 			inFunc = m[1]
 			funcs[inFunc] = true
-			// If brace on same line, we're already at depth 1.
-			if m[2] == "{" {
-				braceDepth = 1
-			} else {
-				braceDepth = 0
+			braceDepth = 0
+			if m[2] == "" {
+				continue // the brace opens on a line of its own
 			}
-			continue
+			// The brace, and maybe the whole body, is on this line:
+			// `depend() { need net; }` was not taken for a function at
+			// all, and its dependencies were dropped.
+			line = m[2]
 		}
 		if inFunc != "" {
 			if inFunc != "depend" {
@@ -400,7 +401,7 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 			}
 			// Track brace depth cheaply.
 			braceDepth += strings.Count(line, "{") - strings.Count(line, "}")
-			if inFunc == "depend" && line != "{" && line != "}" {
+			if inFunc == "depend" {
 				dependBody = append(dependBody, line)
 			}
 			if braceDepth <= 0 {
@@ -652,34 +653,88 @@ func parseDepend(cfg *slinitConfig, body []string) []warning {
 			}
 		}
 	}
+	// The body is shell. Each ;-separated command that starts with a
+	// dependency verb is mapped; anything else — if/case/loops, local,
+	// helper calls — cannot be followed, so a dependency it sets or
+	// guards is reported instead of being taken silently.
+	depth := 0
+	var unparsed []string
 	for _, ln := range body {
-		fields := strings.Fields(ln)
-		if len(fields) < 2 {
-			continue
-		}
-		verb, rest := fields[0], fields[1:]
-		switch verb {
-		case "need":
-			cfg.depends = append(cfg.depends, rest...)
-			for _, n := range rest {
-				if !exists(n) {
-					warns = append(warns, warning{"WARN", fmt.Sprintf(
-						"depend `need %s`: no init.d script of that name beside this one — the service will not load until a slinit service %q exists", n, n)})
+		for _, cmd := range strings.Split(ln, ";") {
+			var fields []string
+			for _, f := range strings.Fields(cmd) {
+				if f != "{" && f != "}" {
+					fields = append(fields, f)
 				}
 			}
-		case "want":
-			soft(verb, rest, &cfg.waitsFor)
-		case "use", "after":
-			soft(verb, rest, &cfg.waitsFor)
-		case "before":
-			warns = append(warns, warning{"WARN", fmt.Sprintf("depend `before %v` not mappable — invert on the target side", rest)})
-		case "provide":
-			warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `provide %v` — no direct slinit alias; consumers must depend on this svc's actual name", rest)})
-		case "keyword":
-			warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `keyword %v` — openrc runlevel gate; slinit uses condition-* predicates instead", rest)})
+			if len(fields) > 0 && (fields[0] == "then" || fields[0] == "else" || fields[0] == "do") {
+				fields = fields[1:]
+			}
+			if len(fields) == 0 {
+				continue
+			}
+			d := shellBlockDelta(strings.Join(fields, " "))
+			verb := fields[0]
+			if d != 0 || !dependVerbs[verb] {
+				unparsed = append(unparsed, strings.Join(fields, " "))
+				if depth += d; depth < 0 {
+					depth = 0
+				}
+				continue
+			}
+			var rest []string
+			for _, n := range fields[1:] {
+				if strings.ContainsAny(n, "$`") {
+					warns = append(warns, warning{"WARN", fmt.Sprintf(
+						"depend `%s %s` left out: the name is known only when the script runs — review manually", verb, n)})
+					continue
+				}
+				rest = append(rest, n)
+			}
+			if len(rest) == 0 {
+				continue
+			}
+			if depth > 0 && verb != "config" {
+				warns = append(warns, warning{"WARN", fmt.Sprintf(
+					"depend `%s %s` sits inside shell logic in depend(); mapped as if unconditional — review manually",
+					verb, strings.Join(rest, " "))})
+			}
+			switch verb {
+			case "need":
+				cfg.depends = append(cfg.depends, rest...)
+				for _, n := range rest {
+					if !exists(n) {
+						warns = append(warns, warning{"WARN", fmt.Sprintf(
+							"depend `need %s`: no init.d script of that name beside this one — the service will not load until a slinit service %q exists", n, n)})
+					}
+				}
+			case "want":
+				soft(verb, rest, &cfg.waitsFor)
+			case "use", "after":
+				soft(verb, rest, &cfg.waitsFor)
+			case "before":
+				warns = append(warns, warning{"WARN", fmt.Sprintf("depend `before %v` not mappable — invert on the target side", rest)})
+			case "provide":
+				warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `provide %v` — no direct slinit alias; consumers must depend on this svc's actual name", rest)})
+			case "keyword":
+				warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `keyword %v` — openrc runlevel gate; slinit uses condition-* predicates instead", rest)})
+			case "config":
+				warns = append(warns, warning{"NOTE", fmt.Sprintf("depend `config %v` — openrc dependency-cache input, nothing to map", rest)})
+			}
 		}
 	}
+	if len(unparsed) > 0 {
+		warns = append(warns, warning{"WARN", fmt.Sprintf(
+			"depend() has shell the converter cannot follow (%q); a dependency it sets or guards is "+
+				"mapped as if unconditional, or not at all — review manually", unparsed)})
+	}
 	return warns
+}
+
+// dependVerbs are the depend() commands parseDepend maps or reports.
+var dependVerbs = map[string]bool{
+	"need": true, "want": true, "use": true, "after": true,
+	"before": true, "provide": true, "keyword": true, "config": true,
 }
 
 // stripQuotes removes surrounding "..." or '...' from a value (single

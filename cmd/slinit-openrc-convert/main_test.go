@@ -636,3 +636,51 @@ func TestUnterminatedQuoteIsWrapped(t *testing.T) {
 		t.Errorf("no WARN about the unterminated quote: %v", warns)
 	}
 }
+
+// depend() written on one line was not taken for a function, so its
+// dependencies were dropped without a word.
+func TestInlineDepend(t *testing.T) {
+	initd := t.TempDir()
+	for _, n := range []string{"localmount", "bootmisc", "net"} {
+		os.WriteFile(filepath.Join(initd, n), []byte("#!/sbin/openrc-run\n"), 0o755)
+	}
+	for _, body := range []string{
+		"depend() { need localmount net; after bootmisc; }\n",
+		"depend() { need localmount net; after bootmisc\n}\n",
+		"depend()\n{ need localmount net; after bootmisc; }\n",
+	} {
+		script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\n" + body
+		cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: filepath.Join(initd, "d")}
+		parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+		if strings.Join(cfg.depends, " ") != "localmount net" || strings.Join(cfg.waitsFor, " ") != "bootmisc" {
+			t.Errorf("%q: depends %v waits-for %v, want [localmount net] [bootmisc]", body, cfg.depends, cfg.waitsFor)
+		}
+		if cfg.command != "/usr/sbin/d" {
+			t.Errorf("%q: command = %q", body, cfg.command)
+		}
+	}
+}
+
+// A depend() body is shell. What the converter cannot follow — a
+// conditional need, a name from a variable, a loop — is reported, not
+// mapped silently.
+func TestDependShellIsReported(t *testing.T) {
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\n" +
+		"depend() {\n\tlocal w=\"\"\n\tif [ -e /etc/x ]; then\n\t\tneed root\n\tfi\n\twant $w\n}\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	for _, want := range []string{"`need root` sits inside shell logic", "`want $w` left out", "local w="} {
+		found := false
+		for _, w := range warns {
+			found = found || (w.level == "WARN" && strings.Contains(w.msg, want))
+		}
+		if !found {
+			t.Errorf("no WARN containing %q: %v", want, warns)
+		}
+	}
+	for _, d := range append(cfg.depends, cfg.waitsFor...) {
+		if strings.Contains(d, "$") {
+			t.Errorf("dependency on %q emitted", d)
+		}
+	}
+}

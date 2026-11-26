@@ -56,7 +56,12 @@ or **after** is kept only when a script of that name sits in the same
 directory as the one converted, and is otherwise left out with a note.
 A **need** is always kept, with a warning when no such script exists.
 **before**, **provide** and **keyword** cannot be mapped and produce a
-warning or note.
+warning or note. The body may sit on one line
+(**depend() { need net; }**), with commands separated by **;**. It is
+shell, and only those verbs are read: a dependency named by a variable
+is left out, one inside an **if**, **case** or loop is mapped as if
+unconditional, and any other shell in the body is listed; each with a
+warning.
 Variables such as **required_files**, **required_dirs**,
 **start_stop_daemon_args**, **supervise_daemon_args**,
 **capabilities**, **output_log** and **extra_commands** are reported
