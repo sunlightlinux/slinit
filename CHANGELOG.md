@@ -33,6 +33,15 @@ requires.
 
 ### Security
 
+- **`pre-start-command` and `post-start-command` ran as root** whatever
+  `run-as` said; systemd runs `ExecStartPre=`/`ExecStartPost=` as
+  `User=`. They now run with the service's run-as user, group and
+  supplementary groups. As in systemd, a leading `+` runs a command with
+  full privileges (`pre-start-command = +/bin/mkdir -p /run/foo`); it is
+  accepted on pre-start, post-start, stop, finish, pre-stop, control and
+  exec-condition commands, and systemd's `+` (and `!` on start hooks) is
+  translated to it. *Compat:* a start hook of a `run-as` service that
+  needed root must now be written with `+`.
 - **Auxiliary commands ignored `run-as`**: `cron-command`,
   `healthcheck-command`, `unhealthy-command`, `exec-condition`,
   `log-processor` and `env-generator` ran as root under PID 1 whatever
