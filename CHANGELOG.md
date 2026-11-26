@@ -969,6 +969,24 @@ requires.
 
 ### Fixed
 
+- **OpenRC helper parity (`slinit-fstabinfo`, `slinit-mountinfo`,
+  `esyslog`)**:
+  - `fstabinfo` obeyed an inherited `EINFO_QUIET`, so in a quiet boot
+    `$(fstabinfo --passno =2)` was empty and fsck checked nothing; like
+    OpenRC it now ignores it and only `-q` silences.
+  - `mountinfo -q` printed anyway.
+  - `mountinfo` printed decoded mount points, so `/mnt/my share` split
+    into two words in `for x in $(mountinfo ...)`; it prints them escaped
+    as `/proc/mounts` does.
+  - `mountinfo -e`/`-E` applied the netdev test to mounts fstab does not
+    list; they now follow OpenRC's `process_mount()` (*Compat:* `-e`
+    with no arguments also lists mounts fstab does not know).
+  - `esyslog`/`elog` took `LEVEL.FACILITY`; `FACILITY.LEVEL` (OpenRC,
+    logger) works now and the old order is still accepted.
+- **`slinit-supports` answered from the working directory**: installed,
+  it said "No" for 189 of 387 names (including `capabilities` and
+  `exec-condition`). The lists are now generated from source and built
+  in.
 - **An installed slinit-supports said "No" to real directives.** It
   discovered directive and opcode names from `./pkg/config/parser.go`
   relative to its working directory and fell back to the curated table
