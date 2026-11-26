@@ -2206,7 +2206,10 @@ func (c *Connection) handleQueryDescription(payload []byte) error {
 	}
 
 	// Reuse the length-prefixed string encoding from EncodeServiceName.
-	return c.writePacket(RplyDescription, EncodeServiceName(svc.Record().Description()))
+	// Encoded under the graph lock: a reload rewrites it there.
+	return c.writePacket(RplyDescription, c.encodeLocked(func(s service.Service) []byte {
+		return EncodeServiceName(s.Record().Description())
+	}, svc))
 }
 
 func (c *Connection) handleQueryMetadata(payload []byte) error {
@@ -2218,8 +2221,11 @@ func (c *Connection) handleQueryMetadata(payload []byte) error {
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
-	rec := svc.Record()
-	return c.writePacket(RplyMetadata, EncodeMetadata(rec.Author(), rec.Version(), rec.Usage()))
+	// Encoded under the graph lock: a reload rewrites these there.
+	return c.writePacket(RplyMetadata, c.encodeLocked(func(s service.Service) []byte {
+		rec := s.Record()
+		return EncodeMetadata(rec.Author(), rec.Version(), rec.Usage())
+	}, svc))
 }
 
 // handleActivateProfile decodes a length-prefixed profile name and
@@ -2265,7 +2271,10 @@ func (c *Connection) handleQueryBundleMembers(payload []byte) error {
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
-	return c.writePacket(RplyBundleMembers, EncodeStringList(svc.Record().BundleMembers()))
+	// Encoded under the graph lock: a reload rewrites the list there.
+	return c.writePacket(RplyBundleMembers, c.encodeLocked(func(s service.Service) []byte {
+		return EncodeStringList(s.Record().BundleMembers())
+	}, svc))
 }
 
 func (c *Connection) handleQueryServiceDscDir() error {

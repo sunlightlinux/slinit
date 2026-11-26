@@ -203,6 +203,12 @@ verified with `git tag -v`.
   it. Unpin now travels milestone edges too. Found by the new control
   protocol fuzzer.
 
+- **The description, metadata and bundle-member queries no longer race a
+  reload.** They built their replies from strings and a list that
+  `reload` rewrites under the graph lock (the bundle list in place),
+  without taking it, so a reply could come from a torn value. Found by a
+  `-race` stress run of the daemon.
+
 - **`start`, `stop` and `start-all` no longer race a reload over the
   manual-start flags.** They read `manual`, `refuse-manual-start` and
   `refuse-manual-stop` without the graph lock while `reload` rewrote
