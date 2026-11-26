@@ -320,3 +320,93 @@ func TestUnloadRefusedWhileStateHookRuns(t *testing.T) {
 		t.Fatal("not unloaded once the hook was done")
 	}
 }
+
+// A stop still waiting for a dependent has not touched the process. A
+// start cancelling it forked a second one, orphaning the first, which
+// ran on unsupervised. The service keeps the process it has.
+func TestStartCancellingStopKeepsProcess(t *testing.T) {
+	set, _ := newTestSet()
+	a := NewProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c", "exec sleep 30"})
+	a.SetPreStartCommand([]string{"/bin/true"})
+	set.AddService(a)
+	b := slowDependentOf(t, set, a)
+	set.StartService(b)
+	if st := waitState(t, b, StateStarted, 3*time.Second); st != StateStarted {
+		t.Fatalf("b %v", st)
+	}
+	old := a.PID()
+	defer killIfAlive(old)
+	set.StopService(a)
+	if st := a.State(); st != StateStopping {
+		t.Fatalf("a %v after the stop, want STOPPING (waiting for b)", st)
+	}
+	set.StartService(a)
+	time.Sleep(300 * time.Millisecond)
+	nw := a.PID()
+	defer killIfAlive(nw)
+	if st := a.State(); st != StateStarted {
+		t.Errorf("a %v, want STARTED", st)
+	}
+	if nw != old {
+		t.Errorf("pid %d after the start, want the process the stop left running (%d); it is alive: %v",
+			nw, old, processAlive(old))
+	}
+	if !processAlive(old) {
+		t.Errorf("process %d is gone", old)
+	}
+	set.StopService(b)
+	set.StopService(a)
+	if st := waitState(t, a, StateStopped, 3*time.Second); st != StateStopped {
+		t.Fatalf("a %v, want STOPPED", st)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if processAlive(old) {
+		t.Errorf("process %d outlived the stop", old)
+	}
+}
+
+// The same, with the process killed just after the start: it used to
+// leave an exit parked during the second run's pre-start-command, which
+// the next stop's pre-stop-hook took for its own, declaring the service
+// STOPPED with its process running.
+func TestStaleExitNotTakenByLaterStop(t *testing.T) {
+	set, _ := newTestSet()
+	a := NewProcessService(set, "a")
+	a.SetHookTimeout(5 * time.Second)
+	a.SetAutoRestart(RestartAlways)
+	a.SetRestartDelay(0)
+	a.SetCommand([]string{"/bin/sh", "-c", "exec sleep 30"})
+	a.SetPreStartCommand([]string{"/bin/sh", "-c", "sleep 0.3"})
+	a.SetPreStopHook([]string{"/bin/sh", "-c", "sleep 0.2"})
+	set.AddService(a)
+	b := slowDependentOf(t, set, a)
+	set.StartService(b)
+	waitState(t, b, StateStarted, 3*time.Second)
+	old := a.PID()
+	set.StopService(a)
+	set.StartService(a)
+	killIfAlive(old)
+	time.Sleep(100 * time.Millisecond)
+	if st := waitState(t, a, StateStarted, 3*time.Second); st != StateStarted {
+		t.Fatalf("a %v, want STARTED", st)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for (a.PID() <= 0 || a.PID() == old) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	nw := a.PID()
+	defer killIfAlive(nw)
+	set.queueMu.Lock()
+	pe := a.pendingExit
+	set.queueMu.Unlock()
+	if pe != nil {
+		t.Errorf("exit of %d still parked with the service running", pe.PID)
+	}
+	set.StopService(b)
+	set.StopService(a)
+	waitState(t, a, StateStopped, 3*time.Second)
+	if a.State() == StateStopped && processAlive(nw) {
+		t.Errorf("STOPPED while its process %d still runs", nw)
+	}
+}

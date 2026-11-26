@@ -1680,6 +1680,29 @@ func (s *ProcessService) BringUp() bool {
 		return true
 	}
 
+	// A stop that was still waiting for its dependents, and so had not
+	// yet touched the process, has been cancelled by this start: the
+	// process it would have stopped is still running. Forking another
+	// orphaned that one (it ran on, unsupervised, and its exit was
+	// taken for the new run's). It is the service's process still;
+	// the start is over.
+	if s.pid > 0 {
+		if s.stopIssued || s.stopPID > 0 {
+			// Being stopped after all: not expected, since a stop
+			// that has begun is not cancelled. Wait for the exit,
+			// which looks at the start again (dispatchAfterExitLocked).
+			s.services.logger.Error("Service '%s': start while its process %d is being stopped; it waits for the exit",
+				s.serviceName, s.pid)
+			s.waitingForDeps = true
+			s.dropStartSlot()
+			return true
+		}
+		s.services.logger.Info("Service '%s': stop cancelled, keeping process %d",
+			s.serviceName, s.pid)
+		s.Started()
+		return true
+	}
+
 	if err := s.Record().resolveDeferredRunAs(); err != nil {
 		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
 		return false
@@ -3526,6 +3549,18 @@ func (s *ProcessService) dispatchExitLocked(exit process.ChildExit) {
 func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit process.ChildExit) {
 	switch state {
 	case StateStarting:
+		if s.waitingForDeps {
+			// The start has not launched anything yet: this is the
+			// process of an earlier run, whose stop a start
+			// cancelled (BringUp keeps such a process), exiting
+			// before the start got to it. The start goes on, and
+			// launches a new one.
+			s.services.logger.Info("Service '%s': process of the previous run exited (status: %v)",
+				s.serviceName, exit.Status)
+			s.services.AddTransitionQueue(s)
+			s.services.processQueuesLocked()
+			return
+		}
 		// Process died while we thought it was starting
 		s.services.logger.Error("Service '%s': process exited during startup (status: %v)",
 			s.serviceName, exit.Status)
