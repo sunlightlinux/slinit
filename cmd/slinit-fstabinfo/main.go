@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/sunlightlinux/slinit/pkg/fstab"
 )
@@ -50,9 +49,17 @@ type options struct {
 	selectors []selector
 	files     []string // positional mountpoints
 	fstabPath string
+	// quiet is set only by -q. An EINFO_QUIET inherited from the
+	// environment is ignored, as in fstabinfo.c: a quiet boot must not
+	// turn `$(fstabinfo --passno =2)` into an empty fsck list.
+	quiet bool
 }
 
 func main() {
+	// fstabinfo.c: "Ensure that we are only quiet when explicitly told
+	// to be" — drop the inherited EINFO_QUIET; -q sets it again below
+	// so mount(8) children see the same environment as under OpenRC.
+	os.Unsetenv("EINFO_QUIET")
 	opts, err := parseArgs(os.Args[1:])
 	if err != nil {
 		switch err {
@@ -64,6 +71,9 @@ func main() {
 		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitBadUsage)
+	}
+	if opts.quiet {
+		os.Setenv("EINFO_QUIET", "YES")
 	}
 	if _, err := os.Stat(opts.fstabPath); err != nil {
 		fmt.Fprintf(os.Stderr, "%s does not exist\n", opts.fstabPath)
@@ -145,8 +155,9 @@ func run(entries []fstab.Entry, opts options) int {
 		return exitFailure
 	}
 
-	// Suppress printing when EINFO_QUIET is truthy (OpenRC convention).
-	quiet := isTruthy(os.Getenv("EINFO_QUIET"))
+	// Only -q silences output; the environment is not consulted (see
+	// options.quiet). mount/remount still run and exit codes are kept.
+	quiet := opts.quiet
 	result := exitOK
 
 	for _, f := range list {
@@ -204,14 +215,6 @@ func doMount(e fstab.Entry, remount bool) int {
 		return exitFailure
 	}
 	return 0
-}
-
-func isTruthy(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "y", "yes", "true", "on":
-		return true
-	}
-	return false
 }
 
 // parsePassNoArg splits the operator prefix ("=" / "<" / ">") from the

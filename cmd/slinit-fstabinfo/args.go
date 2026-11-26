@@ -97,9 +97,9 @@ func parseArgs(args []string) (options, error) {
 		case "-V", "--version":
 			return opts, errVersion
 		case "-q", "--quiet":
-			// Preserved for compat; the actual quiet check keys off
-			// EINFO_QUIET so scripts already exporting that don't
-			// need to pass -q too.
+			// The only way to silence output: fstabinfo.c unsets an
+			// inherited EINFO_QUIET and lets -q set it.
+			opts.quiet = true
 		case "-v", "--verbose":
 			// Cosmetic — no per-line diagnostics to gate on.
 		default:
@@ -135,6 +135,8 @@ Selection (each -t / -p OP N adds its matches to one list):
 
 Misc:
       --file PATH             use PATH instead of /etc/fstab (test seam)
+  -q, --quiet                 print nothing (actions and exit status unchanged);
+                              an inherited EINFO_QUIET is ignored
   -h, --help                  this help
   -V, --version               version string
 

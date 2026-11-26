@@ -193,17 +193,39 @@ func TestRunEmptyResultReturnsFailure(t *testing.T) {
 	}
 }
 
-func TestRunEinfoQuietSuppressesPrint(t *testing.T) {
+// OpenRC's fstabinfo.c unsets EINFO_QUIET before parsing options: an
+// inherited value must not silence it, or a quiet boot turns
+// `$(fstabinfo --passno =2)` into an empty fsck list.
+func TestRunIgnoresInheritedEinfoQuiet(t *testing.T) {
 	t.Setenv("EINFO_QUIET", "yes")
-	entries := parseSample(t)
-	out, code := captureStdout(t, func() int {
-		return run(entries, options{mode: outputFile, files: []string{"/"}})
-	})
+	out, code := runArgs(t, "--passno", "=2")
 	if code != exitOK {
 		t.Errorf("code=%d", code)
 	}
-	if strings.TrimSpace(out) != "" {
-		t.Errorf("EINFO_QUIET should suppress output, got %q", out)
+	if out != "/home\n/boot\n" {
+		t.Errorf("inherited EINFO_QUIET silenced output: got %q", out)
+	}
+	out, _ = runArgs(t, "-o", "/")
+	if out != "defaults,noatime\n" {
+		t.Errorf("-o / under EINFO_QUIET: got %q", out)
+	}
+}
+
+// -q is the only way to silence output; the exit status still tells
+// whether the selection matched.
+func TestRunQuietFlagSuppressesPrint(t *testing.T) {
+	for _, flag := range []string{"-q", "--quiet"} {
+		out, code := runArgs(t, flag, "/")
+		if code != exitOK {
+			t.Errorf("%s /: code=%d, want %d", flag, code, exitOK)
+		}
+		if out != "" {
+			t.Errorf("%s should suppress output, got %q", flag, out)
+		}
+		out, code = runArgs(t, flag, "/nope")
+		if code != exitFailure || out != "" {
+			t.Errorf("%s /nope: out=%q code=%d, want \"\" %d", flag, out, code, exitFailure)
+		}
 	}
 }
 
