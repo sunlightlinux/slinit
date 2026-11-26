@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -159,7 +160,7 @@ func TestParseChpstBasics(t *testing.T) {
 
 // TestParseChpstWarnings covers the flags that either aren't
 // mappable at all (nice, PID namespaces) or map with a caveat
-// (memory rlimit approximation, envdir vs env-file).
+// (memory rlimit approximation).
 func TestParseChpstWarnings(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -167,7 +168,6 @@ func TestParseChpstWarnings(t *testing.T) {
 		wantWarn string
 	}{
 		{"nice level", []string{"-n", "5", "daemon"}, "chpst -n 5"},
-		{"envdir approximation", []string{"-e", "/etc/env", "daemon"}, "chpst -e /etc/env"},
 		{"unmapped rlimit nproc", []string{"-p", "100", "daemon"}, "chpst -p 100"},
 		{"unmapped rlimit fsize", []string{"-f", "1000000", "daemon"}, "chpst -f 1000000"},
 		{"env-only user", []string{"-U", "nobody", "daemon"}, "chpst -U nobody"},
@@ -688,5 +688,43 @@ func TestParseChpstGroupedFlags(t *testing.T) {
 				t.Errorf("parseChpst(%q)\n  got %+v\n want %+v", c.args, cfg, c.want)
 			}
 		})
+	}
+}
+
+// TestConvertChpstEnvdir — `chpst -e DIR` is runit's envdir: one file
+// per variable. It used to convert to `env-file = DIR`; slinit's
+// env-file reader fails on a directory, the error is only logged, and
+// the service started without the variables. It must convert to
+// env-dir, which reads the envdir layout, and a relative DIR is taken
+// from the svdir, where runsv runs chpst.
+func TestConvertChpstEnvdir(t *testing.T) {
+	svcDir := filepath.Join(t.TempDir(), "svc")
+	envDir := filepath.Join(svcDir, "env")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "FOO"), []byte("bar\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := "#!/bin/sh\nexec chpst -e ./env /bin/true\n"
+	if err := os.WriteFile(filepath.Join(svcDir, "run"), []byte(run), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := convertService(svcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	out := buf.String()
+	if !strings.Contains(out, "env-dir = "+envDir+"\n") {
+		t.Errorf("want env-dir = %s in output:\n%s", envDir, out)
+	}
+	if strings.Contains(out, "env-file") {
+		t.Errorf("an envdir must not become env-file:\n%s", out)
+	}
+	env, err := process.ReadEnvDir(envDir)
+	if err != nil || env["FOO"] != "bar" {
+		t.Errorf("ReadEnvDir(%s) = %v, %v; want FOO=bar", envDir, env, err)
 	}
 }

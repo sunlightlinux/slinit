@@ -193,6 +193,7 @@ type slinitConfig struct {
 	runAs      string
 	supGroups  []string // chpst -u user:group:group2...
 	envFile    string
+	envDir     string // chpst -e (runit envdir)
 	workingDir string
 	chroot     string
 
@@ -292,6 +293,12 @@ func convertService(dir string) (*slinitConfig, []warning, error) {
 		if _, err := os.Stat(cfg.envFile); err != nil {
 			cfg.envFile = ""
 		}
+	}
+	// chpst runs from the svdir (runsv chdirs there), so a relative
+	// `chpst -e ./env` names a directory inside it. slinit resolves
+	// env-dir against its own cwd, not working-dir — anchor it.
+	if cfg.envDir != "" && !filepath.IsAbs(cfg.envDir) {
+		cfg.envDir = filepath.Join(absDir, cfg.envDir)
 	}
 
 	// log/run → companion `<name>-log` service. Recursively convert
@@ -605,11 +612,13 @@ func parseChpst(cfg *slinitConfig, args []string) []warning {
 			case 'b':
 				cfg.argv0 = val
 			case 'e':
-				// runit envdir → slinit env-file is a rough
-				// approximation (envdir is dir-of-files, env-file is
-				// KEY=VALUE lines). Warn.
-				cfg.envFile = val
-				warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -e %s is an envdir; slinit env-file expects KEY=VALUE lines — you may need to convert the dir to a single file", val)})
+				// runit envdir → slinit env-dir, which reads the same
+				// one-file-per-variable layout (first line, NULs to
+				// newlines, empty file unsets). Emitting env-file
+				// pointed a KEY=VALUE reader at a directory: the read
+				// failed, was only logged, and the service started
+				// without the variables.
+				cfg.envDir = val
 			case 'm':
 				cfg.rlimitData = val
 				warns = append(warns, warning{"WARN", "chpst -m sets data+stack+locked+memlock; slinit rlimit-data maps only the data segment — review whether that's enough"})
@@ -699,6 +708,9 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 	}
 	if c.envFile != "" {
 		fmt.Fprintf(w, "env-file = %s\n", c.envFile)
+	}
+	if c.envDir != "" {
+		fmt.Fprintf(w, "env-dir = %s\n", c.envDir)
 	}
 	if c.workingDir != "" {
 		fmt.Fprintf(w, "working-dir = %s\n", c.workingDir)

@@ -285,7 +285,7 @@ Auto-detects `finish` (→ `finish-command`), `check` (→
 `consumer-of` + `log-type = pipe` on the primary). Recognises
 `sv check DEP` inside run scripts and emits `waits-for: DEP`
 automatically. `chpst` flags map to slinit equivalents where
-possible (`-u` → `run-as`, `-C` → `working-dir`, `-o` →
+possible (`-u` → `run-as`, `-e` → `env-dir`, `-C` → `working-dir`, `-o` →
 `rlimit-nofile`, `-A N` → WARN since slinit has no runtime alarm).
 
 ```bash

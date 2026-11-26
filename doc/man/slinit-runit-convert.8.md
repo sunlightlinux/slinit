@@ -33,14 +33,16 @@ Each svdir becomes a **process** service with **restart = yes**,
 | `sv check DEP` in *run* | **waits-for: DEP** |
 
 **chpst** options in the *run* script map where slinit has an
-equivalent: **-u** → **run-as**, **-b** → argv[0], **-e** → **env-file**
-(with a warning, since runit's directory of files is a different
-format), **-d** / **-m** → **rlimit-data**, **-o** → **rlimit-nofile**,
+equivalent: **-u** → **run-as**, **-b** → argv[0], **-e** → **env-dir**
+(a relative directory is taken from the svdir, where **chpst** runs),
+**-d** / **-m** → **rlimit-data**, **-o** → **rlimit-nofile**,
 **-c** → **rlimit-core**, **-/** → **chroot**, **-C** → **working-dir**,
 **-l** / **-L** → **lock-file**, **-P** → **new-session**, **-0**,
 **-1**, **-2**, **-N** → **close-stdin** / **-stdout** / **-stderr**.
 **-U**, **-n**, **-A**, **-p**, **-f**, **-r**, **-t**, **-F** and
-**-I** are reported as not mapped.
+**-I** are reported as not mapped. Flags group as with **getopt**:
+**-P0** is **-P** and **-0**, and a flag that takes a value ends the
+group (**-Pu** *user*).
 
 Single-input mode writes to standard output, the companion log
 service (if any) following the primary after a separator comment.
