@@ -150,6 +150,13 @@ verified with `git tag -v`.
   now goes to stdout, as `dinitctl --help` does; the usage printed for
   a missing command is still an error and stays on stderr.
 
+- **slinit-journald no longer hangs on a damaged binary journal.** An
+  ENTRY_ARRAY linking back to itself in the day file (a damaged block,
+  a bad copy) made the daemon walk the chain forever when it reopened
+  the file at start, and a DATA object linking back to itself in its
+  hash chain hung every append whose field hashed to that bucket. Both
+  links are refused now: reopening or appending fails with an error.
+
 - **A full disk no longer leaves a binary journal entry half-indexed.**
   When the disk filled just as an append needed a new ENTRY_ARRAY, the
   append failed but its entry stayed in the file, named by no array:

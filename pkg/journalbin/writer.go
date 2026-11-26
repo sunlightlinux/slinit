@@ -477,6 +477,13 @@ func (w *Writer) recoverEntryArrayTailLocked() error {
 			w.entryArrayTailFill = fill
 			return nil
 		}
+		// The writer only appends, so the next array follows this
+		// one. A link back, as a damaged file can hold, was walked
+		// forever and slinit-journald hung at start.
+		if next < cur+AlignUp(entryArraySizeFor(len(items))) {
+			return fmt.Errorf("journalbin: ENTRY_ARRAY at %d links back or into itself at %d: %w",
+				cur, next, ErrObjectBounds)
+		}
 		lastGood = cur
 		cur = next
 	}
@@ -666,7 +673,9 @@ func (w *Writer) findOrInsertDataLocked(payload []byte) (uint64, uint64, error) 
 	}
 
 	// Walk the chain (bounded — pathological hash collisions still
-	// terminate at end of chain).
+	// terminate at end of chain). Each DATA is linked after the one
+	// before it, which it follows in the file; a link back, as a
+	// damaged file can hold, was walked forever.
 	cur := head
 	for cur != 0 {
 		curHash, next, curPayload, err := readDataHeader(w.f, cur, hash)
@@ -675,6 +684,10 @@ func (w *Writer) findOrInsertDataLocked(payload []byte) (uint64, uint64, error) 
 		}
 		if curHash == hash && byteEq(curPayload, payload) {
 			return cur, hash, nil
+		}
+		if next != 0 && next <= cur {
+			return 0, 0, fmt.Errorf("journalbin: DATA at %d links back to %d in its hash chain: %w",
+				cur, next, ErrObjectBounds)
 		}
 		cur = next
 	}
