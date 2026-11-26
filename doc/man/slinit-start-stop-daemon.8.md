@@ -85,10 +85,17 @@ When multiple are provided, a process must satisfy **all** of them.
 
 **-c**, **--chuid** *USER*[:*GROUP*]
 :   Set the child user (and optionally group). Overrides **--user**
-    for credential selection.
+    for credential selection. *USER* may be a name or a numeric uid;
+    without *GROUP* the child takes the user's passwd group. As
+    OpenRC and Debian do with **initgroups**(3), the child gets the
+    supplementary groups of *USER*, plus its group; a uid with no
+    passwd entry gets that group alone, never the caller's groups.
 
 **-g**, **--group** *GROUP*
-:   Set the child's primary group.
+:   Set the child's primary group. Given without a user (no
+    **--chuid** or **--user**), only the group changes and the
+    supplementary groups are inherited from the caller, as in OpenRC
+    and Debian.
 
 **-d**, **--chdir** *DIR*
 :   Change to *DIR* before **exec**(2).

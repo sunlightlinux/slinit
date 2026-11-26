@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -181,14 +183,11 @@ func spawn(binary string, argv []string, opts Options) (int, *notifyState, error
 		sysattr.Chroot = opts.Chroot
 	}
 	if opts.ChUID != "" || opts.MatchUser != "" || opts.Group != "" {
-		uid, gid, err := resolveCredentials(opts)
+		cred, err := spawnCredential(opts, userGroupIDs)
 		if err != nil {
 			return 0, nil, err
 		}
-		sysattr.Credential = &syscall.Credential{
-			Uid: uint32(uid),
-			Gid: uint32(gid),
-		}
+		sysattr.Credential = cred
 	}
 	if opts.Background {
 		sysattr.Setsid = true
@@ -319,12 +318,14 @@ func setupStdio(cmd *exec.Cmd, opts Options) error {
 // resolveCredentials handles the "who runs the child" question, honouring
 // --chuid (user[:group]), --user (as chuid fallback for --start), and
 // --group. --chuid takes precedence when both are set.
-func resolveCredentials(opts Options) (int, int, error) {
+//
+// userSpec is the user part that was given ("" when only a group was).
+func resolveCredentials(opts Options) (uid, gid int, userSpec string, err error) {
 	spec := opts.ChUID
 	if spec == "" {
 		spec = opts.MatchUser
 	}
-	var userSpec, groupSpec string
+	var groupSpec string
 	if spec != "" {
 		if idx := indexColon(spec); idx >= 0 {
 			userSpec = spec[:idx]
@@ -337,12 +338,12 @@ func resolveCredentials(opts Options) (int, int, error) {
 		groupSpec = opts.Group
 	}
 
-	uid := os.Getuid()
-	gid := os.Getgid()
+	uid = os.Getuid()
+	gid = os.Getgid()
 	if userSpec != "" {
 		u, err := lookupUID(userSpec)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, "", err
 		}
 		uid = u
 		// If no explicit group, take user's primary GID.
@@ -355,11 +356,75 @@ func resolveCredentials(opts Options) (int, int, error) {
 	if groupSpec != "" {
 		g, err := lookupGID(groupSpec)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, "", err
 		}
 		gid = g
 	}
-	return uid, gid, nil
+	return uid, gid, userSpec, nil
+}
+
+// spawnCredential builds the child's credentials, supplementary
+// groups included. Go's exec, given a Credential with nil Groups and
+// NoSetGroups unset, calls setgroups(0): a --chuid daemon used to lose
+// every supplementary group its user has (postfix not in postdrop,
+// a web server not in ssl-cert). OpenRC and Debian call
+// initgroups(user, gid) when a user is given; we do the same with the
+// group list groupsOf returns, plus gid. Should the user have no
+// passwd entry (a bare numeric uid) or the lookup fail, the child gets
+// gid alone: never the caller's (root's) groups.
+//
+// With only --group, OpenRC and Debian call setgid and leave the
+// supplementary groups as inherited from the caller; NoSetGroups keeps
+// that behaviour instead of Go's implicit setgroups(0).
+func spawnCredential(opts Options, groupsOf func(userSpec string) ([]string, error)) (*syscall.Credential, error) {
+	uid, gid, userSpec, err := resolveCredentials(opts)
+	if err != nil {
+		return nil, err
+	}
+	cred := &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+	if userSpec == "" {
+		cred.NoSetGroups = true
+		return cred, nil
+	}
+	ids, err := groupsOf(userSpec)
+	if err != nil {
+		ids = nil
+	}
+	cred.Groups = supplementaryGroups(uint32(gid), ids)
+	return cred, nil
+}
+
+// supplementaryGroups is initgroups' list: gid first, then every
+// parseable id from ids not already present.
+func supplementaryGroups(gid uint32, ids []string) []uint32 {
+	out := []uint32{gid}
+	seen := map[uint32]bool{gid: true}
+	for _, s := range ids {
+		n, err := strconv.ParseUint(s, 10, 32)
+		if err != nil || seen[uint32(n)] {
+			continue
+		}
+		seen[uint32(n)] = true
+		out = append(out, uint32(n))
+	}
+	return out
+}
+
+// lookupUser resolves a user name, or a numeric uid, to its passwd entry.
+func lookupUser(userSpec string) (*user.User, error) {
+	if _, err := strconv.Atoi(userSpec); err == nil {
+		return user.LookupId(userSpec)
+	}
+	return user.Lookup(userSpec)
+}
+
+// userGroupIDs is the group list initgroups would set for userSpec.
+func userGroupIDs(userSpec string) ([]string, error) {
+	u, err := lookupUser(userSpec)
+	if err != nil {
+		return nil, err
+	}
+	return u.GroupIds()
 }
 
 func indexColon(s string) int {

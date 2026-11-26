@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/user"
 	"strconv"
 	"syscall"
 	"time"
@@ -142,8 +141,10 @@ func signalName(sig syscall.Signal) string {
 	return strconv.Itoa(int(sig))
 }
 
+// lookupPrimaryGID is the passwd gid of a user name or numeric uid
+// (--chuid 51 took the caller's gid, root's, when only names resolved).
 func lookupPrimaryGID(userSpec string) (int, error) {
-	u, err := user.Lookup(userSpec)
+	u, err := lookupUser(userSpec)
 	if err != nil {
 		return 0, err
 	}
