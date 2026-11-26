@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +62,22 @@ const (
 	defaultSystemSocket     = "/run/slinit.socket"
 	defaultUserSocket       = ".slinitctl"
 )
+
+// maxOSThreads replaces the Go runtime's default limit of 10000 OS
+// threads, past which it kills the process ("fatal error: thread
+// exhaustion"). slinit holds one thread per running child: os/exec
+// waits for a child in a blocking waitid, which parks a thread for as
+// long as the child lives. So about 9900 running services were enough
+// to kill PID 1 the moment the next one started, taking the machine
+// with it. This is the kernel's own ceiling on tasks (PID_MAX_LIMIT on
+// 64-bit), so the runtime no longer refuses a thread that the kernel
+// would have given; a system out of tasks makes the next fork fail,
+// which is a failed service start, not a dead init.
+const maxOSThreads = 4 * 1024 * 1024
+
+func init() {
+	debug.SetMaxThreads(maxOSThreads)
+}
 
 // stringSlice implements flag.Value for repeated -t/--service flags.
 type stringSlice []string

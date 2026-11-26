@@ -71,6 +71,13 @@ verified with `git tag -v`.
   systemd's `hostname_cleanup` does (trailing dots and stray separators
   dropped, cut at 64 bytes); a name that is still invalid is ignored.
 
+- **PID 1 died once about 9900 services were running at the same
+  time** ("fatal error: thread exhaustion"). Waiting for a child holds
+  an OS thread for as long as the child runs, and the Go runtime kills
+  a process past 10000 threads. slinit now lifts that limit to the
+  kernel's own task ceiling: 10500 running services boot and stay up
+  (2.9 s, 712 MiB RSS) where the same set used to kill the daemon
+  before the boot finished.
 - **slinit-journald (binary format) read the DATA hash table's size
   from disk for every field of every entry**, one `pread` each, though
   the table is sized when the file is created and never changes. The
