@@ -266,6 +266,12 @@ verified with `git tag -v`.
   longer had, so it could not be stopped again and a shutdown waited for
   it until its timeout.
 
+- **`rm-dep` no longer leaves the dependency stopping for good.** A
+  dependency stopping waits for its dependents to stop; removing the
+  edge to a dependent it was waiting for (one in the middle of a
+  `restart`, say) did not tell it, so it stayed STOPPING and a shutdown
+  waited for it until its timeout.
+
 - **`slinitctl add-dep`/`rm-dep` with `prepared-by` work.** slinitctl
   accepted the kind and slinitctl(8) documents it, but the daemon took
   only the kinds up to `after` and refused every prepared-by request, so

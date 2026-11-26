@@ -4187,6 +4187,12 @@ func (sr *ServiceRecord) rmDepByIndex(i int) {
 		toRec.propPinDpt = true
 		sr.services.AddPropQueue(dep.To)
 	}
+	// A target stopping may have been waiting for this dependent to
+	// stop: let it check again, as dependentStopped does, or it waited
+	// for a dependent it no longer had.
+	if toRec.state.Load() == StateStopping && toRec.waitingForDeps {
+		sr.services.AddTransitionQueue(dep.To)
+	}
 
 	// A start waiting on this dependency has nothing left to wait for
 	// from it: let the start re-check the dependencies it still has,
