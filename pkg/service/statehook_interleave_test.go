@@ -508,3 +508,93 @@ func TestNoStateHookAfterFinalKill(t *testing.T) {
 	}
 	waitStateHooksGone(t, base, 4*time.Second)
 }
+
+// KillActiveServices does not take queueMu: it sets finalKill and then
+// cancels whatever hook it finds. A hook being started at that moment
+// read finalKill before the store and was published after the cancel
+// looked, so neither side saw the other and the hook ran its whole
+// hook-timeout after the kill meant to end it.
+func TestStateHookStartedDuringFinalKillIsCancelled(t *testing.T) {
+	set, _ := newTestSet()
+	a := NewProcessService(set, "a")
+	set.AddService(a)
+	got := make(chan bool, 1)
+	set.queueMu.Lock()
+	a.startStateHookLocked(hookPreStop, func(ctx context.Context) func() error {
+		set.KillActiveServices() // lands between the finalKill check and the publish
+		return func() error {
+			select {
+			case <-ctx.Done():
+			case <-time.After(3 * time.Second):
+			}
+			return ctx.Err()
+		}
+	}, func(err error, cancelled bool) { got <- cancelled })
+	set.queueMu.Unlock()
+	select {
+	case cancelled := <-got:
+		if !cancelled {
+			t.Error("hook started during the final kill ran uncancelled")
+		}
+	case <-time.After(time.Second):
+		t.Error("hook started during the final kill still runs a second later")
+		<-got
+	}
+}
+
+// TestStartCancellingStopKeepsProcess, with the start then queued for a
+// start slot: the kept process exiting there failed the start, although
+// it had launched nothing — only a wait for deps was treated as "not
+// launched yet". The start must go on and launch a new process.
+func TestKeptProcessExitWhileStartWaitsForSlot(t *testing.T) {
+	set, logger := newTestSet()
+	set.SetStartLimiter(1, 0)
+	a := NewProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c", "exec sleep 30"})
+	set.AddService(a)
+	b := slowDependentOf(t, set, a)
+	c := NewProcessService(set, "c") // holds the only slot
+	c.SetCommand([]string{"/bin/sh", "-c", "exec sleep 30"})
+	c.SetPreStartCommand([]string{"/bin/sh", "-c", "sleep 1"})
+	set.AddService(c)
+	set.StartService(b)
+	if st := waitState(t, b, StateStarted, 3*time.Second); st != StateStarted {
+		t.Fatalf("b %v", st)
+	}
+	old := a.PID()
+	defer killIfAlive(old)
+	set.StartService(c)
+	time.Sleep(100 * time.Millisecond)
+	set.StopService(a)  // waits for b
+	set.StartService(a) // cancels the stop, keeps old, waits for c's slot
+	time.Sleep(100 * time.Millisecond)
+	if !a.waitingForStartSlotForTest() {
+		t.Fatalf("a %v, not waiting for a start slot: the test no longer tests that", a.State())
+	}
+	killIfAlive(old)
+	if st := waitState(t, a, StateStarted, 3*time.Second); st != StateStarted {
+		t.Errorf("a %v (start failed %v), want STARTED", st, a.DidStartFail())
+	}
+	nw := a.PID()
+	defer killIfAlive(nw)
+	if nw <= 0 || nw == old {
+		t.Errorf("pid %d after the old process (%d) exited, want a new one", nw, old)
+	}
+	logger.mu.Lock()
+	for _, f := range logger.failed {
+		if f == "a" {
+			t.Error("a reported a failed start: the exit of the kept process was taken for its own")
+		}
+	}
+	for _, e := range logger.errors {
+		if strings.Contains(e, "exited during startup") {
+			t.Errorf("logged %q", e)
+		}
+	}
+	logger.mu.Unlock()
+	set.StopService(b)
+	set.StopService(a)
+	set.StopService(c)
+	waitState(t, a, StateStopped, 3*time.Second)
+	waitState(t, c, StateStopped, 3*time.Second)
+}

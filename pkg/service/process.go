@@ -3671,6 +3671,14 @@ func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit proces
 			s.services.processQueuesLocked()
 			return
 		}
+		if s.waitingForStartSlot || s.waitingForConsole {
+			// The same, with the deps up and the start queued for a
+			// start slot or the console: the grant reaches BringUp,
+			// which finds no process and launches one.
+			s.services.logger.Info("Service '%s': process of the previous run exited (status: %v)",
+				s.serviceName, exit.Status)
+			return
+		}
 		// Process died while we thought it was starting
 		s.services.logger.Error("Service '%s': process exited during startup (status: %v)",
 			s.serviceName, exit.Status)
