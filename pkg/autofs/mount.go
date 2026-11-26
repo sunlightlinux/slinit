@@ -45,7 +45,13 @@ func Setup(unit *MountUnit) (*AutofsMount, error) {
 		return nil, fmt.Errorf("pipe2: %w", err)
 	}
 
-	opts := mountOptions(unit, pipeFDs[1], os.Getpid())
+	// pgrp= names the process group whose accesses the kernel serves
+	// directly instead of trapping (the daemon's own mkdir and mount).
+	// It must be the group we are in, as systemd passes getpgrp(): our
+	// pid is right only while we lead our group, and run as a background
+	// job of a non-interactive shell slinit-mount hung on its first
+	// mount, its own mkdir under the autofs mount waiting on itself.
+	opts := mountOptions(unit, pipeFDs[1], unix.Getpgrp())
 
 	// Mount autofs filesystem
 	if err := unix.Mount("slinit-mount", unit.Where, "autofs", 0, opts); err != nil {
