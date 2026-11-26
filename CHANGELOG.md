@@ -150,6 +150,14 @@ verified with `git tag -v`.
   now goes to stdout, as `dinitctl --help` does; the usage printed for
   a missing command is still an error and stays on stderr.
 
+- **A full disk no longer leaves a binary journal entry half-indexed.**
+  When the disk filled just as an append needed a new ENTRY_ARRAY, the
+  append failed but its entry stayed in the file, named by no array:
+  `slinit-journalctl --file` showed it, `-D` and the sd_journal API did
+  not, and on a sealed journal `--verify` counted it as a hidden entry,
+  as if the file had been tampered with. The entry is now given up with
+  the append, and the next one writes over it.
+
 - **A journal file left by a crashed writer reads again.** The binary
   writer updates the ENTRY_ARRAY slot (or link) of an entry before it
   rewrites the header, so a slinit-journald killed in that window left a

@@ -554,6 +554,7 @@ func (w *Writer) Append(evt *journal.Event) (uint64, error) {
 	copy(buf[off:], items)
 
 	entryOffset := w.header.TailObjectOffset
+	hdrBefore, arrayTailBefore := w.header, w.entryArrayTail
 	if _, err := w.f.WriteAt(buf, int64(entryOffset)); err != nil {
 		return 0, fmt.Errorf("journalbin: write entry at %d: %w", entryOffset, err)
 	}
@@ -575,6 +576,15 @@ func (w *Writer) Append(evt *journal.Event) (uint64, error) {
 	// Index the entry in the ENTRY_ARRAY chain so bisect on realtime
 	// works without a linear scan.
 	if err := w.appendEntryOffsetLocked(entryOffset); err != nil {
+		// A full disk fails the allocation of a new ENTRY_ARRAY. The
+		// entry, which no array then named, stayed in the file: --file
+		// showed it, -D and the sd API did not, and once sealed Verify
+		// counted it hidden, as if the file had been tampered with.
+		// Unless the chain already took a new array, the entry is given
+		// up and the next append writes over it.
+		if w.entryArrayTail == arrayTailBefore {
+			w.header = hdrBefore
+		}
 		return 0, err
 	}
 
