@@ -267,8 +267,11 @@ func TestOnDemandBurstOfClientsKeepsHealthyService(t *testing.T) {
 		t.Fatal(err)
 	}
 	set, _ := newTestSet()
+	// Under -race the helper's runtime sleeps a second at exit
+	// (GORACE atexit_sleep_ms), which would make 25 serial launches
+	// outlast the clients' deadline.
 	svc := newOnDemand(t, set, "od-burst", sock,
-		[]string{"/usr/bin/env", acceptOneEnv + "=1", self})
+		[]string{"/usr/bin/env", acceptOneEnv + "=1", "GORACE=atexit_sleep_ms=0", self})
 	defer stopAndWait(t, set, svc)
 
 	set.StartService(svc)
