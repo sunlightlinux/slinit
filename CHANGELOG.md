@@ -943,6 +943,21 @@ requires.
 
 ### Fixed
 
+- **slinit-start-stop-daemon `--exec` never matched through a symlinked
+  directory** (merged /usr: `/usr/sbin -> bin`): `--start` launched a
+  duplicate each time and `--stop` left the daemon running and returned
+  0. The executable is now compared by device and inode, as Debian's
+  does, with the path compare kept for a binary an upgrade replaced.
+- **slinit-start-stop-daemon `--chuid` dropped the user's supplementary
+  groups** (Go's setgroups(0)) and a numeric `--chuid` kept the caller's
+  gid. The child now gets the user's groups, as initgroups gives them.
+- **slinit-start-stop-daemon `--retry` refused `forever` and the `-SIG`
+  forms** OpenRC and Debian document, so such a stop sent nothing; a
+  schedule ending in a signal waited forever and a timeout of 0 never
+  ended. All three now behave as upstream.
+- **slinit-start-stop-daemon `--name` longer than 15 bytes never
+  matched** (the kernel truncates comm). It now warns and compares the
+  first 15 bytes.
 - **slinit-sysctl ignored all of systemd's `50-default.conf`**: one glob
   key (`net.ipv4.conf.*.rp_filter`) or `-key` exclusion line failed the
   whole file, so `fs.protected_*`, `kernel.sysrq` and the rest were never
