@@ -66,6 +66,14 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **slinit-supervise-daemon closes its copies of a respawned daemon's
+  stdio.** Each start opened the daemon's stdin, stdout and stderr
+  (`/dev/null`, `--stdout`/`--stderr` files, or a logger pipe) and kept
+  them after handing them to the child, until a garbage collection ran.
+  A crash-looping daemon grew the supervisor's descriptor table by three
+  per respawn, and with `--stdout-logger`/`--stderr-logger` every old
+  logger kept running, never seeing EOF.
+
 - **`/dev/null` is an empty file again for env-file, env-dir and
   load-credential.** The opens that keep a FIFO from freezing PID 1
   (unreleased) also refused `/dev/null`: an `env-file = /dev/null`
