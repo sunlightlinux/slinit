@@ -150,6 +150,13 @@ verified with `git tag -v`.
   now goes to stdout, as `dinitctl --help` does; the usage printed for
   a missing command is still an error and stays on stderr.
 
+- **A damaged binary day file no longer sends slinit-journald to the
+  volatile journal.** A file the writer refuses to append to (its header
+  tail past the file's end, an ENTRY_ARRAY linking back) failed the
+  sink's start, so the daemon wrote to `/run` for the rest of the day.
+  Such a file is now rotated as it is, like one that was not closed, and
+  a new day file started.
+
 - **A damaged binary journal header no longer grows the file to
   gigabytes.** slinit-journald appended at the tail offset the header
   of the reopened day file named, even far past the file's end: a tail

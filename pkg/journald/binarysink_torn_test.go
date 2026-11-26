@@ -83,3 +83,40 @@ func TestBinarySinkRotatesTornDayFile(t *testing.T) {
 		}
 	}
 }
+
+// A closed day file the writer refuses as damaged (here a header whose
+// tail lies past the file's end) is rotated away too: the sink starts
+// a new file instead of failing, which sent slinit-journald to the
+// volatile directory for the rest of the day.
+func TestBinarySinkRotatesDamagedDayFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, binaryCurrentFileName(time.Now().UTC()))
+	w, err := journalbin.NewWriter(path, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(tornSinkEvent(0)); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte{0, 0, 0, 0, 1, 0, 0, 0}, 136); err != nil { // tail = 1<<32
+		t.Fatal(err)
+	}
+	f.Close()
+
+	s, err := NewBinarySink(BinarySinkOptions{Dir: dir, FsyncEvery: 1})
+	if err != nil {
+		t.Fatalf("start with a damaged day file: %v", err)
+	}
+	if err := s.Handle(tornSinkEvent(1)); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if kept, _ := filepath.Glob(filepath.Join(dir, "*.*.journal")); len(kept) != 1 {
+		t.Errorf("damaged file not rotated: %v", kept)
+	}
+}
