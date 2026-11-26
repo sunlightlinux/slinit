@@ -495,9 +495,9 @@ service's **run-as** user.
     than 64 KiB counts as a failure. It runs outside slinit's scheduling
     lock (since 4.0.3), with the service in *STARTING*; before, it ran
     inside it, and a generator that hung held up every other service's
-    start and stop for as long as it hung. One case still runs it
-    inside the lock: a service with an **exec-condition**, whose
-    environment is computed before its conditions are checked.
+    start and stop for as long as it hung. For a service with an
+    **exec-condition** the environment is computed before the
+    conditions are checked, also outside the lock.
 
     It runs once per start (before **pre-start-command** when there is
     one, otherwise just before the fork). The environment computed then
@@ -2892,6 +2892,16 @@ form):
     **state-directory**, is not made until the process starts). With
     the **+** prefix, `exec-condition = +test -w /dev/foo`, it runs as
     root (since 4.0.3), as systemd's *ExecCondition=+* does.
+
+    For a **process** service it runs outside slinit's scheduling lock
+    (since 4.0.3), with the service in *STARTING*, and so do the other
+    predicates checked with it; before, every other service's starts
+    and stops, and every **slinitctl** request, waited for it, for up
+    to its 10 seconds. A stop that arrives meanwhile ends it, killing
+    its process group, and the start ends there; a **reload** of the
+    service is refused until it is done. The outcome is the same as
+    before: skipped, failed or started. For the other service types it
+    still runs inside the lock.
 
 **condition-boot-cond**=*name*, **assert-boot-cond**=*name*
 :   Match a value from the comma-separated **slinit.cond=** kernel-
