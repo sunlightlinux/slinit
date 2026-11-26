@@ -2702,6 +2702,7 @@ func (s *ProcessService) startProcess() error {
 	s.pid = pid
 	s.pidPublished.Store(int64(pid))
 	s.procHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
+	s.paused = false
 
 	// Create utmp entry if inittab-id or inittab-line is configured
 	if s.HasUtmp() {
@@ -3015,6 +3016,8 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	s.pid = 0
 	s.pidPublished.Store(0)
 	s.procHandle.Clear()
+	// The pause belonged to the process that just exited.
+	s.paused = false
 	// Cancelled unconditionally. Keeping the stop-timeout armed here
 	// would be pointless: processTimer is only ever read by
 	// monitorProcess, which returns with the process, so once the main

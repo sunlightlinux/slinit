@@ -9,6 +9,20 @@ import (
 	"time"
 )
 
+// pauseLocked and isPausedLocked hold queueMu, as a control connection
+// does, so the race detector sees the test, not the test's own reads.
+func pauseLocked(set *ServiceSet, svc *ProcessService) bool {
+	set.queueMu.Lock()
+	defer set.queueMu.Unlock()
+	return svc.Pause()
+}
+
+func isPausedLocked(set *ServiceSet, svc *ProcessService) bool {
+	set.queueMu.Lock()
+	defer set.queueMu.Unlock()
+	return svc.IsPaused()
+}
+
 // startPausedSleep starts `sleep 30` under name and pauses it. At cleanup
 // the process is SIGKILLed, so a failing run leaves no stopped sleep.
 func startPausedSleep(t *testing.T, set *ServiceSet, name string, stopTimeout time.Duration) *ProcessService {
@@ -27,7 +41,7 @@ func startPausedSleep(t *testing.T, set *ServiceSet, name string, stopTimeout ti
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 		waitForState(t, svc, StateStopped, 2*time.Second)
 	})
-	if !svc.Pause() {
+	if !pauseLocked(set, svc) {
 		t.Fatal("Pause() on a running service returned false")
 	}
 	waitProcStopped(t, pid)
@@ -68,7 +82,7 @@ func TestPausedServiceStopsWithoutStopTimeout(t *testing.T) {
 	if got := waitForState(t, svc, StateStopped, 3*time.Second); got != StateStopped {
 		t.Fatalf("paused service with stop-timeout = 0 did not stop: state %v", got)
 	}
-	if svc.IsPaused() {
+	if isPausedLocked(set, svc) {
 		t.Error("IsPaused() still true after the stop")
 	}
 }
@@ -84,4 +98,33 @@ func TestPausedServiceStopsPromptly(t *testing.T) {
 		t.Fatalf("paused service not stopped within 3s (stop-timeout 10s): state %v", got)
 	}
 	t.Logf("stopped in %v", time.Since(begin))
+}
+
+// The paused flag belongs to the process. A paused process that dies (here
+// SIGKILLed from outside) used to leave it set: IsPaused stayed true, and
+// once the service was started again `pause` refused the fresh process.
+func TestPausedFlagClearedWithProcess(t *testing.T) {
+	set, _ := newTestSet()
+	svc := startPausedSleep(t, set, "paused-dies", 10*time.Second)
+
+	if err := syscall.Kill(svc.PID(), syscall.SIGKILL); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if got := waitForState(t, svc, StateStopped, 3*time.Second); got != StateStopped {
+		t.Fatalf("expected STOPPED after SIGKILL, got %v", got)
+	}
+	if isPausedLocked(set, svc) {
+		t.Error("IsPaused() true with no process")
+	}
+
+	set.StartService(svc)
+	if got := waitForState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		t.Fatalf("expected STARTED on restart, got %v", got)
+	}
+	pid := svc.PID()
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	if !pauseLocked(set, svc) {
+		t.Fatal("Pause() refused the fresh process")
+	}
+	waitProcStopped(t, pid)
 }
