@@ -72,6 +72,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-supervise-daemon" ./cmd/slinit-supervise-daemon
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-fstabinfo" ./cmd/slinit-fstabinfo
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-mountinfo" ./cmd/slinit-mountinfo
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-mount" ./cmd/slinit-mount
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-getty" ./cmd/slinit-getty
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-einfo" ./cmd/slinit-einfo
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-shell-var" ./cmd/slinit-shell-var
@@ -208,6 +209,32 @@ install -m 755 "${BUILD_DIR}/slinit-start-stop-daemon" "${ROOTFS_DIR}/usr/bin/sl
 install -m 755 "${BUILD_DIR}/slinit-supervise-daemon" "${ROOTFS_DIR}/usr/bin/slinit-supervise-daemon"
 install -m 755 "${BUILD_DIR}/slinit-fstabinfo" "${ROOTFS_DIR}/usr/bin/slinit-fstabinfo"
 install -m 755 "${BUILD_DIR}/slinit-mountinfo" "${ROOTFS_DIR}/usr/bin/slinit-mountinfo"
+install -m 755 "${BUILD_DIR}/slinit-mount" "${ROOTFS_DIR}/usr/bin/slinit-mount"
+# slinit-mount needs autofs, which the virt kernel has only as a module,
+# and the minirootfs ships no modules. autofs4.ko comes out of the
+# netboot modloop published with the kernel; it is cached beside the
+# kernel and taken only when the host can read squashfs (unsquashfs or
+# 7z). A module that does not match the cached kernel fails insmod in
+# the guest, and the case using it skips; so does a missing one.
+MODLOOP="${CACHE_DIR}/modloop-virt"
+if [ ! -f "${MODLOOP}" ]; then
+    curl -fsSL -o "${MODLOOP}.tmp" "${KERNEL_URL%/*}/modloop-virt" \
+        && mv "${MODLOOP}.tmp" "${MODLOOP}" || rm -f "${MODLOOP}.tmp"
+fi
+mkdir -p "${ROOTFS_DIR}/lib/slinit-test-modules"
+if [ -f "${MODLOOP}" ]; then
+    _ko="${ROOTFS_DIR}/lib/slinit-test-modules/autofs4.ko"
+    if command -v unsquashfs >/dev/null 2>&1; then
+        _ml="${BUILD_DIR}/modloop"
+        rm -rf "${_ml}"
+        unsquashfs -q -d "${_ml}" "${MODLOOP}" 'modules/*/kernel/fs/autofs/autofs4.ko' >/dev/null 2>&1 || true
+        find "${_ml}" -name autofs4.ko -exec cp {} "${_ko}" \; 2>/dev/null || true
+        rm -rf "${_ml}"
+    elif command -v 7z >/dev/null 2>&1; then
+        7z e -so "${MODLOOP}" 'modules/*/kernel/fs/autofs/autofs4.ko' -r > "${_ko}" 2>/dev/null || true
+    fi
+    [ -s "${_ko}" ] || rm -f "${_ko}"
+fi
 install -m 755 "${BUILD_DIR}/slinit-getty" "${ROOTFS_DIR}/sbin/slinit-getty"
 install -m 755 "${BUILD_DIR}/slinit-einfo" "${ROOTFS_DIR}/usr/bin/slinit-einfo"
 install -m 755 "${BUILD_DIR}/slinit-shell-var" "${ROOTFS_DIR}/usr/bin/slinit-shell-var"

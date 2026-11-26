@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (276 cases)
+# Run all tests (277 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -34,6 +34,8 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 - `curl`, `cpio`, `gzip`
 - `socat` or `nc` (for virtio-serial result reading)
 - KVM recommended (falls back to software emulation)
+- `unsquashfs` or `7z`, optional: extracts `autofs4.ko` from the netboot
+  modloop for 277-slinit-mount-bind-flags, which skips without it
 
 ### KVM stability caveat on hybrid CPUs and nested virt
 
@@ -384,6 +386,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 274 | hook-timeout-kills-group | a `pre-start-command` / `pre-stop-hook` killed by `hook-timeout` takes its backgrounded children with it |
 | 275 | ssd-exec-symlink | slinit-start-stop-daemon `--exec` through a symlinked dir (merged /usr) finds the daemon; an `--exec` busybox applet link matches no other busybox process |
 | 276 | systemd-exec-comment-continuation | a `#`/`;` comment line inside a backslash-continued `ExecStart=` is skipped for a directly loaded `.service` unit |
+| 277 | slinit-mount-bind-flags | an autofs `bind,ro,noexec` unit from slinit-mount gives a read-only, noexec bind (mountinfo, write and exec refused); skips without `autofs4.ko` |
 
 ## How It Works
 

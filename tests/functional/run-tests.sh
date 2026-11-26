@@ -238,13 +238,19 @@ SVC
         kvm_args="-enable-kvm -cpu host"
     fi
 
-    # Launch QEMU in background
+    # Launch QEMU in background.
+    #
+    # -m 384, not 256: the initramfs is unpacked into RAM next to the
+    # compressed copy, and at 256 MB the base image had about 3 MB of
+    # headroom. Adding slinit-mount (3.4 MB) tipped it over: "Initramfs
+    # unpacking failed: write error", the case's overlay never landed and
+    # every case failed with "service 'boot' not found".
     qemu-system-x86_64 \
         ${kvm_args} \
         -kernel "${OUTPUT_DIR}/vmlinuz-virt" \
         -initrd "${test_dir}/initramfs.cpio.gz" \
         -append "console=ttyS0 rdinit=/sbin/init loglevel=3 quiet ${extra_kernel_args}" \
-        -m 256 \
+        -m 384 \
         ${extra_qemu_args} \
         -nographic \
         -no-reboot \
