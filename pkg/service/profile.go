@@ -74,8 +74,8 @@ func (ss *ServiceSet) ListProfiles() []string {
 // infrastructure like the network stack or the shared logger.
 //
 // The dependency graph does the heavy lifting for actually driving
-// the state changes: BringUp on a service pulls in its dependencies,
-// BringDown propagates to dependents. ActivateProfile just picks the
+// the state changes: starting a service pulls in its dependencies,
+// stopping one propagates to dependents. ActivateProfile just picks the
 // right entry points.
 //
 // Passing "" as newProfile deactivates filtering — nothing is
@@ -147,16 +147,18 @@ func (ss *ServiceSet) ActivateProfile(newProfile string) (*ProfileActivationResu
 	}
 
 	// Stop first so freed dependencies release cleanly before the
-	// incoming set tries to acquire them. Iterate services outside
-	// the mutex — BringDown/BringUp reach back into ServiceSet and
-	// grab ss.queueMu themselves, so we must not be holding ss.mu.
+	// incoming set tries to acquire them. Through StopService and
+	// StartService, as slinitctl stop/start: raw BringDown/BringUp
+	// skipped queueMu, the activation mark and the state transition,
+	// so the state machine stopped a service just "started" here.
+	// Outside ss.mu — both take ss.queueMu.
 	for _, svc := range toStop {
 		result.Stopped = append(result.Stopped, svc.Name())
-		svc.BringDown()
+		ss.StopService(svc)
 	}
 	for _, svc := range toStart {
 		result.Started = append(result.Started, svc.Name())
-		svc.BringUp()
+		ss.StartService(svc)
 	}
 	for _, svc := range keep {
 		if len(svc.Record().Profiles()) == 0 {
