@@ -1,10 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // TestIoctlConstants: verify the WDIOC_* constants match what the
@@ -107,4 +112,66 @@ func TestSetupFailureDisarms(t *testing.T) {
 	if string(got) != "V" {
 		t.Errorf("device got %q, want the magic close V", got)
 	}
+}
+
+// A SIGTERM that arrives after the device is opened (armed) but before
+// the pet loop runs must still end in the magic close, not kill the
+// daemon with the timer running. The device here is a FIFO: open blocks
+// until a reader appears, which holds the daemon inside that window
+// while the signal is sent.
+func TestSignalDuringSetupIsCaught(t *testing.T) {
+	if dev := os.Getenv("WDTD_TEST_FIFO"); dev != "" {
+		if err := run(dev, 60, 0, false); err != nil {
+			os.Exit(3)
+		}
+		os.Exit(0)
+	}
+	fifo := filepath.Join(t.TempDir(), "watchdog")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSignalDuringSetupIsCaught$")
+	cmd.Env = append(os.Environ(), "WDTD_TEST_FIFO="+fifo)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Wait until a thread of the child sleeps in the FIFO open.
+	deadline := time.Now().Add(10 * time.Second)
+	for !blockedInFifoOpen(cmd.Process.Pid) {
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatal("child never blocked in the device open")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	// Let the open finish: the ioctl then fails on the FIFO and run
+	// disarms and returns an error, exit status 3.
+	r, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	err = cmd.Wait()
+	ws, _ := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if ws.Signaled() {
+		t.Fatalf("watchdogd was killed by %v during setup (WDT left armed)", ws.Signal())
+	}
+	if ws.ExitStatus() != 3 {
+		t.Fatalf("exit = %v (%v), want 3 from the failed setup", ws.ExitStatus(), err)
+	}
+}
+
+func blockedInFifoOpen(pid int) bool {
+	tasks, _ := filepath.Glob(fmt.Sprintf("/proc/%d/task/*/wchan", pid))
+	for _, p := range tasks {
+		if b, err := os.ReadFile(p); err == nil && (strings.Contains(string(b), "fifo_open") || strings.Contains(string(b), "wait_for_partner")) {
+			return true
+		}
+	}
+	return false
 }

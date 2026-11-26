@@ -943,6 +943,10 @@ requires.
 
 ### Fixed
 
+- **A SIGTERM during slinit-watchdogd's setup reset the board**: the
+  handler was installed after the device was opened, which arms the
+  watchdog, so a stop in that window killed the daemon with the timer
+  running and no magic close. Signals are now caught before the open.
 - **slinit-monitor split a substituted value into several arguments**:
   `%n`, `%s` and `%v` were replaced in the whole command line before it
   was split, so a value with spaces or quotes became extra (even

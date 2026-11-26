@@ -152,6 +152,15 @@ func disarm(fd int) {
 // Returns on SIGTERM / SIGINT (graceful disarm) or SIGPWR
 // (handover to an external watchdogd — WDT stays armed).
 func run(device string, timeoutSec, intervalSec int, verbose bool) error {
+	// Signal wiring comes first. Opening the device arms the WDT, and
+	// a SIGTERM (or SIGPWR, whose default action also terminates)
+	// arriving before Notify would kill us with the timer running and
+	// no magic close: the board resets. Caught here, a signal that
+	// lands during setup waits in sigCh and the loop below handles it.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPWR, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
+
 	// syscall.Open (not os.OpenFile) so no *os.File finalizer can
 	// race the magic-close ceremony below.
 	fd, err := syscall.Open(device, syscall.O_WRONLY|syscall.O_CLOEXEC, 0)
@@ -177,10 +186,6 @@ func run(device string, timeoutSec, intervalSec int, verbose bool) error {
 
 	fmt.Fprintf(os.Stderr, "slinit-watchdogd: armed %s (timeout=%ds, interval=%ds)\n",
 		device, actual, intervalSec)
-
-	// Signal wiring.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPWR, syscall.SIGHUP)
 
 	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 	defer ticker.Stop()
