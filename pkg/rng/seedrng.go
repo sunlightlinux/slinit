@@ -120,6 +120,15 @@ func Run(opts Options) (Result, error) {
 	}
 	defer unix.Close(dfd)
 
+	// MkdirAll leaves an existing directory alone, so whatever owner and
+	// mode it already has is what we get. A directory another user can
+	// write into lets that user plant seed files (crediting chosen bytes
+	// as entropy) or swap entries under us. Check the inode we actually
+	// opened, not the path, so a rename race cannot fool the check.
+	if err := checkSeedDir(dfd, os.Geteuid()); err != nil {
+		return Result{}, fmt.Errorf("seed dir %s: %w", opts.SeedDir, err)
+	}
+
 	// Exclusive lock prevents a second seedrng invocation from consuming
 	// the same seed file concurrently and double-crediting entropy.
 	if err := unix.Flock(dfd, unix.LOCK_EX); err != nil {
@@ -211,27 +220,64 @@ func creditableWord(b bool) string {
 	return "non-creditable"
 }
 
+// errInsecureSeedDir is returned when the seed directory is not owned
+// by the user running the cycle or is writable by group/others.
+var errInsecureSeedDir = errors.New("insecure seed directory")
+
+// checkSeedDir refuses a seed directory that someone other than uid
+// could modify. Done on the open dir fd (fstat), never by path.
+func checkSeedDir(dfd int, uid int) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(dfd, &st); err != nil {
+		return fmt.Errorf("fstat: %w", err)
+	}
+	if int(st.Uid) != uid {
+		return fmt.Errorf("%w: owned by uid %d, expected %d", errInsecureSeedDir, st.Uid, uid)
+	}
+	if st.Mode&0o022 != 0 {
+		return fmt.Errorf("%w: mode %#o is group/world-writable", errInsecureSeedDir, st.Mode&0o7777)
+	}
+	return nil
+}
+
 // consumeSeed reads and removes name from the seed directory, then
 // feeds it to the kernel RNG. Returns (true, nil) if the file was
 // present and successfully fed. A missing file is (false, nil).
+//
+// The entry is opened relative to dfd with O_NOFOLLOW|O_NONBLOCK, so a
+// planted symlink is never followed (its target is neither read nor
+// credited) and a FIFO cannot block the cycle while it holds the dir
+// lock. Anything that is not a regular file is unlinked and skipped.
+// At most maxSeedLen bytes are read; a longer file is truncated to its
+// first maxSeedLen bytes (as seedrng.c does) rather than discarded.
+// Whatever the outcome, the name is unlinked before anything reaches
+// the kernel, so the same entry can never be replayed.
 func consumeSeed(dir string, dfd int, name string, credit bool, hash interface {
 	Write([]byte) (int, error)
 }, log func(string, ...any)) (bool, error) {
-	path := filepath.Join(dir, name)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("read %s: %w", name, err)
+	data, readErr := readSeedFile(dfd, name)
+	if errors.Is(readErr, unix.ENOENT) {
+		return false, nil
 	}
 	// Unlink + fsync of the dir before we credit anything, so a crash
-	// cannot replay this seed.
-	if err := unix.Unlinkat(dfd, name, 0); err != nil && !errors.Is(err, os.ErrNotExist) {
+	// cannot replay this seed. Also done when the entry was rejected
+	// (symlink, FIFO, device, unreadable): leaving it would only make
+	// every later cycle trip over it again.
+	if err := unix.Unlinkat(dfd, name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		if readErr != nil {
+			return false, fmt.Errorf("%s: %w (unlink: %v)", name, readErr, err)
+		}
 		return false, fmt.Errorf("unlink %s: %w", name, err)
 	}
 	if err := unix.Fsync(dfd); err != nil {
+		if readErr != nil {
+			return false, fmt.Errorf("%s: %w (fsync dir: %v)", name, readErr, err)
+		}
 		return false, fmt.Errorf("fsync dir: %w", err)
+	}
+	if readErr != nil {
+		log("Removed unusable seed %s: %v", name, readErr)
+		return false, fmt.Errorf("%s: %w", name, readErr)
 	}
 	if len(data) == 0 {
 		return false, nil
@@ -250,6 +296,46 @@ func consumeSeed(dir string, dfd int, name string, credit bool, hash interface {
 		return true, fmt.Errorf("RNDADDENTROPY: %w", err)
 	}
 	return true, nil
+}
+
+// readSeedFile opens name under dfd without following symlinks or
+// blocking, requires a regular file and returns at most maxSeedLen
+// bytes of it. A missing entry yields an error matching unix.ENOENT.
+func readSeedFile(dfd int, name string) ([]byte, error) {
+	fd, err := unix.Openat(dfd, name,
+		unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOCTTY, 0)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("refusing symlink: %w", err)
+		}
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	defer unix.Close(fd)
+
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return nil, fmt.Errorf("fstat: %w", err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, fmt.Errorf("refusing non-regular file (mode %#o)", st.Mode)
+	}
+
+	buf := make([]byte, maxSeedLen)
+	total := 0
+	for total < len(buf) {
+		n, err := unix.Read(fd, buf[total:])
+		if err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			return nil, fmt.Errorf("read: %w", err)
+		}
+		if n == 0 {
+			break
+		}
+		total += n
+	}
+	return buf[:total], nil
 }
 
 // feedKernelHook and readNewSeedHook are the seams for tests. Both
@@ -343,8 +429,15 @@ const grndInsecure = 0x0004
 // creditable seed with unknown provenance.
 func writeNewSeed(dir string, dfd int, seed []byte, credit bool) error {
 	nonPath := filepath.Join(dir, nonCreditableSeed)
+	// Never write through whatever currently sits at the name: drop the
+	// entry first and create a fresh inode with O_EXCL|O_NOFOLLOW, so a
+	// symlink planted there cannot redirect root's write (create or
+	// truncate) to a file outside the seed directory.
+	if err := unix.Unlinkat(dfd, nonCreditableSeed, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return fmt.Errorf("unlink %s: %w", nonPath, err)
+	}
 	fd, err := unix.Openat(dfd, nonCreditableSeed,
-		unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_CLOEXEC, 0o400)
+		unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o400)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", nonPath, err)
 	}

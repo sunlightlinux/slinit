@@ -18,7 +18,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -90,11 +89,12 @@ func main() {
 
 // unwrapJoined splits an errors.Join value back into its parts so we
 // print one line per underlying failure instead of a jammed-together
-// blob.
+// blob. Any other error is returned whole: unwrapping a single %w
+// chain would strip its context (the path, the step) and can yield nil.
 func unwrapJoined(err error) []error {
 	type multi interface{ Unwrap() []error }
 	if m, ok := err.(multi); ok {
 		return m.Unwrap()
 	}
-	return []error{errors.Unwrap(err)}
+	return []error{err}
 }

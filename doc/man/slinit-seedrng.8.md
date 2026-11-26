@@ -28,17 +28,22 @@ Typical wiring on a slinit-managed system is to invoke it twice:
 
 Every invocation:
 
-1. Locks the seed directory (**flock(LOCK_EX)** on the dirfd) so two
+1. Opens the seed directory and refuses it (exit 1, nothing consumed
+   or written) unless it is owned by the effective user and is not
+   group- or world-writable. The check is an **fstat**(2) of the
+   opened directory, not of the path.
+2. Locks the seed directory (**flock(LOCK_EX)** on the dirfd) so two
    concurrent invocations cannot double-credit the same seed.
-2. Consumes **seed.no-credit** (fed to the kernel *without* crediting).
-3. Consumes **seed.credit** (fed to the kernel *with* crediting,
+3. Consumes **seed.no-credit** (fed to the kernel *without* crediting).
+4. Consumes **seed.credit** (fed to the kernel *with* crediting,
    unless **\--skip-credit** overrides).
-4. Reads a fresh seed via **getrandom**(2) — **GRND_NONBLOCK** first;
+5. Reads a fresh seed via **getrandom**(2) — **GRND_NONBLOCK** first;
    on **EAGAIN**/**ENOSYS** falls back to **GRND_INSECURE**, then to
    */dev/urandom*.
-5. Mixes wallclock + boottime + prior state via SHA-256 and folds the
+6. Mixes wallclock + boottime + prior state via SHA-256 and folds the
    digest into the trailing 32 bytes of the fresh seed.
-6. Writes the fresh seed (mode 0400, fsynced) as **seed.no-credit** first, then
+7. Writes the fresh seed (mode 0400, fsynced, always a newly created
+   file; any entry already at the name is removed first) as **seed.no-credit** first, then
    **renameat(2)**-s to **seed.credit** iff **getrandom(GRND_NONBLOCK)**
    returned real entropy. If the kernel pool was not yet initialised,
    the seed stays non-creditable — replaying it on the next boot must
@@ -48,12 +53,21 @@ Consumed seed files are **unlinkat(2)**-ed with a **fsync(2)** of the
 dir before the ioctl runs, so a crash between "read" and "credit"
 cannot silently replay the same entropy on the next boot.
 
+Seed files are opened with **O_NOFOLLOW** and **O_NONBLOCK**. A seed
+name that is a symlink, FIFO, socket, device or anything else but a
+regular file is unlinked and skipped (never read, never credited) and
+the run exits 1. At most 512 bytes are read from a seed file; a longer
+one is truncated to its first 512 bytes rather than discarded. No
+write ever follows a symlink, so a link planted in the seed directory
+cannot redirect the new seed to a file elsewhere.
+
 # OPTIONS
 
 **\--seed-dir** *DIR*
 :   Directory holding seed files. Defaults to */var/lib/seedrng*
     (matches OpenRC + systemd conventions). Created if missing, with
-    mode **0700**.
+    mode **0700**. An existing directory must be owned by the effective
+    user and not be group- or world-writable, or the run is refused.
 
 **\--skip-credit**
 :   Do not claim entropy on the *incoming* seed, even if it was marked
@@ -79,7 +93,8 @@ cannot silently replay the same entropy on the next boot.
     a fresh seed even on partial failure; a non-zero exit signals that
     an operator should investigate (typical causes: filesystem
     read-only, **CAP_SYS_ADMIN** missing for the ioctl, no new random
-    bytes could be read). A new seed that is merely non-creditable,
+    bytes could be read, an insecure seed directory, a seed name that
+    was not a regular file). A new seed that is merely non-creditable,
     because the pool was not yet initialised, is not an error.
 
 The program refuses to run as non-root (**RNDADDENTROPY** requires
