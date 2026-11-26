@@ -935,6 +935,28 @@ requires.
 
 ### Fixed
 
+- **Stopping a paused service waited out its stop timeout, and with
+  `stop-timeout = 0` never finished** (a shutdown then hung): the
+  stopped process kept the TERM pending. It is now sent SIGCONT after
+  the stop signal, as systemd does, and the paused flag no longer
+  outlives the process.
+- **`pause`, `continue` and `signal` raced the state machine**, reading
+  and signalling a pid the exit handler could clear (and the pid be
+  reused) meanwhile; they now run under the service lock.
+- **`unload` could hand another client a handle to the service it was
+  removing**, which could then be started outside the set; the checks
+  and the removal are now one step, and a reload no longer brings back a
+  name another client just unloaded.
+- **A repeated `enable` never retried a persistent link that had failed**
+  (read-only `/` early in boot), and the failure was reported as
+  success. The link on disk now decides, and a failure is a NAK with
+  the reason.
+- **An immediate shutdown left an earlier scheduled one armed**, and an
+  immediate soft-reboot left `/run/nologin` behind, refusing non-root
+  logins after it.
+- **`once` turned automatic restart off for good**; it now applies to
+  that run only, as runit's `sv once` does.
+
 - **`rc-service --exists` said a stopped service did not exist** (and
   printed its state); like OpenRC's, it now succeeds silently whenever
   the service resolves.
