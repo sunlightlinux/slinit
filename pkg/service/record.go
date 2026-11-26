@@ -2974,6 +2974,29 @@ func (sr *ServiceRecord) abandonPendingRestart() {
 		sr.startExplicit = false
 		sr.requiredBy--
 	}
+	// Dependents that started while this service was stopping hold it
+	// too. Break the soft links, as Stopped() does for a service that is
+	// not restarting.
+	for _, dept := range sr.dependents {
+		if !dept.IsHard() {
+			if dept.WaitingOn {
+				dept.WaitingOn = false
+				dept.From.Record().dependencyStarted()
+			}
+			if dept.HoldingAcq {
+				dept.HoldingAcq = false
+				sr.Release(false)
+			}
+		}
+	}
+	if sr.requiredBy > 0 {
+		// A hard dependent still holds it: it stays counted active,
+		// still marked so, and the release that frees it settles it.
+		// Settled now, that release would find a STOPPED service with
+		// nothing pending, and the count would never come down.
+		sr.restartPending = true
+		return
+	}
 	sr.settleInactive()
 }
 

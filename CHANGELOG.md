@@ -160,6 +160,15 @@ verified with `git tag -v`.
   SIGKILL cannot end (stuck in uninterruptible sleep) now holds the
   shutdown for that grace (3s by default, `--shutdown-grace`) once more.
 
+- **Shutdown no longer waits out its emergency timeout after a stop in
+  a restart delay.** A dependent that started while a service was
+  stopping asked for its restart, which waited out `restart-delay`;
+  stopping the service in that delay called the restart off while the
+  dependent still held it, and when the dependent stopped later nothing
+  took the service off the active count. Every service was STOPPED, and
+  the event loop waited for the count to reach zero until the emergency
+  timeout. Found by the new control protocol fuzzer.
+
 - **`slinitctl stop` during a restart delay stops the service.** Between
   a process's exit and its restart (a crashing service with `restart`,
   or the middle of `slinitctl restart`) the service is STOPPED but still
