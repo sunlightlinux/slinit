@@ -268,3 +268,52 @@ func TestReadyCheckAttemptBounded(t *testing.T) {
 	set.StopService(s)
 	waitState(t, s, StateStopped, 5*time.Second)
 }
+
+// post-start-command ran in a goroutine nothing could end short of
+// hook-timeout: it outlived the stop of its service, and a quick stop
+// and start had two runs overlapping. Stopping the service ends it now.
+func TestPostStartCommandEndsWithTheService(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "pstop")
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	s.SetHookTimeout(30 * time.Second)
+	s.SetPostStartCommand(backgroundedSleep(pidFile, "45.3"))
+	s.SetCommand([]string{"/bin/sleep", "30"})
+	set.AddService(s)
+	set.StartService(s)
+	waitState(t, s, StateStarted, 3*time.Second)
+	pid := pidFromFile(t, pidFile)
+	set.StopService(s)
+	if st := waitState(t, s, StateStopped, 5*time.Second); st != StateStopped {
+		t.Fatalf("state %v, want STOPPED", st)
+	}
+	if !processGone(pid, 2*time.Second) {
+		t.Errorf("post-start-command (pid %d) still running after the service stopped", pid)
+	}
+}
+
+// A new start's post-start-command ends the previous start's run first,
+// even when no stop came between them (a restart of the process).
+func TestPostStartCommandRunsDoNotOverlap(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "pstover")
+	dir := t.TempDir()
+	s.SetHookTimeout(30 * time.Second)
+
+	first := filepath.Join(dir, "first")
+	s.SetPostStartCommand(backgroundedSleep(first, "45.4"))
+	s.launchPostStartCommand()
+	pid1 := pidFromFile(t, first)
+
+	second := filepath.Join(dir, "second")
+	s.SetPostStartCommand(backgroundedSleep(second, "45.5"))
+	s.launchPostStartCommand()
+	pid2 := pidFromFile(t, second)
+
+	if !processGone(pid1, 2*time.Second) {
+		t.Errorf("the first post-start-command run (pid %d) still running alongside the second", pid1)
+	}
+	if processGone(pid2, 0) {
+		t.Errorf("the second post-start-command run (pid %d) ended too", pid2)
+	}
+}

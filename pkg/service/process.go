@@ -102,6 +102,12 @@ type ProcessService struct {
 	startEnv      []string
 	startEnvFresh bool
 
+	// The post-start-command run of the current start: postStartCancel
+	// ends it, postStartDone closes when it has. postStartMu guards both.
+	postStartMu     sync.Mutex
+	postStartCancel context.CancelFunc
+	postStartDone   chan struct{}
+
 	// Credentials
 	runAsUID          uint32
 	runAsGID          uint32
@@ -1775,27 +1781,70 @@ func (s *ProcessService) BringUp() bool {
 // asynchronous, exit code only logged. Runs in a goroutine so a slow
 // hook doesn't block the scheduling loop. Called after a successful
 // startProcess on both the immediate and the start-delay path.
+//
+// The run belongs to this start. A previous start's run still going is
+// ended (its process group killed) and waited for first, and BringDown
+// ends it too. Before, nothing ended it short of hook-timeout: it ran on
+// after the service had stopped, and a quick stop and start had two
+// runs overlapping.
 func (s *ProcessService) launchPostStartCommand() {
 	if len(s.postStartCommand) == 0 {
 		return
 	}
+	s.cancelPostStart(true)
+	// Read here, under the caller's lock, not in the goroutine: a
+	// reload may replace the command while this run is under way.
+	argv := s.postStartCommand
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.postStartMu.Lock()
+	s.postStartCancel, s.postStartDone = cancel, done
+	s.postStartMu.Unlock()
 	go func() {
-		if err := s.runHookCommand(s.postStartCommand, "post-start-command"); err != nil {
+		defer close(done)
+		defer cancel()
+		err := s.runHookCommandCtx(ctx, argv, "post-start-command")
+		switch {
+		case err == nil:
+		case ctx.Err() != nil:
+			s.services.logger.Info("Service '%s': post-start-command ended: the service is stopping or restarting",
+				s.serviceName)
+		default:
 			s.services.logger.Error("Service '%s': post-start-command failed: %v",
 				s.serviceName, err)
 		}
 	}()
 }
 
+// cancelPostStart ends a post-start-command still running, killing its
+// process group, and with wait set waits until it has gone.
+func (s *ProcessService) cancelPostStart(wait bool) {
+	s.postStartMu.Lock()
+	cancel, done := s.postStartCancel, s.postStartDone
+	s.postStartCancel, s.postStartDone = nil, nil
+	s.postStartMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if wait && done != nil {
+		<-done
+	}
+}
+
 // runHookCommand executes a one-shot hook (pre-start-command,
 // post-start-command) using the same working-dir / env / timeout as
 // finish-command. Synchronous; returns the exec.Cmd error.
 func (s *ProcessService) runHookCommand(cmd []string, label string) error {
+	return s.runHookCommandCtx(context.Background(), cmd, label)
+}
+
+// runHookCommandCtx is runHookCommand ended early by parent.
+func (s *ProcessService) runHookCommandCtx(parent context.Context, cmd []string, label string) error {
 	if len(cmd) == 0 {
 		return nil
 	}
 	timeout := s.effectiveHookTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	c := newHookCmd(ctx, cmd)
 	c.Dir = s.workingDir
@@ -1845,6 +1894,8 @@ func (s *ProcessService) BringDown() {
 	s.cancelSmoothRecovery()
 	// Nor does a socket watcher still waiting for its first client.
 	s.disarmOnDemand()
+	// A post-start-command still running ends with the service.
+	s.cancelPostStart(false)
 	// Stop health checker and cron runner if active
 	s.stopHealthChecker()
 	s.stopCronRunner()

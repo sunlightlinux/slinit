@@ -237,6 +237,11 @@ what tells you the oldest slinit your configuration will run on. See
     non-zero exit is logged but does not fail the service. Useful for "service is up, notify
     something" hooks. **+=** appends arguments. Process services only.
 
+    A run still going when the service is stopped, or when the next
+    start launches its own, is ended then (its process group killed);
+    otherwise **hook-timeout** bounds it. Before, a run outlived the
+    stop of its service, and a quick stop and start had two overlapping.
+
 **ready-check-command**=*program* [*args*...]
 :   A program polled until it exits 0; the service is considered
     started only when the check passes.
