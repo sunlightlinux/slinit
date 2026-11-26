@@ -6,8 +6,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // foreignRootPID returns a live process owned by root that is neither
@@ -136,5 +139,57 @@ func TestPIDFileOwnerMayNameCgroupMember(t *testing.T) {
 	}
 	if err := pidFileWritersMayName([]uint32{stranger}, os.Getpid(), ""); err == nil {
 		t.Error("pid of another uid accepted from a non-root file with no cgroup")
+	}
+}
+
+// rootPIDFile returns a pid file owned by root, in a root-owned
+// directory, that names a live process other than init: what a run-as
+// service could steer slinit to read through a symlink of its own.
+func rootPIDFile(t *testing.T) (dir, name string, pid int) {
+	t.Helper()
+	for _, d := range []string{"/run", "/var/run"} {
+		matches, _ := filepath.Glob(filepath.Join(d, "*.pid"))
+		for _, m := range matches {
+			fi, err := os.Lstat(m)
+			if err != nil || !fi.Mode().IsRegular() {
+				continue
+			}
+			if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
+				continue
+			}
+			p, res, err := process.ReadPIDFile(m)
+			if err != nil || res != process.PIDResultOK {
+				continue
+			}
+			return d, filepath.Base(m), p
+		}
+	}
+	t.Skip("no root-owned pid file naming a live process in /run")
+	return "", "", 0
+}
+
+// The file is root's, but the path to it is not: it runs through a
+// directory the service's user owns, where that user put a symlink to
+// /run. systemd's CHASE_SAFE flags the same chain and then refuses a pid
+// outside the service's cgroup, whoever owns the file.
+func TestBGProcessRefusesRootPIDFileReachedThroughUserSymlink(t *testing.T) {
+	pretendManagerIsRoot(t)
+	target, name, victim := rootPIDFile(t)
+	set, _ := newTestSet()
+
+	userDir := t.TempDir() // owned by the test user, standing for run-as
+	if err := os.Symlink(target, filepath.Join(userDir, "run")); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewBGProcessService(set, "symlink-svc")
+	svc.SetCommand([]string{"/bin/sh", "-c", "exit 0"})
+	svc.SetPIDFile(filepath.Join(userDir, "run", name))
+	set.AddService(svc)
+	set.StartService(svc)
+
+	st := waitSettled(svc)
+	if st == StateStarted || svc.PID() == victim {
+		t.Fatalf("adopted %d from %s/%s through a user-owned symlink: state %v, PID %d",
+			victim, target, name, st, svc.PID())
 	}
 }

@@ -1139,24 +1139,31 @@ func (s *BGProcessService) recoveredDaemonDiedLocked(pid int) {
 }
 
 // readPIDFile reads a pid file as ReadPIDFile does, and refuses a live
-// pid that whoever wrote the file had no business naming.
+// pid that whoever could write the file had no business naming.
 //
 // The pid read is what slinit adopts as the daemon and later signals, so
-// the file's owner chooses who gets SIGTERM/SIGKILL. systemd
-// (service_load_pid_file) accepts a pid from a file not owned by the
-// manager only when the pid is in the service's own cgroup. slinit
-// services often have no cgroup of their own, so where systemd would
-// refuse, slinit also accepts a pid whose real or saved uid is the
-// file's owner: the kernel would let that owner signal it anyway, so
-// naming it hands the writer nothing it did not have. Everything else is
-// refused — a run-as service writing sshd's pid, or another service's,
-// into its pid file.
+// whoever could write the file chooses who gets SIGTERM/SIGKILL: its
+// owner, and the owner of any directory on the way to it, who could have
+// put a file or a symlink of their own there. systemd
+// (service_load_pid_file, with CHASE_SAFE) accepts a pid from a file not
+// owned by the manager, or reached through a directory owned by another
+// user, only when the pid is in the service's own cgroup. slinit services
+// often have no cgroup of their own, so where systemd would refuse, slinit
+// also accepts a pid whose real or saved uid is that one other user's:
+// the kernel would let them signal it anyway, so naming it hands them
+// nothing they did not have. Everything else is refused — a run-as
+// service writing sshd's pid, or another service's, into its pid file,
+// or a symlink of its own steering slinit to a pid file of root's.
 func (s *BGProcessService) readPIDFile(path string) (int, process.PIDResult, error) {
 	pid, result, owner, err := process.ReadPIDFileOwner(path)
 	if result != process.PIDResultOK {
 		return pid, result, err
 	}
-	if err := pidFileWritersMayName([]uint32{owner}, pid, s.OwnCgroupPath()); err != nil {
+	writers, err := pidFileDirOwners(path)
+	if err == nil {
+		err = pidFileWritersMayName(append(writers, owner), pid, s.OwnCgroupPath())
+	}
+	if err != nil {
 		return 0, process.PIDResultFailed, fmt.Errorf("pid file %s: %w", path, err)
 	}
 	return pid, result, nil
@@ -1166,9 +1173,30 @@ func (s *BGProcessService) readPIDFile(path string) (int, process.PIDResult, err
 // judge pid files as a root slinit would.
 var pidFileManagerUID = os.Getuid
 
-// pidFileWritersMayName is readPIDFile's rule. owners are the uids that
-// could have written the file; cgroup is the service's own cgroup, or ""
-// when it has none.
+// pidFileDirOwners returns the owner of every directory on the way to
+// path, as the kernel resolves each prefix.
+func pidFileDirOwners(path string) ([]uint32, error) {
+	var owners []uint32
+	dir := filepath.Dir(filepath.Clean(path))
+	for {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return nil, err
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			owners = append(owners, st.Uid)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return owners, nil
+		}
+		dir = parent
+	}
+}
+
+// pidFileWritersMayName is readPIDFile's rule. owners are the uids owning
+// the file and the directories above it; cgroup is the service's own
+// cgroup, or "" when it has none.
 func pidFileWritersMayName(owners []uint32, pid int, cgroup string) error {
 	manager := uint32(pidFileManagerUID())
 	var writer uint32
@@ -1189,9 +1217,9 @@ func pidFileWritersMayName(owners []uint32, pid int, cgroup string) error {
 	if ruid, suid, ok := procRealSavedUID(pid); ok && writers == 1 && (ruid == writer || suid == writer) {
 		return nil
 	}
-	return fmt.Errorf("refusing PID %d: the file is owned by another user than "+
-		"root, and the process neither runs as that user nor is in the "+
-		"service's cgroup", pid)
+	return fmt.Errorf("refusing PID %d: the file, or a directory above it, is "+
+		"writable by another user than root, and the process neither runs as "+
+		"that user nor is in the service's cgroup", pid)
 }
 
 // procRealSavedUID returns the real and saved uid of pid: the two the

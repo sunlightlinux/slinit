@@ -1333,7 +1333,10 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
     read from a file that is not owned by slinit's own user (root) is
     accepted only when the process is in the service's own cgroup
     (**cgroup** or **slice**), or when its real or saved UID is the
-    file's owner, which could signal it anyway. Any other PID fails the
+    file's owner, which could signal it anyway. The owner of a directory
+    on the way to the file counts as a writer too (it could have put a
+    symlink there): with two or more such users other than root, only a
+    process in the service's cgroup is accepted. Any other PID fails the
     start, as systemd refuses it for *PIDFile=*. The same applies to
     **follow-pid**.
 

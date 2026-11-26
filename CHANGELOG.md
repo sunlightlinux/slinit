@@ -48,6 +48,16 @@ verified with `git tag -v`.
   signal anyway). Applies to `pid-file` and `follow-pid`. Compat: a
   daemon that runs as one user while its pid file is owned by another
   non-root user now fails to start; give it a cgroup or fix the owner.
+- **Nor can a symlink in a service's own directory steer slinit to a pid
+  file of root's.** A `pid-file` path running through a directory the
+  service's user owns let that user replace what lies below it with a
+  symlink to, say, `/run`, and slinit then read root's `auditd.pid` and
+  adopted (and on stop, killed) auditd. The owners of the directories on
+  the way to the file now count as writers of it, as systemd's CHASE_SAFE
+  check does: with one non-root writer the rule above applies to it, with
+  two or more only a pid in the service's cgroup is accepted. Compat: a
+  daemon that stays root while writing its pid file into a directory owned
+  by another user now fails to start unless it has a cgroup of its own.
 
 ### Fixed
 
