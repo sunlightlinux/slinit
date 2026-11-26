@@ -272,6 +272,12 @@ verified with `git tag -v`.
   `restart`, say) did not tell it, so it stayed STOPPING and a shutdown
   waited for it until its timeout.
 
+- **A failed start drops its pin from the dependencies too.** A failed
+  start clears the service's start pin, but the pin had also reached its
+  hard dependencies, and they kept it: after `start --pin` on a service
+  that then failed to start (again), its dependencies could not be
+  stopped any more, and a shutdown waited for them until its timeout.
+
 - **`slinitctl add-dep`/`rm-dep` with `prepared-by` work.** slinitctl
   accepted the kind and slinitctl(8) documents it, but the daemon took
   only the kinds up to `after` and refused every prepared-by request, so

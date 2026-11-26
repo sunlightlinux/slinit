@@ -2837,18 +2837,7 @@ func (sr *ServiceRecord) Unpin() {
 			return
 		}
 
-		// A milestone counts although it may be soft by now: the pin
-		// reached its target while the edge was still hard, and the
-		// target must recompute it (see carriesPin).
-		for _, dep := range sr.dependsOn {
-			if dep.carriesPin() {
-				toRec := dep.To.Record()
-				if toRec.deptPinnedStarted {
-					toRec.propPinDpt = true
-					sr.services.AddPropQueue(dep.To)
-				}
-			}
-		}
+		sr.unpinDependencies()
 
 		if sr.state.Load() == StateStarted {
 			if sr.requiredBy == 0 {
@@ -2865,6 +2854,23 @@ func (sr *ServiceRecord) Unpin() {
 	}
 	if sr.pinnedStopped {
 		sr.pinnedStopped = false
+	}
+}
+
+// unpinDependencies has the dependencies this service's start pin
+// reached recompute theirs, once the pin is gone.
+func (sr *ServiceRecord) unpinDependencies() {
+	// A milestone counts although it may be soft by now: the pin
+	// reached its target while the edge was still hard, and the
+	// target must recompute it (see carriesPin).
+	for _, dep := range sr.dependsOn {
+		if dep.carriesPin() {
+			toRec := dep.To.Record()
+			if toRec.deptPinnedStarted {
+				toRec.propPinDpt = true
+				sr.services.AddPropQueue(dep.To)
+			}
+		}
 	}
 }
 
@@ -3780,7 +3786,15 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 	sr.startFailed = true
 	sr.services.logger.ServiceFailed(sr.serviceName, depFailed)
 	sr.notifyListeners(EventFailedStart)
-	sr.pinnedStarted = false
+	if sr.pinnedStarted {
+		sr.pinnedStarted = false
+		// The pin reached the dependencies too: dropped here alone, it
+		// kept them pinned by a dependent that pinned nothing, and they
+		// could not be stopped again, at shutdown either.
+		if !sr.deptPinnedStarted {
+			sr.unpinDependencies()
+		}
+	}
 
 	if immediateStop {
 		sr.Stopped()
