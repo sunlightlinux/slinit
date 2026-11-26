@@ -435,6 +435,7 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		cfg.runAs = "root" + cfg.runAs
 	}
 	warns = append(warns, cfg.finishExecStart()...)
+	warns = append(warns, cfg.warnHookCredentials()...)
 	if cfg.svcType == "scripted" && !cfg.startTimeoutSet {
 		// systemd gives a oneshot no start timeout unless the unit
 		// sets one (service_add_extras: DefaultTimeoutStartSec does not
@@ -1068,6 +1069,30 @@ func (cfg *SystemdConfig) finishExecStart() []SystemdWarning {
 	}
 	return []SystemdWarning{{"WARN", fmt.Sprintf(`ExecStart= "-" (exit failure counts as success) not carried: `+
 		`slinit counts a failing %s service as failed, and restart = on-failure restarts it`, cfg.svcType)}}
+}
+
+// warnHookCredentials warns that the hooks do not run as User=/Group=.
+// systemd runs ExecStartPre= and ExecStartPost= with the unit's
+// credentials unless they have "+"; slinit runs pre-start-command and
+// post-start-command as root, outside the sandbox, so a hook the unit
+// meant to run unprivileged runs with every privilege.
+func (cfg *SystemdConfig) warnHookCredentials() []SystemdWarning {
+	if cfg.runAs == "" {
+		return nil
+	}
+	var warns []SystemdWarning
+	for _, h := range []struct {
+		key, setting, cmd string
+		priv              bool
+	}{{"ExecStartPre", "pre-start-command", cfg.preStart, cfg.preStartPriv},
+		{"ExecStartPost", "post-start-command", cfg.postStart, cfg.postStartPriv}} {
+		if h.cmd != "" && !h.priv {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"%s= runs as %s under systemd; slinit runs %s as root, without the service's credentials or sandbox — "+
+					"check that it is safe with full privileges, or run it from the main command", h.key, cfg.runAs, h.setting)})
+		}
+	}
+	return warns
 }
 
 // execPrefixNotes reports what becomes of an Exec prefix in slinit.

@@ -98,6 +98,12 @@ and **ExecStop** a failure already fails nothing in slinit. **-** on the
 **ExecStart** of a long-running service, and **+** and **!** wherever
 their meaning is lost, are reported as warnings.
 
+slinit runs **pre-start-command** and **post-start-command** as root,
+outside the service's sandbox, where systemd runs **ExecStartPre** and
+**ExecStartPost** with the unit's **User=** and **Group=** unless they
+have **+**. A unit with **User=** or **Group=** and such a hook gets a
+warning: the hook runs with more privilege than the unit asks for.
+
 **TimeoutStartSec** becomes **start-timeout** and **TimeoutStopSec**
 **stop-timeout**; **TimeoutSec** sets both. **infinity** and **0** both
 mean no timeout, as in systemd, and are written as **0**. A

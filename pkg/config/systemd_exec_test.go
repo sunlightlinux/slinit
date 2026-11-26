@@ -241,12 +241,13 @@ func TestParseExecLineRefusals(t *testing.T) {
 func TestSystemdExecPrefixes(t *testing.T) {
 	unit := `[Service]
 Type=oneshot
+User=nobody
 ExecStartPre=-/nonexistent/prog "a b"
 ExecStart=-/bin/sh -c "exit 3"
 ExecStartPost=+/bin/true
 ExecStop=:/bin/echo $HOME ${X} $$
 `
-	direct, _ := loadSystemdDirect(t, unit)
+	direct, got := loadSystemdDirect(t, unit)
 	for name, d := range map[string]*ServiceDescription{"converted": parseEmitted(t, unit), "direct": direct} {
 		for what, argv := range map[string][]string{"pre-start-command": d.PreStartCommand, "command": d.Command} {
 			if len(argv) == 0 {
@@ -262,6 +263,22 @@ ExecStop=:/bin/echo $HOME ${X} $$
 		// ":": no variable is expanded, $$ stays $$.
 		argvIs(t, name+": stop-command", d.StopCommand, []string{"/bin/echo", "$HOME", "${X}", "$$"})
 	}
+	var preWarned, postWarned bool
+	for _, g := range got {
+		if strings.HasPrefix(g, "WARN") && strings.Contains(g, "ExecStartPre= runs as nobody") {
+			preWarned = true
+		}
+		if strings.Contains(g, "ExecStartPost= runs as") {
+			postWarned = true
+		}
+	}
+	if !preWarned {
+		t.Errorf("no WARN that ExecStartPre= runs as root, not User=: %v", got)
+	}
+	if postWarned {
+		t.Errorf("ExecStartPost= has \"+\": systemd runs it privileged too, nothing to warn about: %v", got)
+	}
+
 	// "|": the rest runs as one /bin/sh -c script; "@|" a login shell.
 	d, _ := loadSystemdDirect(t, "[Service]\nExecStart=@|echo \"a b\" $$HOME\n")
 	argvIs(t, "|: command", d.Command, []string{"/bin/sh", "-c", "echo a b $HOME"})
