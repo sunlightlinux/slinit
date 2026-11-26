@@ -97,3 +97,15 @@ func TestStdinFileFIFODoesNotBlockStart(t *testing.T) {
 		t.Errorf("state %v, want STARTED", st)
 	}
 }
+
+// lock-file was opened for writing in the start, under the service
+// set's lock; a FIFO at the path with no reader blocked that open. Now
+// the start fails, as for any lock-file that cannot be opened.
+func TestLockFileFIFODoesNotBlockStart(t *testing.T) {
+	st := fifoStart(t, func(s *ProcessService, f string) {
+		s.SetLockFile(f)
+	})
+	if st == StateStarted {
+		t.Errorf("state %v, want the start to fail", st)
+	}
+}

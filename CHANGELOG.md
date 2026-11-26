@@ -112,6 +112,9 @@ verified with `git tag -v`.
 ### Fixed
 - **A FIFO named in `required-files` froze PID 1**: the readability check
   opened it and waited for a writer with the service set's lock held.
+- **A FIFO at a `lock-file` path froze PID 1**: the start opened it for
+  writing with the service set's lock held and waited for a reader; the
+  start now fails as for any lock-file that cannot be opened.
 
 ## [4.0.3] — 2026-11-26
 

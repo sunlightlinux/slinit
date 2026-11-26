@@ -304,7 +304,10 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	var lockFD *os.File
 	if params.LockFile != "" {
 		var err error
-		lockFD, err = os.OpenFile(params.LockFile, os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0600)
+		// O_NONBLOCK: a FIFO at the path with no reader fails with
+		// ENXIO instead of blocking PID 1 in open(2). The fd is only
+		// ever flocked, so its mode does not matter.
+		lockFD, err = os.OpenFile(params.LockFile, os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
 		if err != nil {
 			return 0, nil, &ExecError{Stage: StageDoExec, Err: fmt.Errorf("lock-file open: %w", err)}
 		}
