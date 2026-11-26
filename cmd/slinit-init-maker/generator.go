@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+
+	"github.com/sunlightlinux/slinit/internal/atomicfile"
 )
 
 // Config drives slinit-init-maker. It carries every tunable a user can
@@ -215,8 +218,11 @@ func Plan(c Config) ([]generatedFile, error) {
 
 // WriteAll executes a plan against the filesystem. The output directory
 // is created (mkdir -p) unless it already exists. Each file is written
-// atomically via <path>.tmp + rename so a failed run leaves no partial
-// file behind. Returns the list of absolute paths that were written.
+// atomically, through a fresh O_EXCL temp file and a rename, so a failed
+// run leaves no partial file behind. The temp name used to be a fixed
+// <path>.tmp, written with os.WriteFile: a symlink planted there sent
+// the file's content to its target, and the rename then left dst a
+// symlink to it. Returns the list of absolute paths that were written.
 func WriteAll(c Config, files []generatedFile) ([]string, error) {
 	if err := os.MkdirAll(c.OutputDir, 0755); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", c.OutputDir, err)
@@ -225,16 +231,17 @@ func WriteAll(c Config, files []generatedFile) ([]string, error) {
 	var written []string
 	for _, f := range files {
 		dst := filepath.Join(c.OutputDir, f.path)
-		if !c.Force {
-			if _, err := os.Stat(dst); err == nil {
-				return written, fmt.Errorf("refusing to overwrite existing file %s (use --force)", dst)
-			}
-		}
 		mode := os.FileMode(0644)
 		if f.exec {
 			mode = 0755
 		}
-		if err := writeAtomic(dst, []byte(f.body), mode); err != nil {
+		// atomicfile refuses an existing dst without Force (it used
+		// to be os.Stat, which a dangling symlink passed) and a
+		// symlink at dst always.
+		if err := atomicfile.Write(dst, []byte(f.body), mode, c.Force); err != nil {
+			if errors.Is(err, atomicfile.ErrExists) {
+				return written, fmt.Errorf("refusing to overwrite existing file %s (use --force)", dst)
+			}
 			return written, fmt.Errorf("write %s: %w", dst, err)
 		}
 		written = append(written, dst)
@@ -254,21 +261,6 @@ func PrintPlan(w io.Writer, c Config, files []generatedFile) {
 		}
 		fmt.Fprintf(w, "%s%s (%d bytes)\n", marker, filepath.Join(c.OutputDir, f.path), len(f.body))
 	}
-}
-
-// writeAtomic replaces dst with data by first writing to dst.tmp in the
-// same directory and then renaming. This avoids leaving a half-written
-// service file behind on a crash mid-generation.
-func writeAtomic(dst string, data []byte, mode os.FileMode) error {
-	tmp := dst + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
 }
 
 // renderTemplate executes a Go text/template against data and returns
