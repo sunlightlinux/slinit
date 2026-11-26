@@ -4,7 +4,7 @@ Go native fuzz tests (`testing.F`) for slinit's input parsing surfaces.
 
 ## This directory is not all of them
 
-29 targets live here. Another 18 sit beside the code they exercise,
+29 targets live here. Another 19 sit beside the code they exercise,
 because a fuzz target for an unexported parser has to live in its own
 package:
 
@@ -23,6 +23,7 @@ package:
 | `pkg/hostname` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease` |
 | `pkg/journal` | `FuzzParseSyslog` |
 | `pkg/process` | `FuzzMatchFDName` |
+| `pkg/control` | `FuzzControlServer` |
 
 So `go test -fuzz=... ./tests/fuzz/` reaches about three fifths of the
 fuzzing surface. CI fuzzes every package in its matrix
