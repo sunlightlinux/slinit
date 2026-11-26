@@ -656,3 +656,37 @@ func TestChpstArgv0Loads(t *testing.T) {
 		t.Errorf("argv0 = %q; want shown", desc.Argv0)
 	}
 }
+
+// TestParseChpstGroupedFlags — chpst parses its options with getopt,
+// so flags group: `-P0` is -P then -0, and a value-taking flag ends
+// the group and takes the rest of it (or the next argument). Reading
+// only the first letter of each argument dropped -0 from `-P0` and
+// took `u` of `-Pu nobody` for nothing, so "nobody" became the
+// command.
+func TestParseChpstGroupedFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want slinitConfig
+	}{
+		{"P0", []string{"-P0", "daemon"},
+			slinitConfig{newSession: true, closeStdin: true, command: "daemon"}},
+		{"012", []string{"-012", "daemon"},
+			slinitConfig{closeStdin: true, closeStdout: true, closeStderr: true, command: "daemon"}},
+		{"Pu value in next arg", []string{"-Pu", "nobody", "daemon"},
+			slinitConfig{newSession: true, runAs: "nobody", command: "daemon"}},
+		{"Pu value joined", []string{"-Punobody", "daemon"},
+			slinitConfig{newSession: true, runAs: "nobody", command: "daemon"}},
+		{"value flag ends group", []string{"-uP0", "daemon"},
+			slinitConfig{runAs: "P0", command: "daemon"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var cfg slinitConfig
+			parseChpst(&cfg, c.args)
+			if !reflect.DeepEqual(cfg, c.want) {
+				t.Errorf("parseChpst(%q)\n  got %+v\n want %+v", c.args, cfg, c.want)
+			}
+		})
+	}
+}
