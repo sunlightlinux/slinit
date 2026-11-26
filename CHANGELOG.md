@@ -24,8 +24,6 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
-
-
 ### Security
 
 - **Release builds use a supported Go toolchain.** CI, the SLSA builder
@@ -90,6 +88,20 @@ verified with `git tag -v`.
   is framed: a list of 4000 services allocates 950 KiB instead of
   1467 KiB per request.
 
+- **A FIFO named in `required-files` froze PID 1**: the readability check
+  opened it and waited for a writer with the service set's lock held.
+- **A FIFO at a `lock-file` path froze PID 1**: the start opened it for
+  writing with the service set's lock held and waited for a reader; the
+  start now fails as for any lock-file that cannot be opened.
+- **A FIFO or terminal named by `condition = file-value` froze PID 1**:
+  the check opened and read it with the service set's lock held. It is
+  now read without blocking; an empty FIFO reads as empty.
+- **A `load-credential` source that was a FIFO froze PID 1**: the start
+  read it with the service set's lock held and waited for a writer; a
+  source linking to `/dev/zero` was read without end. Sources must now be
+  regular files of at most 1 MiB (systemd's limit, and the size of the
+  credentials tmpfs, so a larger one could not be stored before either).
+
 ### Changed
 
 - **A FIFO in an `env-dir`, or an `env-file` that is one, froze PID 1**:
@@ -124,23 +136,11 @@ verified with `git tag -v`.
   the FIFO.
 - **A `standard-input-file` that is a FIFO froze PID 1**: the start
   opened it with the service set's lock held and waited for a writer.
-  *Compat:* the service now starts at once with the FIFO as fd 0; a read
-  before any writer has opened it sees end-of-file.
-
-### Fixed
-- **A FIFO named in `required-files` froze PID 1**: the readability check
-  opened it and waited for a writer with the service set's lock held.
-- **A FIFO at a `lock-file` path froze PID 1**: the start opened it for
-  writing with the service set's lock held and waited for a reader; the
-  start now fails as for any lock-file that cannot be opened.
-- **A FIFO or terminal named by `condition = file-value` froze PID 1**:
-  the check opened and read it with the service set's lock held. It is
-  now read without blocking; an empty FIFO reads as empty.
-- **A `load-credential` source that was a FIFO froze PID 1**: the start
-  read it with the service set's lock held and waited for a writer; a
-  source linking to `/dev/zero` was read without end. Sources must now be
-  regular files of at most 1 MiB (systemd's limit, and the size of the
-  credentials tmpfs, so a larger one could not be stored before either).
+  *Compat:* the service now starts at once. Its fd 0 is opened
+  read-write (when slinit may write the FIFO), so a read waits for data
+  instead of returning end-of-file while no writer is connected; in
+  exchange the service no longer sees end-of-file when the last writer
+  closes.
 
 ## [4.0.3] — 2026-11-26
 

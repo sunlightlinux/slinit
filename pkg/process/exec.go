@@ -413,6 +413,19 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		// open(2); the child gets fd 0 back in blocking mode.
 		fd, err := unix.Open(params.StdinFile, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 		if err == nil {
+			// Read-only, a FIFO opened that way reads end-of-file
+			// until a writer connects, so a daemon fed through it
+			// would exit at start. Opened read-write (Linux allows it
+			// without blocking), fd 0 waits for data, as it did when
+			// the open itself waited for a writer. Without write
+			// permission it stays read-only.
+			var st unix.Stat_t
+			if unix.Fstat(fd, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFIFO {
+				if rw, err := unix.Open(params.StdinFile, unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0); err == nil {
+					unix.Close(fd)
+					fd = rw
+				}
+			}
 			if err = unix.SetNonblock(fd, false); err != nil {
 				unix.Close(fd)
 			}
