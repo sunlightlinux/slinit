@@ -1147,7 +1147,7 @@ func handleInclude(line, name, fileName string, lineNum int, desc *ServiceDescri
 		}
 	}
 
-	f, err := os.Open(incPath)
+	f, err := openConfigFile(incPath)
 	if err != nil {
 		if optional && os.IsNotExist(err) {
 			return nil

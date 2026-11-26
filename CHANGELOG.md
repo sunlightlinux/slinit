@@ -110,6 +110,13 @@ verified with `git tag -v`.
   under the service set's lock. *Compat:* lines are now dropped until a
   reader is there (the log-file is retried on each line; the alert-file,
   as for any open failure, is disabled for the rotator's lifetime).
+- **A FIFO in a service directory froze service loading**: a service
+  description, `.override`, overlay in `/etc/slinit.conf.d`, `@include`
+  target or executable in an init.d directory that was a FIFO blocked the
+  load with the loader's lock held, so every later start or reload of an
+  unloaded service waited too. *Compat:* such a file is now refused with
+  "not a regular file" (an init.d FIFO is not treated as a script); a
+  symlink to `/dev/null` still reads as an empty file.
 - **A rotated `log-file` FIFO whose reader stopped reading froze PID 1
   on the next restart**: the log reader blocked in write with its lock
   held. The restart now cuts that write off, as it already did for an

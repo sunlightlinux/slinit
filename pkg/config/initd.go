@@ -326,7 +326,7 @@ func IsInitDScript(path string) bool {
 		return false
 	}
 
-	f, err := os.Open(path)
+	f, err := openConfigFile(path)
 	if err != nil {
 		return false
 	}
