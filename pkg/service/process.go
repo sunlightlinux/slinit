@@ -861,6 +861,9 @@ func (s *ProcessService) rotatorConfig(path string, maxSize int64, maxFiles int,
 		ReadBufferSize: s.logReadBufferSize,
 		ServiceName:    s.serviceName,
 		Logger:         s.services.logger,
+
+		// log-processor: the service's run-as, working-dir and environment.
+		PrepareProcessor: s.prepareHookCmd,
 	}
 }
 

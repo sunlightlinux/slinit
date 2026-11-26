@@ -171,3 +171,44 @@ func TestHookCmdConcurrentReload(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// The log processor is wired to the service's credentials; the field
+// stayed nil, so it ran as root whatever run-as said.
+func TestRotatorConfigCarriesHookPreparer(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "rotprep")
+	if s.rotatorConfigFor("/tmp/x").PrepareProcessor == nil {
+		t.Error("rotatorConfig leaves PrepareProcessor unset: log-processor runs as root")
+	}
+}
+
+// A running service's health checks and cron jobs reuse the environment
+// of the current start instead of running the env-generator per check.
+func TestPeriodicHooksReuseStartEnv(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "envreuse")
+	dir := t.TempDir()
+	count := filepath.Join(dir, "count")
+	s.SetEnvGenerator(writeScript(t, dir, "gen", "echo x >> "+count+"\necho GENV=1\n"))
+	set.AddService(s)
+	s.prepareStartEnv()
+	for i := 0; i < 3; i++ {
+		cmd := exec.Command("/bin/true")
+		if !s.prepareHookCmd(context.Background(), cmd) {
+			t.Fatal("prepareHookCmd refused")
+		}
+		found := false
+		for _, kv := range cmd.Env {
+			if kv == "GENV=1" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("hook env lacks the generator's variable")
+		}
+	}
+	b, _ := os.ReadFile(count)
+	if n := strings.Count(string(b), "x"); n != 1 {
+		t.Errorf("env-generator ran %d times for one start and 3 checks, want 1", n)
+	}
+}

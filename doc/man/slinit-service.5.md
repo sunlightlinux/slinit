@@ -1205,7 +1205,9 @@ apply OS-level changes:
 
 **log-processor**=*program* [*args*...]
 :   Run *program* on each rotated log file, with the rotated file's
-    path appended as the last argument; 60-second timeout.
+    path appended as the last argument; 60-second timeout. It runs with
+    the service's **run-as**, **supplementary-groups**, **working-dir**
+    and environment (until 4.0.3 it ran as root).
 
 **output-logger**=*program* [*args*...], **error-logger**=*program* [*args*...]
 :   Spawn separate child processes for stdout / stderr. Implies

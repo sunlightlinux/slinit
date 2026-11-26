@@ -58,7 +58,12 @@ func (s *ProcessService) prepareHookCmd(ctx context.Context, cmd *exec.Cmd) bool
 		return false
 	}
 	defer mu.RUnlock()
-	s.prepareHookCmdLocked(cmd)
+	// A running service's checks and cron jobs share the environment of
+	// its current start (hookEnv), as its other hooks do: buildEnv would
+	// run the env-generator again for every check.
+	s.applyRunAs(cmd)
+	cmd.Dir = s.workingDir
+	cmd.Env = s.hookEnv()
 	return true
 }
 
