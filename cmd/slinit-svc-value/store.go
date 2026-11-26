@@ -33,10 +33,9 @@ func newStore() (*store, error) {
 	if svc == "" {
 		return nil, fmt.Errorf("service name required (set RC_SVCNAME or SLINIT_SERVICENAME)")
 	}
-	// The name becomes a directory component under options/, so it
-	// gets the same checks as a key: RC_SVCNAME=../../x would
+	// The name becomes a path under options/: RC_SVCNAME=../../x would
 	// otherwise read and write files outside the store root.
-	if err := validateKey(svc); err != nil {
+	if err := validateServiceName(svc); err != nil {
 		return nil, fmt.Errorf("invalid service name: %v", err)
 	}
 	root := firstNonEmpty(os.Getenv("RC_SVCDIR"), defaultRuntimeDir)
@@ -136,6 +135,29 @@ func validateKey(key string) error {
 	}
 	if key == "." || key == ".." {
 		return fmt.Errorf("key %q is a path traversal", key)
+	}
+	return nil
+}
+
+// validateServiceName accepts what slinit allows as a service name,
+// inner slashes included (net/eth0, mount@/dev/sda1): they become
+// nested directories under options/, as they always did. It refuses
+// what could leave the store: NUL, a leading slash, and an empty, "."
+// or ".." path element.
+func validateServiceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty name")
+	}
+	if strings.ContainsRune(name, 0) {
+		return fmt.Errorf("name %q contains NUL", name)
+	}
+	if strings.HasPrefix(name, "/") {
+		return fmt.Errorf("name %q is absolute", name)
+	}
+	for _, el := range strings.Split(name, "/") {
+		if el == "" || el == "." || el == ".." {
+			return fmt.Errorf("name %q has an empty, . or .. path element", name)
+		}
 	}
 	return nil
 }

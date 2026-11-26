@@ -105,7 +105,7 @@ func TestStoreDelete(t *testing.T) {
 // RC_SVCNAME is a directory component of the store path; a name with
 // a separator or a dot-dot used to escape options/ entirely.
 func TestNewStoreRejectsTraversalServiceName(t *testing.T) {
-	for _, name := range []string{"../../escaped", "..", ".", "a/b"} {
+	for _, name := range []string{"../../escaped", "..", ".", "a/../../escaped", "/abs", "a//b", "a/"} {
 		dir := setStoreEnv(t, name)
 		s, err := newStore()
 		if err == nil {
@@ -185,5 +185,26 @@ func TestStoreExportCapturesEnvOnlyWhenUnset(t *testing.T) {
 	// EXPORT_FRESH not stored, present in env → captured.
 	if got, ok, _ := s.Get("EXPORT_FRESH"); !ok || got != "captured-value" {
 		t.Errorf("EXPORT_FRESH got=%q ok=%v", got, ok)
+	}
+}
+
+// Service names slinit itself hands out may contain slashes (a
+// directory-scoped name, an instance argument that is a path); they
+// keep working as nested directories under options/.
+func TestNewStoreAcceptsSlashedServiceNames(t *testing.T) {
+	for _, name := range []string{"net/eth0", "mount@/dev/sda1", "my-thing.d/1"} {
+		setStoreEnv(t, name)
+		s, err := newStore()
+		if err != nil {
+			t.Errorf("RC_SVCNAME=%q refused: %v", name, err)
+			continue
+		}
+		if err := s.Set("k", "v"); err != nil {
+			t.Errorf("%q: Set: %v", name, err)
+			continue
+		}
+		if v, ok, err := s.Get("k"); err != nil || !ok || v != "v" {
+			t.Errorf("%q: Get = %q %v %v", name, v, ok, err)
+		}
 	}
 }

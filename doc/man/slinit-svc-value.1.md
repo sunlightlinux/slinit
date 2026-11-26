@@ -67,7 +67,10 @@ default is **/run/slinit**.
 
 **RC_SVCNAME** (or, when it is unset or empty,
 **SLINIT_SERVICENAME**) — service the values belong to. Required; the
-applet exits with code **2** when neither is set.
+applet exits with code **2** when neither is set, or when the name
+could leave the store: a leading **/**, a **\0**, or an empty, **.**
+or **..** path element. Inner slashes (*net/eth0*, *mount@/dev/sda1*)
+are kept as nested directories.
 
 **RC_SVCDIR** — alternative runtime dir. Defaults to
 **/run/slinit**.
