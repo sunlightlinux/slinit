@@ -66,6 +66,12 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **slinit-logind reaps the `slinit-shutdown` it starts.** PowerOff,
+  Reboot, Halt and the power/reboot keys started `slinit-shutdown` and
+  never waited for it. When the request did not take the machine down,
+  each one left a zombie child of slinit-logind for good, and a pidfd
+  until a garbage collection.
+
 - **slinit-supervise-daemon closes its copies of a respawned daemon's
   stdio.** Each start opened the daemon's stdin, stdout and stderr
   (`/dev/null`, `--stdout`/`--stderr` files, or a logger pipe) and kept

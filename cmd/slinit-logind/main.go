@@ -811,10 +811,14 @@ func runShutdown(verb string) *dbus.Error {
 		return dbus.NewError("org.freedesktop.login1.Error.OperationInProgress",
 			[]interface{}{"unknown shutdown verb: " + verb})
 	}
-	if err := exec.Command(bin, flag).Start(); err != nil {
+	cmd := exec.Command(bin, flag)
+	if err := cmd.Start(); err != nil {
 		return dbus.NewError("org.freedesktop.login1.Error.OperationInProgress",
 			[]interface{}{err.Error()})
 	}
+	// Reap it: a request that does not take the machine down would
+	// otherwise leave a zombie, and a pidfd until a garbage collection.
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
 
