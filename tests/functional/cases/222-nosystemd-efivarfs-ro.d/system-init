@@ -1,0 +1,7 @@
+type = scripted
+# The base system-init plus efivarfs. The virt kernel builds it as a
+# module, so without this the filesystem could not be mounted at all and
+# "not mounted read-write" would hold for that reason alone. Loaded here,
+# before boot, so it is available for the whole of slinit's start-up.
+command = /bin/sh -c "mount -t proc proc /proc 2>/dev/null; mount -t sysfs sysfs /sys 2>/dev/null; mount -t devtmpfs devtmpfs /dev 2>/dev/null; mkdir -p /dev/pts && mount -t devpts devpts /dev/pts 2>/dev/null; mkdir -p /run; insmod /lib/slinit-test-modules/efivarfs.ko 2>/dev/null; true"
+stop-command = /bin/true

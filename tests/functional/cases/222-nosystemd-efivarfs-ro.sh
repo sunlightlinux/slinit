@@ -12,9 +12,20 @@
 # The harness boots with SeaBIOS, not OVMF, so there is normally no EFI
 # here. That used to count as an OK, which made the case a pass that
 # could not fail; it is a SKIP: nothing about efivarfs was observed.
+#
+# 222.d/firmware now boots this case under OVMF, so the skip below is
+# for hosts without OVMF (run-tests.sh reports those before booting).
 if [ ! -d /sys/firmware/efi ]; then
     skip_case "no EFI firmware in this VM (SeaBIOS boot) — efivarfs not observable"
 fi
+
+# The second half of the precondition: the filesystem must be one the
+# kernel can mount, or "not mounted" says nothing. The virt kernel has
+# it as a module, which 222.d/system-init loads before boot.
+if ! grep -qw efivarfs /proc/filesystems; then
+    skip_case "EFI firmware present but efivarfs unavailable (efivarfs.ko not in the image or not for $(uname -r))"
+fi
+echo "OK: EFI boot ($(cat /sys/firmware/efi/fw_platform_size 2>/dev/null || echo ?)-bit firmware), efivarfs available"
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 

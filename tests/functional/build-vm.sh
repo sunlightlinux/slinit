@@ -331,19 +331,27 @@ if [ ! -f "${MODLOOP}" ]; then
     curl -fsSL -o "${MODLOOP}.tmp" "${KERNEL_URL%/*}/modloop-virt" \
         && mv "${MODLOOP}.tmp" "${MODLOOP}" || rm -f "${MODLOOP}.tmp"
 fi
+#
+# efivarfs.ko the same way, for 222-nosystemd-efivarfs-ro: the virt
+# kernel builds efivarfs as a module too, so under OVMF the firmware's
+# variables are there but the filesystem that exposes them is not, and
+# "efivarfs is not mounted read-write" would hold only because it could
+# not be mounted at all.
 mkdir -p "${ROOTFS_DIR}/lib/slinit-test-modules"
 if [ -f "${MODLOOP}" ]; then
-    _ko="${ROOTFS_DIR}/lib/slinit-test-modules/autofs4.ko"
-    if command -v unsquashfs >/dev/null 2>&1; then
-        _ml="${BUILD_DIR}/modloop"
-        rm -rf "${_ml}"
-        unsquashfs -q -d "${_ml}" "${MODLOOP}" 'modules/*/kernel/fs/autofs/autofs4.ko' >/dev/null 2>&1 || true
-        find "${_ml}" -name autofs4.ko -exec cp {} "${_ko}" \; 2>/dev/null || true
-        rm -rf "${_ml}"
-    elif command -v 7z >/dev/null 2>&1; then
-        7z e -so "${MODLOOP}" 'modules/*/kernel/fs/autofs/autofs4.ko' -r > "${_ko}" 2>/dev/null || true
-    fi
-    [ -s "${_ko}" ] || rm -f "${_ko}"
+    for _mod in fs/autofs/autofs4.ko fs/efivarfs/efivarfs.ko; do
+        _ko="${ROOTFS_DIR}/lib/slinit-test-modules/${_mod##*/}"
+        if command -v unsquashfs >/dev/null 2>&1; then
+            _ml="${BUILD_DIR}/modloop"
+            rm -rf "${_ml}"
+            unsquashfs -q -d "${_ml}" "${MODLOOP}" "modules/*/kernel/${_mod}" >/dev/null 2>&1 || true
+            find "${_ml}" -name "${_mod##*/}" -exec cp {} "${_ko}" \; 2>/dev/null || true
+            rm -rf "${_ml}"
+        elif command -v 7z >/dev/null 2>&1; then
+            7z e -so "${MODLOOP}" "modules/*/kernel/${_mod}" -r > "${_ko}" 2>/dev/null || true
+        fi
+        [ -s "${_ko}" ] || rm -f "${_ko}"
+    done
 fi
 install -m 755 "${BUILD_DIR}/slinit-getty" "${ROOTFS_DIR}/sbin/slinit-getty"
 install -m 755 "${BUILD_DIR}/slinit-einfo" "${ROOTFS_DIR}/usr/bin/slinit-einfo"
