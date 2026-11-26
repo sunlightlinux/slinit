@@ -612,12 +612,19 @@ func (cr *CronRunner) executeCommand() error {
 	// The service's run-as, working directory and environment; it ran as
 	// root. Setpgid stays: applyRunAs adds the credential to it.
 	if !prepareHookCmdFor(ctx, cr.svc, cmd) {
+		// The run's time ran out waiting for the scheduling lock (held
+		// longer than the interval by a start or a stop), or the runner
+		// is being stopped. Neither is the command failing: this tick
+		// is skipped, as a health check skips one. Reporting ctx.Err()
+		// logged a failure, and with cron-on-error=stop ended the cron
+		// job for good although the command never ran.
 		select {
 		case <-cr.stopCh:
-			return nil // stopped before it could start
 		default:
-			return ctx.Err()
+			cr.logger.Info("Service '%s': cron-command skipped: slinit was busy for the whole run window",
+				cr.svc.Name())
 		}
+		return nil
 	}
 	cmd.WaitDelay = cronStopGrace
 	cmd.Cancel = func() error {

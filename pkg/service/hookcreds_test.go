@@ -281,3 +281,28 @@ func TestFinishCommandSeesInheritedEnv(t *testing.T) {
 		t.Errorf("finish-command saw %q; want %q", got, "yes svc")
 	}
 }
+
+// A cron run whose window passed while it waited for queueMu (a start
+// or stop holding it longer than the interval) returned ctx.Err(): the
+// tick was logged as a failure, and with cron-on-error=stop the job
+// ended for good though the command never ran. The tick is skipped now.
+func TestCronLockWaitPastIntervalIsNotAFailure(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "ran")
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	cr := NewCronRunner(s, []string{"/bin/sh", "-c", "touch " + out},
+		100*time.Millisecond, 0, "stop", set.logger)
+	set.queueMu.Lock()
+	time.AfterFunc(300*time.Millisecond, set.queueMu.Unlock)
+	if err := cr.executeCommand(); err != nil {
+		t.Errorf("a run that never got the lock reported %v", err)
+	}
+	set.queueMu.Lock() // the holder is done
+	set.queueMu.Unlock()
+	if !cr.runOnce() {
+		t.Error("cron-on-error=stop ended the job after a skipped tick")
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Error("the next tick, with the lock free, did not run the command")
+	}
+}
