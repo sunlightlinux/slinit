@@ -25,6 +25,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
 	"github.com/sunlightlinux/slinit/pkg/hooks"
+	etchostname "github.com/sunlightlinux/slinit/pkg/hostname"
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/journald"
 	"github.com/sunlightlinux/slinit/pkg/logging"
@@ -538,9 +539,11 @@ func main() {
 	// before starting us, and without CAP_SYS_ADMIN the redundant call
 	// failed, putting a WARN at the top of every container's log.
 	if isPID1 {
-		if data, err := os.ReadFile("/etc/hostname"); err == nil {
-			cur, _ := os.Hostname()
-			if h := strings.TrimSpace(string(data)); h != "" && h != cur {
+		// The first name line, normalised as systemd does: the whole
+		// file used to be passed, so a comment above the name became
+		// the hostname, and "host.example.com." kept its dot.
+		if h := etchostname.ReadStatic(); h != "" {
+			if cur, _ := os.Hostname(); h != cur {
 				if err := unix.Sethostname([]byte(h)); err != nil {
 					logger.Warn("sethostname(%q) failed: %v", h, err)
 				}

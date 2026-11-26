@@ -24,6 +24,17 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/etc/hostname` is read the way systemd reads it.** As PID 1, slinit
+  passed the whole file to `sethostname`, so a comment line above the
+  name became part of the hostname, and `host.example.com.` kept its
+  trailing dot. slinit-hostnamed then judged that dotted name invalid,
+  reported no static hostname and replaced the kernel's name with the
+  default one. Both now take the first name line and normalise it as
+  systemd's `hostname_cleanup` does (trailing dots and stray separators
+  dropped, cut at 64 bytes); a name that is still invalid is ignored.
+
 ## [4.0.3] — 2026-11-26
 
 **A large fix release on the 4.0 long-term-support line, and a
