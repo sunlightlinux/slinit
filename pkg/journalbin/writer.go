@@ -678,7 +678,7 @@ func (w *Writer) findOrInsertDataLocked(payload []byte) (uint64, uint64, error) 
 	// damaged file can hold, was walked forever.
 	cur := head
 	for cur != 0 {
-		curHash, next, curPayload, err := readDataHeader(w.f, cur, hash)
+		curHash, next, curPayload, err := readDataHeader(w.f, cur, hash, w.header.TailObjectOffset)
 		if err != nil {
 			return 0, 0, err
 		}

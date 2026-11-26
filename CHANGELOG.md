@@ -150,6 +150,13 @@ verified with `git tag -v`.
   now goes to stdout, as `dinitctl --help` does; the usage printed for
   a missing command is still an error and stays on stderr.
 
+- **slinit-journald no longer panics on a DATA object with a huge
+  size.** When an append found its field already in the day file, it
+  allocated the stored object's payload at whatever size the object
+  claimed; a damaged size field (1<<62) crashed the daemon with
+  `makeslice: len out of range`. A size past the file's tail is now an
+  error for that append.
+
 - **slinit-journald no longer hangs on a damaged binary journal.** An
   ENTRY_ARRAY linking back to itself in the day file (a damaged block,
   a bad copy) made the daemon walk the chain forever when it reopened

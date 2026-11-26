@@ -108,3 +108,17 @@ func r0(t *testing.T, path string) *os.File {
 	t.Cleanup(func() { f.Close() })
 	return f
 }
+
+// A closed journal whose DATA object claims a size of most of the
+// address space: the dedup walk allocated it.
+func TestWriterReopenHugeDataSize(t *testing.T) {
+	path, _ := closedJournal(t)
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataOff := r.header.FieldHashTableOffset + r.header.FieldHashTableSize
+	r.Close()
+	pokeUint64(t, path, dataOff+8, 1<<62)
+	reopenAndAppend(t, path, &journal.Event{Ts: 1000, Msg: "m", Prio: journal.PriorityInfo})
+}
