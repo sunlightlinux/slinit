@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // The tests below are for a state hook (statehook.go) meeting the rest
@@ -409,4 +411,68 @@ func TestStaleExitNotTakenByLaterStop(t *testing.T) {
 	if a.State() == StateStopped && processAlive(nw) {
 		t.Errorf("STOPPED while its process %d still runs", nw)
 	}
+}
+
+// An exit is parked only for a stop's hooks, and only that process's.
+func TestExitNotParkedForOtherHooks(t *testing.T) {
+	set, logger := newTestSet()
+	a := NewProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c", "exec sleep 30"})
+	set.AddService(a)
+	set.StartService(a)
+	if st := waitState(t, a, StateStarted, 3*time.Second); st != StateStarted {
+		t.Fatalf("a %v", st)
+	}
+	pid := a.PID()
+	// Not expected in use (no other hook runs beside a process); this
+	// is the guard for it.
+	release, _, then := heldHook(t, a, hookPreStart)
+	defer release()
+	killIfAlive(pid)
+	deadline := time.Now().Add(2 * time.Second)
+	for a.PID() > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	set.queueMu.Lock()
+	pe := a.pendingExit
+	set.queueMu.Unlock()
+	if pe != nil {
+		t.Errorf("exit of %d parked during a %s; nothing takes it", pe.PID, hookPreStart)
+	}
+	release()
+	<-then
+	logger.mu.Lock()
+	found := false
+	for _, e := range logger.errors {
+		found = found || strings.Contains(e, "exit not handled")
+	}
+	logger.mu.Unlock()
+	if !found {
+		t.Error("the unexpected exit was not logged")
+	}
+}
+
+// A new run starts with no parked exit, whatever the last one left.
+func TestStartProcessClearsParkedExit(t *testing.T) {
+	set, _ := newTestSet()
+	a := NewProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c", "exec sleep 30"})
+	set.AddService(a)
+	set.queueMu.Lock()
+	a.pendingExit = &process.ChildExit{PID: 1 << 22}
+	set.queueMu.Unlock()
+	set.StartService(a)
+	if st := waitState(t, a, StateStarted, 3*time.Second); st != StateStarted {
+		t.Fatalf("a %v", st)
+	}
+	defer killIfAlive(a.PID())
+	set.queueMu.Lock()
+	pe := a.pendingExit
+	set.queueMu.Unlock()
+	if pe != nil {
+		t.Errorf("the new run kept a parked exit (pid %d)", pe.PID)
+	}
+	set.StopService(a)
+	waitState(t, a, StateStopped, 3*time.Second)
 }

@@ -2054,8 +2054,9 @@ func (s *ProcessService) BringDown() {
 	// its completion issues the stop (issueStopLocked), or, if the
 	// process has exited meanwhile, handles that exit.
 	if len(s.preStopHook) > 0 {
+		pid := s.pid
 		s.startStateHookLocked(hookPreStop, s.preparePreStopHook, func(error, bool) {
-			if exit, ok := s.takePendingExit(); ok {
+			if exit, ok := s.takePendingExit(pid); ok {
 				s.afterExitLocked(exit)
 				return
 			}
@@ -2114,6 +2115,7 @@ func (s *ProcessService) issueStopLocked() {
 
 	sigName := signalName(sig)
 	if cmd, ok := s.controlCommands[sigName]; ok && len(cmd) > 0 {
+		pid := s.pid
 		// Run custom control command instead of raw signal, off the
 		// lock. What follows the signal follows the command's
 		// completion, as it followed the command before.
@@ -2123,7 +2125,7 @@ func (s *ProcessService) issueStopLocked() {
 			},
 			func(error, bool) {
 				s.stopSignalSentLocked(sig)
-				if exit, ok := s.takePendingExit(); ok {
+				if exit, ok := s.takePendingExit(pid); ok {
 					s.afterExitLocked(exit)
 					return
 				}
@@ -2698,6 +2700,8 @@ func (s *ProcessService) startProcess() error {
 	s.startDelayDone = false
 	s.stopIssued = false
 	s.exitStatus = ExitStatus{}
+	// An exit parked for a stop hook belongs to the run before this one.
+	s.pendingExit = nil
 
 	// Set up output pipe based on log type
 	var outputPipe *os.File
@@ -3472,10 +3476,22 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	// A pre-stop-hook or a stop's control-command is still running: the
 	// exit is handled when it has finished, so the finish-command still
 	// follows the pre-stop-hook and the stop is not declared over under
-	// a hook that is still at work.
-	if s.stateHookRunning() {
-		e := exit
-		s.pendingExit = &e
+	// a hook that is still at work. Only the exit of the process that
+	// stop is for: no other hook's completion would take it, and one
+	// left parked was taken later, by another run's stop, as that run's
+	// exit.
+	if h := s.stateHook.Load(); h != nil {
+		if h.kind.parksExit() && exit.PID == h.pid {
+			e := exit
+			s.pendingExit = &e
+			return
+		}
+		// Not expected: no other hook runs while there is a process
+		// (a new run does not begin under one). Its completion
+		// carries the transition on; dispatching this exit too would
+		// have it handled twice.
+		s.services.logger.Error("Service '%s': process %d exited during its %s; exit not handled",
+			s.serviceName, exit.PID, h.kind)
 		return
 	}
 	s.afterExitLocked(exit)
