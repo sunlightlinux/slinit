@@ -12,6 +12,9 @@ import (
 // openat2 is unix.Openat2; a var so tests can take the fallback walk.
 var openat2 = unix.Openat2
 
+// inRootRetries bounds the openat2 retries on EAGAIN before the walk.
+const inRootRetries = 16
+
 // OpenInRoot opens path as if root were "/": "..", and absolute symlinks
 // and their targets, resolve inside root and never reach the host's
 // files. A container's or an image's tree is someone else's, and its
@@ -26,11 +29,19 @@ func OpenInRoot(root, path string, flags int) (int, error) {
 		return -1, &os.PathError{Op: "open", Path: root, Err: err}
 	}
 	defer unix.Close(rfd)
-	fd, err := openat2(rfd, path, &unix.OpenHow{
+	how := &unix.OpenHow{
 		Flags:   uint64(flags | unix.O_CLOEXEC),
 		Resolve: unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS,
-	})
-	if err == unix.ENOSYS {
+	}
+	fd, err := openat2(rfd, path, how)
+	// EAGAIN: a rename or mount anywhere on the system raced the
+	// kernel's ".." check, and openat2(2) says to retry. Under steady
+	// churn that may never settle, so after a few tries the walk —
+	// which takes no such global sequence — resolves it instead.
+	for i := 0; err == unix.EAGAIN && i < inRootRetries; i++ {
+		fd, err = openat2(rfd, path, how)
+	}
+	if err == unix.ENOSYS || err == unix.EAGAIN {
 		fd, err = walkInRoot(rfd, path, flags)
 	}
 	if err != nil {
