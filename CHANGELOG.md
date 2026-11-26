@@ -203,6 +203,13 @@ verified with `git tag -v`.
   it. Unpin now travels milestone edges too. Found by the new control
   protocol fuzzer.
 
+- **A process exiting no longer races a reload of its service.** The
+  exit handlers of process, bgprocess and scripted services read the
+  service's flags and `inittab-id`/`inittab-line` before taking the
+  service set's lock, while `reload` rewrites them under it; the inittab
+  fields are strings, so the read could tear. Found by a `-race` stress
+  run of the daemon.
+
 - **`enable` and `disable` no longer race a reload of the same service.**
   They read the service's `enable-via` without the graph lock while a
   `reload`/`reload-all` rewrote it under that lock; the value is a string,

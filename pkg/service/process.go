@@ -3559,18 +3559,25 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	// group members, so this is safe for other managed services.
 	// SignalProcessOnly opts out of every pgroup signal for this service
 	// (dinit parity: baseproc-service.cc kill_pg gates on the same flag).
-	if !s.Flags.SignalProcessOnly {
+	// A reload rewrites the flags and the inittab id/line under queueMu;
+	// read them there, then do the killing without it.
+	s.services.queueMu.Lock()
+	flags := s.Flags
+	inittabID, inittabLine := s.inittabID, s.inittabLine
+	s.services.queueMu.Unlock()
+
+	if !flags.SignalProcessOnly {
 		process.KillProcessGroup(exit.PID)
 	}
 
 	// Kill entire cgroup tree to clean up any orphaned processes
-	if s.Flags.KillAllOnStop {
+	if flags.KillAllOnStop {
 		s.killCgroupTree(syscall.SIGKILL)
 	}
 
 	// Clear utmp entry
-	if s.HasUtmp() {
-		s.services.utmpClear(s.inittabID, s.inittabLine)
+	if inittabID != "" || inittabLine != "" {
+		s.services.utmpClear(inittabID, inittabLine)
 	}
 
 	s.services.queueMu.Lock()

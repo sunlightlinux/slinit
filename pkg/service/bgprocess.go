@@ -906,12 +906,17 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	//
 	// SignalProcessOnly opts out of pgroup signals for this service
 	// (dinit parity: baseproc-service.cc kill_pg gates on the same flag).
-	if !s.Flags.SignalProcessOnly && !exit.ExitedClean() {
+	// A reload rewrites the flags under queueMu; read them there, then
+	// do the killing without it.
+	s.services.queueMu.Lock()
+	flags := s.Flags
+	s.services.queueMu.Unlock()
+	if !flags.SignalProcessOnly && !exit.ExitedClean() {
 		process.KillProcessGroup(exit.PID)
 	}
 
 	// Kill entire cgroup tree to clean up orphaned processes
-	if s.Flags.KillAllOnStop {
+	if flags.KillAllOnStop {
 		s.killCgroupTree(syscall.SIGKILL)
 	}
 
