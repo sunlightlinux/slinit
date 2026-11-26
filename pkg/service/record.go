@@ -4180,6 +4180,14 @@ func (sr *ServiceRecord) rmDepByIndex(i int) {
 	sr.dependsOn = append(sr.dependsOn[:i], sr.dependsOn[i+1:]...)
 	sr.depsStartedFrom = 0
 
+	// A pin that came down this edge has to be recomputed, as Unpin
+	// does: left alone, the target stayed pinned by a dependent it no
+	// longer had, and could not be stopped again, at shutdown either.
+	if dep.carriesPin() && toRec.deptPinnedStarted {
+		toRec.propPinDpt = true
+		sr.services.AddPropQueue(dep.To)
+	}
+
 	// A start waiting on this dependency has nothing left to wait for
 	// from it: let the start re-check the dependencies it still has,
 	// as stopDependents does when it breaks a soft link. dinit's

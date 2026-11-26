@@ -260,6 +260,12 @@ verified with `git tag -v`.
   emergency timeout. The refused start now fails the dependents, as a
   start refused on a stopped service already did.
 
+- **`rm-dep` drops the pin it carried.** With `start --pin` on a
+  service, its hard dependencies are pinned through it; removing one of
+  the edges in between left the dependency pinned by a dependent it no
+  longer had, so it could not be stopped again and a shutdown waited for
+  it until its timeout.
+
 - **`slinitctl add-dep`/`rm-dep` with `prepared-by` work.** slinitctl
   accepted the kind and slinitctl(8) documents it, but the daemon took
   only the kinds up to `after` and refused every prepared-by request, so
