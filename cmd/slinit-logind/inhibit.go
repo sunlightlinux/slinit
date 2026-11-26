@@ -89,6 +89,21 @@ const inhibitDelayMax = 5 * time.Second
 // out of descriptors.
 var inhibitorsMax = 8192
 
+// capInhibitorsToFDs lowers inhibitorsMax to a quarter of the
+// descriptor limit. systemd's 8192 comes with logind's
+// LimitNOFILE=524288; under the kernel's default 4096 the locks alone
+// would use every descriptor, and logind at EMFILE starts no session.
+// Called once from main.
+func capInhibitorsToFDs() {
+	var rl unix.Rlimit
+	if unix.Getrlimit(unix.RLIMIT_NOFILE, &rl) != nil {
+		return
+	}
+	if n := rl.Cur / 4; n < uint64(inhibitorsMax) {
+		inhibitorsMax = int(n)
+	}
+}
+
 var errTooManyInhibitors = errors.New("maximum number of inhibitors reached")
 
 type inhibitor struct {

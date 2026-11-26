@@ -26,6 +26,15 @@ verified with `git tag -v`.
 
 ### Security
 
+- **Inhibitor locks could exhaust `slinit-logind`'s descriptors**: the
+  cap is systemd's 8192, which systemd pairs with logind's
+  `LimitNOFILE=524288`; under the kernel's default 4096 one user taking
+  delay locks left logind at EMFILE near lock 4090, unable to start a
+  session. The cap is now also bounded by a quarter of the descriptor
+  limit. *Compat:* `InhibitorsMax` reads 1024 under a 4096-descriptor
+  limit; give the service `rlimit-nofile = 524288` to get systemd's
+  8192.
+
 - **Each inhibitor lock held an OS thread in `slinit-logind`**: its
   watcher waited in a raw `poll(2)` on a descriptor taken out of Go's
   poller, and anyone may take a delay lock, so the 8192 locks the cap

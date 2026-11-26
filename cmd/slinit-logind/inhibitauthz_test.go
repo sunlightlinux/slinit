@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -115,4 +116,45 @@ func TestInhibitRefusesLongStrings(t *testing.T) {
 	if _, err := w.m.Inhibit(rootc, "sleep", strings.Repeat("x", inhibitStringMax), "why", "delay"); err != nil {
 		t.Errorf("Inhibit at the bound: %v", err)
 	}
+}
+
+// InhibitorsMax is systemd's 8192, but systemd runs logind with
+// LimitNOFILE=524288; slinit-logind gets the kernel's 4096. Each lock
+// holds a descriptor, so a user taking delay locks ran logind out of
+// descriptors around lock 4090, long before the cap, and from then on
+// it could open nothing: no new session, no device for a seat. The cap
+// is lowered to a quarter of the descriptor limit.
+func TestInhibitorsCapLeavesDescriptors(t *testing.T) {
+	var orig syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &orig); err != nil {
+		t.Fatal(err)
+	}
+	lowered := orig
+	lowered.Cur = 512
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &lowered); err != nil {
+		t.Skip("cannot lower RLIMIT_NOFILE:", err)
+	}
+	t.Cleanup(func() { syscall.Setrlimit(syscall.RLIMIT_NOFILE, &orig) })
+	old := inhibitorsMax
+	t.Cleanup(func() { inhibitorsMax = old })
+
+	capInhibitorsToFDs()
+
+	r := newInhibitRegistry()
+	var err error
+	for i := 0; i < old; i++ {
+		var c *os.File
+		if c, _, err = r.add("sleep", "w", "y", "delay", 1000, 1); err != nil {
+			break
+		}
+		t.Cleanup(func() { c.Close() })
+	}
+	if !errors.Is(err, errTooManyInhibitors) {
+		t.Fatalf("filling the registry under a 512-fd limit ended with %v, want the cap", err)
+	}
+	f, err := os.Open("/proc/self/status")
+	if err != nil {
+		t.Fatalf("at the inhibitor cap logind cannot open a file: %v", err)
+	}
+	f.Close()
 }

@@ -882,6 +882,7 @@ func main() {
 	debug := flag.Bool("debug", false, "log D-Bus method dispatch to stderr")
 	userMode := flag.Bool("user", false, "session-bus mode: only host org.freedesktop.systemd1 stub for per-user auto-activation (skips login1 + /run/systemd tree)")
 	flag.Parse()
+	capInhibitorsToFDs()
 
 	// --debug: redirect os.Stderr to /var/log/slinit-logind.log so the
 	// method-dispatch prints and the session-machinery diagnostics
