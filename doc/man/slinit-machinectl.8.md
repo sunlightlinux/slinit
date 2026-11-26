@@ -35,7 +35,9 @@ and shell one-liners.
     on the host; when empty, */proc/*\ *pid*\ */root* is used). An
     existing entry with the same name is overwritten. *name* is 1–64
     characters from **A–Z a–z 0–9 _ - .**, not starting with **.** or
-    **-**; *pid* must be greater than 1.
+    **-**; *pid* must be greater than 1. *class*, *service* and *root*
+    must not contain control characters (a newline would start a line
+    of its own in the registry file).
 
 **unregister** *name*
 :   Remove the registry entry for *name*; removing an entry that does

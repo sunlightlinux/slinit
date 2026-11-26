@@ -89,6 +89,18 @@ func validName(name string) error {
 	return nil
 }
 
+// validField rejects a metadata value that would not survive the
+// line-oriented file format: any ASCII control character (newline,
+// carriage return, NUL, escape...) or DEL.
+func validField(key, val string) error {
+	for i := 0; i < len(val); i++ {
+		if c := val[i]; c < 0x20 || c == 0x7f {
+			return fmt.Errorf("machine: %s %q contains control character %q", key, val, c)
+		}
+	}
+	return nil
+}
+
 // path returns the registry file for `name` after validation.
 func path(name string) (string, error) {
 	if err := validName(name); err != nil {
@@ -106,6 +118,15 @@ func Register(m Machine) error {
 	}
 	if m.PID <= 1 {
 		return fmt.Errorf("machine: PID %d is not a valid container PID", m.PID)
+	}
+	// Each field is one line of the file: a newline in --class would
+	// start a line of its own, e.g. a forged ROOT= that -M then trusts.
+	for _, f := range []struct{ key, val string }{
+		{"class", m.Class}, {"service", m.Service}, {"root", m.Root},
+	} {
+		if err := validField(f.key, f.val); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(currentDir, 0o755); err != nil {
 		return fmt.Errorf("machine: mkdir %s: %w", currentDir, err)

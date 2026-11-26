@@ -238,3 +238,27 @@ func TestAliveOtherUsersProcess(t *testing.T) {
 		t.Errorf("Alive(%d) (root-owned, EPERM) = false, want true", pid)
 	}
 }
+
+// A newline in a metadata value would forge a line of its own: a
+// --class of "x\nROOT=/etc" made -M read the journal under /etc.
+func TestRegisterRejectsControlCharsInFields(t *testing.T) {
+	defer withTempDir(t)()
+
+	bad := []Machine{
+		{Name: "f1", PID: 4242, Class: "x\nROOT=/etc"},
+		{Name: "f2", PID: 4242, Service: "svc\nROOT=/etc"},
+		{Name: "f3", PID: 4242, Root: "/srv/a\nCLASS=vm"},
+		{Name: "f4", PID: 4242, Root: "/srv/a\r"},
+		{Name: "f5", PID: 4242, Class: "a\x00b"},
+		{Name: "f6", PID: 4242, Service: "\x1b[2J"},
+	}
+	for _, m := range bad {
+		if err := Register(m); err == nil {
+			got, _ := Lookup(m.Name)
+			t.Errorf("Register(%+v) accepted; read back %+v", m, got)
+		}
+	}
+	if err := Register(Machine{Name: "ok", PID: 4242, Class: "container", Service: "my svc", Root: "/var/lib/machines/ök"}); err != nil {
+		t.Errorf("Register with plain metadata failed: %v", err)
+	}
+}
