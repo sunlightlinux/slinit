@@ -83,6 +83,29 @@ case "$_active" in
         echo "FAIL: active-profile not empty after deactivate: '$_active'" ;;
 esac
 
+# The swap must leave services in the state the reply claims: raw
+# BringUp/BringDown once reported svc-server "started" while the state
+# machine stopped it again. Processes, so a start undone shows.
+cat > "$NEST_SVCS/proc-desktop" <<'EOF2'
+type = process
+command = /bin/sleep 300
+profile = desktop
+EOF2
+cat > "$NEST_SVCS/proc-server" <<'EOF2'
+type = process
+command = /bin/sleep 300
+profile = server
+EOF2
+_state() { sl status "$1" 2>/dev/null | grep 'State:' | awk '{print $2}'; }
+sl activate-profile desktop >/dev/null 2>&1
+sl start proc-desktop >/dev/null 2>&1
+sl status proc-server >/dev/null 2>&1  # status loads it; there is no "load" verb
+sl activate-profile server >/dev/null 2>&1
+sleep 1
+assert_eq "$(_state proc-server)" "STARTED" "activating 'server' leaves proc-server STARTED"
+assert_eq "$(_state proc-desktop)" "STOPPED" "activating 'server' leaves proc-desktop STOPPED"
+sl activate-profile - >/dev/null 2>&1
+
 _out=$(sl activate-profile nonexistent-typo 2>&1)
 _rc=$?
 _TESTS_RUN=$((_TESTS_RUN + 1))
