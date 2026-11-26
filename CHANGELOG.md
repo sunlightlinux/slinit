@@ -26,6 +26,12 @@ verified with `git tag -v`.
 
 ### Security
 
+- **Each inhibitor lock held an OS thread in `slinit-logind`**: its
+  watcher waited in a raw `poll(2)` on a descriptor taken out of Go's
+  poller, and anyone may take a delay lock, so the 8192 locks the cap
+  allows were about 7000 threads (Go aborts the process at 10000). The
+  watcher now waits through the poller and costs a goroutine.
+
 - **`slinit-journalctl` printed sender-chosen fields raw**: only the
   message was escaped. The syslog identifier (any local user writes
   `IDENT:` to `/dev/log`), the hostname, the unit and, in `-o verbose`,

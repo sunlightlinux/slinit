@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -158,5 +160,41 @@ func TestBlockLockIsNotADelay(t *testing.T) {
 	}
 	if timedOut := r.waitForDelays("sleep", 50*time.Millisecond); timedOut {
 		t.Error("with no delay locks the wait should return at once")
+	}
+}
+
+// threadCount reads this process's OS thread count.
+func threadCount(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(l, "Threads:"); ok {
+			n, _ := strconv.Atoi(strings.TrimSpace(v))
+			return n
+		}
+	}
+	t.Fatal("no Threads: line")
+	return 0
+}
+
+// Anyone may take a delay lock. Each lock's watcher sat in a blocking
+// poll(2) on a descriptor taken out of the runtime poller by Fd(), so
+// every lock held pinned an OS thread: 8192 locks, InhibitorsMax, were
+// about 7000 threads in slinit-logind, against Go's limit of 10000 at
+// which the process dies. Waiting through the poller costs a goroutine.
+func TestInhibitorWatchDoesNotPinAThread(t *testing.T) {
+	r := newInhibitRegistry()
+	before := threadCount(t)
+	const locks = 500
+	for i := 0; i < locks; i++ {
+		c := addDirect(t, r, "sleep", "delay")
+		defer c.Close()
+	}
+	time.Sleep(200 * time.Millisecond)
+	if grew := threadCount(t) - before; grew > 50 {
+		t.Fatalf("%d locks held grew the process by %d OS threads", locks, grew)
 	}
 }
