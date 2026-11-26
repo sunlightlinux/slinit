@@ -264,7 +264,10 @@ live queries.
     *CONTAINER*, or one whose registered PID is no longer alive or now
     belongs to another process (its start time differs from the one
     registered; see **slinit-machinectl**(8)), or cannot be verified, is
-    an error. Ignored, with a warning, when **--file**, **--directory**,
+    an error. An entry written by an older slinit, which recorded no
+    start time, is used while its PID is alive (**legacy** in
+    **slinit-machinectl list**); restarting the container re-registers
+    it with one. Ignored, with a warning, when **--file**, **--directory**,
     **--root** or **--image** is also given.
 
 ## Maintenance (short-circuit — talks to slinit-journald)

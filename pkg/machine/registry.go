@@ -15,19 +15,24 @@
 //
 // The registry is host-scoped — machines registered on host H are only
 // visible to H's own tools. Cross-host inspection is out of scope.
+//
+// An entry records the process's start time with its PID, so a PID
+// reused after the container died is told apart (Machine.State). Entries
+// written by an older slinit lack it; their live PID is StateLegacy and
+// used as before, until the container is re-registered. Files that are
+// not complete entries (cut short, or an older slinit's NAME.tmp temp
+// file) are skipped by List and an error for Lookup.
 package machine
 
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 )
 
 // DefaultDir is the on-disk root for machine registry files. Runtime
@@ -70,13 +75,21 @@ type Machine struct {
 	// since boot (field 22 of /proc/PID/stat). With the PID it names
 	// the process: an entry outlives its container when the launcher
 	// is SIGKILLed, and the PID can then belong to anything. Zero means
-	// not recorded, as in entries written before it was; see State.
+	// not recorded; see State.
 	StartTime uint64
 
-	// registered is the entry file's mtime: when it was written. It
-	// stands in for StartTime on entries that lack one.
-	registered time.Time
+	// legacy marks an entry with no STARTTIME line at all: one written
+	// by a slinit that did not record start times (4.0.x and earlier).
+	// Register always writes the line, STARTTIME=0 when it could not
+	// read the start time.
+	legacy bool
 }
+
+// Legacy reports whether the entry was written by an older slinit that
+// did not record the process's start time, so its PID cannot be told
+// apart from a reused one. Re-registering (restarting the container)
+// records it.
+func (m *Machine) Legacy() bool { return m.legacy }
 
 // State is what a registry entry's PID refers to now.
 type State int
@@ -90,9 +103,18 @@ const (
 	// it started after the entry was written.
 	StateReused
 	// StateUnknown: a process has the PID, but its identity cannot be
-	// checked (its /proc entry is hidden, e.g. mounted hidepid=).
+	// checked (its /proc entry is hidden, e.g. mounted hidepid=, or no
+	// start time could be recorded when it was registered).
 	StateUnknown
+	// StateLegacy: a process has the PID and the entry was written by
+	// an older slinit that recorded no start time. It is taken for the
+	// registered process, as that slinit took it; Usable says so.
+	StateLegacy
 )
+
+// Usable reports whether the entry's PID may be used as the machine:
+// it is the registered process, or a legacy entry's live PID.
+func (s State) Usable() bool { return s == StateAlive || s == StateLegacy }
 
 // String is the word slinit-machinectl prints for the state.
 func (s State) String() string {
@@ -103,23 +125,14 @@ func (s State) String() string {
 		return "reused"
 	case StateUnknown:
 		return "unknown"
+	case StateLegacy:
+		return "legacy"
 	}
 	return "no"
 }
 
 // procDir is /proc; tests point it elsewhere.
 var procDir = "/proc"
-
-// userHZ is the unit of /proc/PID/stat's starttime (USER_HZ, which the
-// kernel fixes at 100 for user space on every architecture Go targets
-// except alpha, and Go does not target alpha).
-const userHZ = 100
-
-// legacySlack is how much later than its entry was written a process
-// may appear to have started and still count as the registered one,
-// when the entry has no StartTime. Boot time is reported in whole
-// seconds and moves with clock adjustments.
-const legacySlack = 2 * time.Second
 
 // ProcStartTime returns pid's start time in clock ticks since boot,
 // field 22 of /proc/PID/stat. The fields are counted after the last
@@ -145,30 +158,14 @@ func parseStartTime(stat string) (uint64, error) {
 	return strconv.ParseUint(f[19], 10, 64)
 }
 
-// bootTime returns the btime line of /proc/stat.
-func bootTime() (time.Time, error) {
-	data, err := os.ReadFile(filepath.Join(procDir, "stat"))
-	if err != nil {
-		return time.Time{}, err
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if v, ok := strings.CutPrefix(line, "btime "); ok {
-			n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-			if err != nil {
-				return time.Time{}, err
-			}
-			return time.Unix(n, 0), nil
-		}
-	}
-	return time.Time{}, errors.New("machine: no btime in /proc/stat")
-}
-
 // State reports whether the entry's PID still names the registered
-// process. With a StartTime that is an exact match. An entry written
-// before StartTime was recorded is checked against the time it was
-// written instead: a running container registered by an older version
-// stays alive, while a process that started after the entry was written
-// (more than legacySlack later) cannot be the one it names.
+// process: with a StartTime, an exact match. An entry written by an
+// older slinit has none, and nothing else tells its process from one
+// that reused the PID: the time the entry was written cannot be
+// compared with the process's start, which is counted from a boot time
+// that moves with every step of the wall clock (an NTP sync after boot
+// turned running containers into "reused"). Such an entry whose PID is
+// in use is StateLegacy, usable as before.
 func (m *Machine) State() State {
 	if m.PID <= 1 {
 		return StateDead
@@ -180,24 +177,15 @@ func (m *Machine) State() State {
 		}
 		return StateDead
 	}
-	if m.StartTime != 0 {
-		if st == m.StartTime {
-			return StateAlive
-		}
-		return StateReused
-	}
-	if m.registered.IsZero() {
+	switch {
+	case m.legacy:
+		return StateLegacy
+	case m.StartTime == 0:
 		return StateUnknown
+	case st == m.StartTime:
+		return StateAlive
 	}
-	boot, err := bootTime()
-	if err != nil {
-		return StateUnknown
-	}
-	started := boot.Add(time.Duration(st) * time.Second / userHZ)
-	if started.After(m.registered.Add(legacySlack)) {
-		return StateReused
-	}
-	return StateAlive
+	return StateReused
 }
 
 // validName rejects registry keys that would let a caller escape the
@@ -271,15 +259,16 @@ func Register(m Machine) error {
 	}
 	if m.StartTime == 0 {
 		// Best effort: a PID that cannot be read (gone, or hidden
-		// from this user) is registered as before, and State checks
-		// it against the time of registration.
+		// from this user) is registered with STARTTIME=0, and State
+		// reports it unknown while it runs.
 		if st, err := ProcStartTime(m.PID); err == nil {
 			m.StartTime = st
 		}
 	}
 	// Format: line 1 = PID, line 2 = CLASS=<class>, line 3 = SERVICE=<service>,
 	// line 4 = ROOT=<root>, line 5 = STARTTIME=<ticks>. Missing lines
-	// default to empty. Keeping
+	// default to empty, except STARTTIME, which is always written: its
+	// absence marks an entry from an older slinit (see Legacy). Keeping
 	// key=value keeps this human-inspectable via `cat` and forward-
 	// compatible with new fields.
 	var b strings.Builder
@@ -293,9 +282,7 @@ func Register(m Machine) error {
 	if m.Root != "" {
 		fmt.Fprintf(&b, "ROOT=%s\n", m.Root)
 	}
-	if m.StartTime != 0 {
-		fmt.Fprintf(&b, "STARTTIME=%d\n", m.StartTime)
-	}
+	fmt.Fprintf(&b, "STARTTIME=%d\n", m.StartTime)
 	// The temp file's name starts with '.', which no machine name may,
 	// so it can neither collide with an entry nor be listed as one: a
 	// fixed final+".tmp" was itself a valid name, and registering "a"
@@ -338,34 +325,49 @@ func Unregister(name string) error {
 
 // Lookup returns the registered Machine for `name`. Returns
 // (nil, nil) when the name is unknown so callers can distinguish
-// "not registered" from "registry unreadable".
+// "not registered" from "registry unreadable". A file that is not a
+// complete registry entry is an error; see parseEntry.
 func Lookup(name string) (*Machine, error) {
 	p, err := path(name)
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.Open(p)
+	data, err := os.ReadFile(p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("machine: read %s: %w", p, err)
 	}
-	defer f.Close()
-	fi, err := f.Stat()
+	m, err := parseEntry(name, string(data))
 	if err != nil {
-		return nil, fmt.Errorf("machine: stat %s: %w", p, err)
+		return nil, fmt.Errorf("machine: %s: %w", p, err)
 	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return nil, fmt.Errorf("machine: read %s: %w", p, err)
+	return m, nil
+}
+
+// errOldTemp is a legacy entry named NAME.tmp: the temp file of a
+// Register by slinit 4.0.x or earlier that died before its rename.
+// That slinit wrote every entry through NAME.tmp, never listed a *.tmp
+// file and replaced it when registering NAME, so no machine of that
+// name was ever visible; one registered now always has a STARTTIME
+// line.
+var errOldTemp = errors.New("not a registry entry: an older slinit's unfinished temp file")
+
+// parseEntry reads a registry file. Every version of Register writes
+// whole lines, the first one the PID, the rest KEY=VALUE; a file that
+// does not end in a newline was cut short, and one with another kind
+// of line was not written by Register at all.
+func parseEntry(name, data string) (*Machine, error) {
+	if !strings.HasSuffix(data, "\n") {
+		return nil, errors.New("not a registry entry: incomplete (no final newline)")
 	}
-	m := &Machine{Name: name, registered: fi.ModTime()}
-	for i, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+	m := &Machine{Name: name, legacy: true}
+	for i, line := range strings.Split(strings.TrimSuffix(data, "\n"), "\n") {
 		if i == 0 {
 			pid, perr := strconv.Atoi(strings.TrimSpace(line))
 			if perr != nil {
-				return nil, fmt.Errorf("machine: %s: line 1 not a PID: %w", p, perr)
+				return nil, fmt.Errorf("not a registry entry: line 1 not a PID: %w", perr)
 			}
 			m.PID = pid
 			continue
@@ -375,7 +377,7 @@ func Lookup(name string) (*Machine, error) {
 		}
 		key, val, ok := strings.Cut(line, "=")
 		if !ok {
-			continue
+			return nil, fmt.Errorf("not a registry entry: line %d is not KEY=VALUE", i+1)
 		}
 		switch key {
 		case "CLASS":
@@ -387,10 +389,14 @@ func Lookup(name string) (*Machine, error) {
 		case "STARTTIME":
 			st, perr := strconv.ParseUint(val, 10, 64)
 			if perr != nil {
-				return nil, fmt.Errorf("machine: %s: STARTTIME: %w", p, perr)
+				return nil, fmt.Errorf("STARTTIME: %w", perr)
 			}
 			m.StartTime = st
+			m.legacy = false
 		}
+	}
+	if m.legacy && strings.HasSuffix(name, ".tmp") {
+		return nil, errOldTemp
 	}
 	return m, nil
 }
@@ -415,8 +421,9 @@ func List() ([]*Machine, error) {
 		}
 		m, err := Lookup(e.Name())
 		if err != nil {
-			// Skip corrupted entries; a bad file shouldn't hide the
-			// rest. slinit-machinectl surfaces a WARN separately.
+			// Skip files that are not complete entries (cut short, an
+			// older slinit's leftover temp file); a bad file shouldn't
+			// hide the rest.
 			continue
 		}
 		if m != nil {

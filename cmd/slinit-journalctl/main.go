@@ -4552,10 +4552,11 @@ func lookupMachine(name string) (*machine.Machine, error) {
 }
 
 // checkMachine succeeds only when m's PID is still the registered
-// process.
+// process, or is the live PID of an entry an older slinit wrote, which
+// records no start time to check it by.
 func checkMachine(m *machine.Machine) error {
 	switch m.State() {
-	case machine.StateAlive:
+	case machine.StateAlive, machine.StateLegacy:
 		return nil
 	case machine.StateReused:
 		return fmt.Errorf("-M %s: registered PID %d now belongs to another process (stale registration)", m.Name, m.PID)

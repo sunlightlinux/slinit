@@ -331,31 +331,86 @@ func TestStateReusedPID(t *testing.T) {
 	}
 }
 
-// Entries written before STARTTIME existed are judged by when they
-// were written: a process that started later is not the one registered;
-// one that started before (a container still running across the
-// upgrade) is.
+// Entries written before STARTTIME existed have nothing that tells
+// their process from one that reused the PID. They used to be judged
+// by the file's mtime against boot time + start ticks, but boot time
+// moves with every wall-clock step: after an NTP sync a container still
+// running across the upgrade became "reused" and -M refused it. A live
+// legacy entry is StateLegacy, usable, whenever it was written.
 func TestStateLegacyEntry(t *testing.T) {
 	defer withTempDir(t)()
 
 	self := os.Getpid()
 	p := filepath.Join(Dir(), "old")
 	os.WriteFile(p, []byte(strconv.Itoa(self)+"\nCLASS=container\n"), 0o644)
-	m, _ := Lookup("old")
-	if m.StartTime != 0 {
-		t.Fatalf("legacy StartTime = %d", m.StartTime)
-	}
-	if s := m.State(); s != StateAlive {
-		t.Errorf("legacy entry written after the process started: State = %v, want yes", s)
+	for _, age := range []time.Duration{0, 24 * time.Hour} {
+		past := time.Now().Add(-age)
+		if err := os.Chtimes(p, past, past); err != nil {
+			t.Fatal(err)
+		}
+		m, err := Lookup("old")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !m.Legacy() || m.StartTime != 0 {
+			t.Fatalf("legacy = %v, StartTime = %d", m.Legacy(), m.StartTime)
+		}
+		if s := m.State(); s != StateLegacy || !s.Usable() {
+			t.Errorf("legacy entry written %v ago: State = %v, want legacy (usable)", age, s)
+		}
 	}
 
-	past := time.Now().Add(-24 * time.Hour)
-	if err := os.Chtimes(p, past, past); err != nil {
+	m := &Machine{Name: "gone", PID: 2_000_000_000, legacy: true}
+	if s := m.State(); s != StateDead {
+		t.Errorf("legacy entry, no such pid: State = %v, want no", s)
+	}
+
+	// Written by this version with the start time unreadable: not
+	// legacy, and its identity cannot be checked.
+	os.WriteFile(p, []byte(strconv.Itoa(self)+"\nSTARTTIME=0\n"), 0o644)
+	m, _ = Lookup("old")
+	if m.Legacy() {
+		t.Errorf("STARTTIME=0 entry taken for legacy")
+	}
+	if s := m.State(); s != StateUnknown || s.Usable() {
+		t.Errorf("STARTTIME=0 entry: State = %v, want unknown", s)
+	}
+}
+
+// List shows only complete registry entries. 4.0.x wrote each entry
+// through NAME.tmp; one left by a Register that died before its rename
+// is not a machine (that slinit never listed it), and neither is a
+// file cut short or one Register did not write.
+func TestListSkipsInvalidEntries(t *testing.T) {
+	defer withTempDir(t)()
+
+	if err := Register(Machine{Name: "real", PID: 42}); err != nil {
 		t.Fatal(err)
 	}
-	m, _ = Lookup("old")
-	if s := m.State(); s != StateReused {
-		t.Errorf("legacy entry written before the process started: State = %v, want reused", s)
+	if err := Register(Machine{Name: "new.tmp", PID: 43}); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"web.tmp": "4242\nCLASS=container\n", // old Register's temp file
+		"cut":     "42",                      // no final newline
+		"empty":   "",
+		"notes":   "42\nhello world\n",
+	} {
+		os.WriteFile(filepath.Join(Dir(), name), []byte(body), 0o644)
+	}
+	got, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, m := range got {
+		names = append(names, m.Name)
+	}
+	if strings.Join(names, " ") != "new.tmp real" {
+		t.Errorf("List = %v, want [new.tmp real]", names)
+	}
+	if m, err := Lookup("web.tmp"); err == nil {
+		t.Errorf("Lookup(old temp file) = %+v, want an error", m)
 	}
 }
 

@@ -22,19 +22,31 @@ func TestMachineReusedPIDRefused(t *testing.T) {
 	defer machine.SetDir(prev)
 
 	self := strconv.Itoa(os.Getpid())
-	// Written by the current version: a different start time.
+	// A different start time.
 	os.WriteFile(filepath.Join(dir, "web"), []byte(self+"\nSTARTTIME=1\n"), 0o644)
-	// Written by an older version, before this process started.
+
+	err := runQuery(options{machineTarget: "web", quiet: true})
+	if err == nil || !strings.Contains(err.Error(), "another process") {
+		t.Errorf("-M web on a reused PID: err = %v, want a refusal", err)
+	}
+}
+
+// An entry written by an older slinit records no start time. Its live
+// PID is used as that slinit used it, whenever the entry was written:
+// judging it by the file's mtime against a boot time that moves with
+// wall-clock steps refused running containers after an NTP sync.
+func TestLookupMachineAcceptsLegacy(t *testing.T) {
+	dir := t.TempDir()
+	prev := machine.Dir()
+	machine.SetDir(dir)
+	defer machine.SetDir(prev)
+
 	legacy := filepath.Join(dir, "old")
-	os.WriteFile(legacy, []byte(self+"\n"), 0o644)
+	os.WriteFile(legacy, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644)
 	past := time.Now().Add(-24 * time.Hour)
 	os.Chtimes(legacy, past, past)
-
-	for _, name := range []string{"web", "old"} {
-		err := runQuery(options{machineTarget: name, quiet: true})
-		if err == nil || !strings.Contains(err.Error(), "another process") {
-			t.Errorf("-M %s on a reused PID: err = %v, want a refusal", name, err)
-		}
+	if _, err := lookupMachine("old"); err != nil {
+		t.Errorf("lookupMachine(legacy entry, live PID) = %v", err)
 	}
 }
 

@@ -153,7 +153,7 @@ func doStatus(args []string) error {
 	fmt.Printf("Name:    %s\n", m.Name)
 	fmt.Printf("PID:     %d\n", m.PID)
 	state := m.State()
-	fmt.Printf("Alive:   %v\n", state == machine.StateAlive)
+	fmt.Printf("Alive:   %v\n", state.Usable())
 	fmt.Printf("State:   %s\n", stateWords(state, m))
 	fmt.Printf("Class:   %s\n", dashIfEmpty(m.Class))
 	fmt.Printf("Service: %s\n", dashIfEmpty(m.Service))
@@ -185,7 +185,7 @@ func doShow(args []string) error {
 	if m.Root != "" {
 		fmt.Printf("ROOT=%s\n", m.Root)
 	}
-	if m.StartTime != 0 {
+	if !m.Legacy() {
 		fmt.Printf("STARTTIME=%d\n", m.StartTime)
 	}
 	return nil
@@ -195,13 +195,16 @@ func doShow(args []string) error {
 func stateWords(s machine.State, m *machine.Machine) string {
 	switch s {
 	case machine.StateAlive:
-		if m.StartTime == 0 {
-			return "running (entry predates start-time records; checked against its registration time)"
-		}
 		return "running"
+	case machine.StateLegacy:
+		return "running, as far as can be told: registered by an older slinit, " +
+			"which recorded no start time to tell it from a reused PID (restart the container to re-register it)"
 	case machine.StateReused:
 		return fmt.Sprintf("stale: PID %d now belongs to another process", m.PID)
 	case machine.StateUnknown:
+		if m.StartTime == 0 {
+			return fmt.Sprintf("PID %d exists but its identity cannot be checked (no start time was recorded at registration)", m.PID)
+		}
 		return fmt.Sprintf("PID %d exists but its identity cannot be checked (/proc hidden?)", m.PID)
 	}
 	return "stale: not running"

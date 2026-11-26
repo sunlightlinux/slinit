@@ -137,8 +137,9 @@ func captureStdout(t *testing.T, f func() error) string {
 
 // An entry whose launcher was SIGKILLed outlives its container; once
 // the PID is reused, list must not report the unrelated process as the
-// machine. Here the PID is this test's, which started after the entry
-// was written (legacy entry) or has another start time.
+// machine. Here the PID is this test's, which has another start time.
+// An entry from an older slinit has no start time to compare: it is
+// listed as legacy, however its mtime compares with the boot clock.
 func TestDoListReusedPIDNotAlive(t *testing.T) {
 	defer withRegistryDir(t)()
 
@@ -159,7 +160,7 @@ func TestDoListReusedPIDNotAlive(t *testing.T) {
 			alive[f[0]] = f[2]
 		}
 	}
-	want := map[string]string{"legacy": "reused", "stamped": "reused", "live": "yes"}
+	want := map[string]string{"legacy": "legacy", "stamped": "reused", "live": "yes"}
 	for name, w := range want {
 		if alive[name] != w {
 			t.Errorf("%s: ALIVE=%q, want %q\n%s", name, alive[name], w, got)
