@@ -560,6 +560,7 @@ func waitExit(pid int, timeout time.Duration) bool {
 // waitExitProgress polls until pid is gone or timeout elapses. When
 // progress is set, prints a "." to stderr each second — the same
 // heartbeat OpenRC's --progress emits during stop escalation.
+// waitForever waits with no deadline; a zero timeout only checks.
 func waitExitProgress(pid int, timeout time.Duration, progress bool) bool {
 	dotEvery := time.Second
 	nextDot := time.Now().Add(dotEvery)
@@ -577,7 +578,7 @@ func waitExitProgress(pid int, timeout time.Duration, progress bool) bool {
 		}
 		return processAlive(pid)
 	}
-	if timeout == 0 {
+	if timeout == waitForever {
 		for check() {
 			time.Sleep(100 * time.Millisecond)
 		}

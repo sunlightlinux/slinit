@@ -227,8 +227,20 @@ child before **exec**(2) — a peer task cannot set them from outside.
     - Slash-separated: **--retry TERM/30/KILL/5** sends SIGTERM, waits
       up to 30s, then sends SIGKILL and waits up to 5s.
 
-    A trailing signal without timeout means "wait forever" for that
-    step.
+    As in Debian and OpenRC, a signal item may be written with one
+    leading dash (**-TERM/5/-KILL/5**); a signal number needs it
+    (**-15/5/-9/5**), since a plain number is a timeout. A signal with
+    no timeout after it is sent and the schedule moves on; if it is
+    the last item the process gets one second to be gone and is then
+    reported as refusing to die (exit **4**). A timeout of **0** only
+    checks whether the process is gone.
+
+    **forever** repeats the items after it until the process exits:
+    **TERM/5/forever/KILL/5** sends SIGKILL every 5s. As the last
+    item (**TERM/30/forever**) it repeats the timeout before it, that
+    is, waits with no deadline, as OpenRC does (Debian refuses this
+    form). **forever** may appear once, and the items it repeats must
+    include a non-zero timeout.
 
     Without **--retry**, as in OpenRC, **--stop** sends **--signal**
     and waits up to 5s for the process to exit, returning **4** if it
