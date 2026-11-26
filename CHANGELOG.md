@@ -24,6 +24,17 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [4.0.3] — 2026-11-26
+
+**A large fix release on the 4.0 long-term-support line, and a
+deliberate exception to its own rule.** STABILITY.md keeps changes a
+working setup could notice out of a patch release. The 23 entries under
+*Changed* below are such changes: each fixes a fault, but in a way a
+setup could see, and each carries a *Compat* note saying what differs.
+They ship in 4.0.3 rather than wait for 4.1 because they remove real
+bugs from the line people run; read the *Compat* notes before
+upgrading. The control protocol stays at version 7.
+
 Fixes found by an audit of the whole tree: PID 1 crash and hang paths,
 seccomp and sandbox bypasses, a local root through slinit-logind,
 journal forgery, and many lifecycle and converter faults. Several

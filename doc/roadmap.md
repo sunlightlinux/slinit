@@ -27,7 +27,7 @@ surface as the first long-term-support line, under the rules in
 ## 3.0, and what has happened since
 
 3.0 shipped, and its line closed at v3.22.1; the current release is
-v4.0.2. The 3.0 list was six
+v4.0.3. The 3.0 list was six
 items; five closed before the cut:
 
 1. **A skipped functional case reported PASS** — and in fact the harness
