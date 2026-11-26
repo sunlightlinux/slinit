@@ -160,6 +160,11 @@ func NewServer(services *service.ServiceSet, sockPath string, logger *logging.Lo
 
 // Start binds the Unix socket and begins accepting connections.
 func (s *Server) Start(ctx context.Context) error {
+	// The context first: a failed bind (no room on /run) still leaves a
+	// server that pass-cs-fd connections and a SIGUSR1 Reopen use, and
+	// their connections read it.
+	s.ctx, s.cancel = context.WithCancel(ctx)
+
 	// Never take over a live socket. Removing it would leave the instance
 	// that owns it running but unreachable: its listener stays open on a
 	// file that no longer has a name, so slinitctl -- shutdown included --
@@ -179,7 +184,6 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.listener = listener
-	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.stopAccept = make(chan struct{})
 
 	s.wg.Add(1)

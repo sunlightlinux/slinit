@@ -121,6 +121,14 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A control socket that could not be bound at boot no longer crashes
+  PID 1 later.** When `/run` had no free inode at boot (a local user can
+  fill it, and `/run` survives a soft-reboot), slinit went on without
+  its control socket, as intended; but the first connection to the
+  socket a later SIGUSR1 recreated, or the first `pass-cs-fd`
+  connection, dereferenced a context that the failed bind had never set,
+  and PID 1 panicked.
+
 - **slinit-logind reaps the `slinit-shutdown` it starts.** PowerOff,
   Reboot, Halt and the power/reboot keys started `slinit-shutdown` and
   never waited for it. When the request did not take the machine down,
