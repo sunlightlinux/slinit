@@ -468,6 +468,18 @@ verified with `git tag -v`.
   is not a time is now a usage error (exit 2) and nothing is sent.
   *Compat:* a wall message given as bare words needs a time before it
   (`slinitctl reboot now going down`) or `-m`; `-k` is unchanged.
+
+- **slinit-journald no longer appends to a binary journal its last
+  writer did not close**: the writer fills an entry's array slot and
+  hash-bucket links before it rewrites the header, so after a crash in
+  that window the restarted daemon wrote its next entries over objects
+  those already named, and the day's file then read with an entry twice
+  or, once a new ENTRY_ARRAY was involved, not at all. A file still
+  marked online is now rotated as it is, under a rotation's name
+  (`DATE.NANOS.journal`), and a new file started, as systemd-journald
+  does with a dirty file. *Compat:* after slinit-journald is killed, or
+  the machine loses power, the rest of that day goes into a new file;
+  `journalbin.NewWriter` on such a file returns `journalbin.ErrDirty`.
 - **A FIFO in an `env-dir`, or an `env-file` that is one, froze PID 1**:
   the start opened it with the service set's lock held and blocked until
   something opened the other end, stopping every start, stop and

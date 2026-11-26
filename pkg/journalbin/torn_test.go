@@ -1,6 +1,8 @@
 package journalbin
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,6 +103,28 @@ func TestReaderTornTail(t *testing.T) {
 		}
 		if len(got) != k {
 			t.Errorf("%s: Iter read %v, want the %d entries the header describes", name, got, k)
+		}
+	})
+}
+
+// TestWriterRefusesDirtyFile: a file whose writer died is left as it
+// is. Appending at its header's tail overwrote the objects that the
+// dead writer's array slot and hash-bucket links already name.
+func TestWriterRefusesDirtyFile(t *testing.T) {
+	tornFiles(t, func(name string, torn []byte, opts WriterOptions, _ int) {
+		path := filepath.Join(t.TempDir(), "t.journal")
+		if err := os.WriteFile(path, torn, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		w, err := NewWriterWithOptions(path, opts)
+		if err == nil {
+			w.Close()
+		}
+		if !errors.Is(err, ErrDirty) {
+			t.Errorf("%s: reopen: %v, want ErrDirty", name, err)
+		}
+		if b, _ := os.ReadFile(path); !bytes.Equal(b, torn) {
+			t.Errorf("%s: file changed", name)
 		}
 	})
 }

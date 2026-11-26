@@ -211,6 +211,17 @@ func (s *BinarySink) openCurrent() error {
 		fmt.Fprintf(os.Stderr, "slinit-journald: %s has no journal header (%v); kept as %s, starting a new file\n",
 			path, err, filepath.Base(aside))
 		w, err = open()
+	} else if errors.Is(err, journalbin.ErrDirty) {
+		// Today's file was not closed: the writer died. It is
+		// rotated as it is, under the name a rotation gives it, and
+		// a new file started.
+		aside := fmt.Sprintf("%s.%d.journal", path[:len(path)-len(".journal")], time.Now().UnixNano())
+		if rerr := os.Rename(path, aside); rerr != nil {
+			return fmt.Errorf("%w (rotating it: %v)", err, rerr)
+		}
+		fmt.Fprintf(os.Stderr, "slinit-journald: %s was not closed cleanly; rotated to %s, starting a new file\n",
+			path, filepath.Base(aside))
+		w, err = open()
 	}
 	if err != nil {
 		return err

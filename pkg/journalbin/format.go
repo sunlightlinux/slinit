@@ -316,4 +316,5 @@ var (
 	ErrObjectBounds = errors.New("journalbin: object offset out of file bounds")
 	ErrHashMismatch = errors.New("journalbin: hash chain corruption (hash mismatch)")
 	ErrTagMismatch  = errors.New("journalbin: FSS tag mismatch (tamper or truncation)")
+	ErrDirty        = errors.New("journalbin: journal file was not closed (state online)")
 )

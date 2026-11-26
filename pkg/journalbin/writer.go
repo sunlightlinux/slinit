@@ -250,6 +250,15 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 			_ = f.Close()
 			return nil, fmt.Errorf("journalbin: header %s: %w", path, err)
 		}
+		// A file still online was not closed: its writer died, maybe
+		// part way through an append whose hash-bucket links and array
+		// slot it had already written past the header's tail. Appending
+		// at that tail overwrote what they name. Like systemd, leave
+		// such a file as it is; the caller starts another.
+		if existing.State == StateOnline {
+			_ = f.Close()
+			return nil, fmt.Errorf("journalbin: %s: %w", path, ErrDirty)
+		}
 		w.header = *existing
 		// TailObjectOffset points at the next append slot; if a prior
 		// writer crashed without updating it, we fall back to file size
