@@ -33,6 +33,7 @@ func TestWaitAdhocDoesNotHoldThreads(t *testing.T) {
 	}()
 	for i := 0; i < n; i++ {
 		c := exec.Command("/bin/sleep", "1000")
+		PrepareAdhoc(c)
 		if err := c.Start(); err != nil {
 			t.Fatalf("start %d: %v", i, err)
 		}
@@ -52,7 +53,8 @@ func TestWaitAdhocDoesNotHoldThreads(t *testing.T) {
 
 // Waiting in the netpoller first must not change what WaitAdhoc
 // reports, whoever reaps the child: cmd.Wait() itself, PID 1's reaper
-// before the pidfd is opened, or the reaper while the wait is parked.
+// before WaitAdhoc registers the child, or the reaper while the wait is
+// parked.
 func TestWaitAdhocKeepsRealStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts 300 processes")
@@ -71,6 +73,7 @@ func TestWaitAdhocKeepsRealStatus(t *testing.T) {
 			}
 			for i := 0; i < 50; i++ {
 				c := exec.Command("/bin/sh", "-c", "exit 7")
+				PrepareAdhoc(c)
 				if err := c.Start(); err != nil {
 					t.Fatal(err)
 				}
@@ -79,6 +82,7 @@ func TestWaitAdhocKeepsRealStatus(t *testing.T) {
 				}
 
 				c = exec.Command("/bin/sleep", "1000")
+				PrepareAdhoc(c)
 				if err := c.Start(); err != nil {
 					t.Fatal(err)
 				}
@@ -92,6 +96,7 @@ func TestWaitAdhocKeepsRealStatus(t *testing.T) {
 				}
 
 				c = exec.Command("/bin/true")
+				PrepareAdhoc(c)
 				if err := c.Start(); err != nil {
 					t.Fatal(err)
 				}

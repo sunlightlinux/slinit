@@ -222,6 +222,14 @@ verified with `git tag -v`.
   died). The wait now parks in the netpoller on the child's pidfd and
   only then collects it (0 of 20). Kernels before 5.3 keep the old wait.
 
+- **An ad-hoc command's wait no longer hangs on an unrelated process
+  after pid reuse.** The netpoller wait above opened the child's pidfd
+  by pid after it had started; had PID 1's reaper collected the child
+  first and its pid gone to another process, the hook, `ifup` call or
+  logger supervisor waited until that process exited, with no timeout
+  (`sleep 30` on the reused pid: still blocked after 10 s). The pidfd
+  now comes from `clone` itself, so it can only name the child.
+
 - **An on-demand service waiting for its first client no longer holds
   an OS thread.** Each `socket-activation = on-demand` watcher sat in
   `poll(2)`: 500 such services meant 518 threads, and with 1500 other

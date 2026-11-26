@@ -197,49 +197,24 @@ func (s *siginfoChild) waitStatus() syscall.WaitStatus {
 	return 0
 }
 
-// parkUntilExit waits in the netpoller until the child pid has exited,
-// so that the cmd.Wait() which follows returns at once instead of
-// holding a thread in waitid for as long as the child runs. Ad-hoc
-// commands are started by their callers without SysProcAttr.PidFD, so
-// the pidfd is opened here, after Start.
-//
-// That pidfd_open can lose a race to PID 1's reaper: should the child
-// exit and be collected in between, the pid may name another process
-// by the time it is opened. The exit router hands that child's status
-// to routed, so the wait ends there too, with ok set: the status has
-// then been taken from routed and the caller must use it.
-//
-// Without a pollable pidfd (ESRCH: already reaped; ENOSYS: kernel < 5.3)
-// it returns at once and cmd.Wait() blocks as it always did.
-func parkUntilExit(pid int, routed <-chan syscall.WaitStatus) (status syscall.WaitStatus, ok bool) {
-	fd, err := unix.PidfdOpen(pid, 0)
-	if err != nil {
-		return 0, false
-	}
+// parkOnPidfd waits in the netpoller until the pidfd's process has
+// exited, so that the cmd.Wait() which follows returns at once instead
+// of holding a thread in waitid for as long as the child runs. It closes
+// fd. Should the fd not go into the netpoller it returns at once, and
+// cmd.Wait() blocks as it always did.
+func parkOnPidfd(fd int) {
 	if unix.SetNonblock(fd, true) != nil {
 		unix.Close(fd)
-		return 0, false
+		return
 	}
 	f := os.NewFile(uintptr(fd), "pidfd")
+	defer f.Close()
 	if f.SetReadDeadline(time.Time{}) != nil {
-		f.Close()
-		return 0, false
+		return
 	}
-	exited := make(chan struct{})
-	go func() {
-		defer close(exited)
-		rc, err := f.SyscallConn()
-		if err != nil {
-			return
-		}
-		_ = rc.Read(func(fd uintptr) bool { return pidfdReadable(int(fd)) })
-	}()
-	select {
-	case <-exited:
-	case status = <-routed:
-		ok = true
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return
 	}
-	f.Close() // wakes the Read if it is still parked
-	<-exited
-	return status, ok
+	_ = rc.Read(func(fd uintptr) bool { return pidfdReadable(int(fd)) })
 }

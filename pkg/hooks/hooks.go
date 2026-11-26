@@ -237,6 +237,7 @@ func startLogged(cmd *exec.Cmd, kind, point, path string, logger *logging.Logger
 	}
 	cmd.Stdout = w
 	cmd.Stderr = w
+	process.PrepareAdhoc(cmd) // waited for with process.WaitAdhoc
 	err = cmd.Start()
 	w.Close() // the child holds its own copy
 	if err != nil {

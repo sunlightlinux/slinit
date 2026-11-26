@@ -112,6 +112,7 @@ func (ls *loggerSupervisor) spawn() (*exec.Cmd, error) {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	process.PrepareAdhoc(cmd) // waited for with process.WaitAdhoc
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -186,8 +187,10 @@ func (ls *loggerSupervisor) setCurrent(cmd *exec.Cmd) {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	if ls.stopped && cmd != nil && cmd.Process != nil {
-		// Stop raced us; do not leave an unowned child behind.
+		// Stop raced us; do not leave an unowned child behind, nor
+		// the pidfd only WaitAdhoc releases.
 		_ = cmd.Process.Kill()
+		go process.WaitAdhoc(cmd)
 		return
 	}
 	ls.cmd = cmd

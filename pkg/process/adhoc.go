@@ -106,6 +106,7 @@ func RunAdhocStarted(cmd *exec.Cmd, started func(pid int)) error {
 	if defaultDelay {
 		cmd.WaitDelay = AdhocOutputDelay
 	}
+	PrepareAdhoc(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -155,7 +156,41 @@ func CombinedOutputAdhoc(cmd *exec.Cmd) ([]byte, error) {
 // Start and Wait apart — a pipe to drain, say. Registration is then
 // later than RunAdhoc's, but the router holds a status reaped before
 // anyone registered, which is what that table exists for.
+//
+// Call PrepareAdhoc on cmd before starting it, or the wait holds an OS
+// thread for as long as the child runs. A cmd that was started must be
+// passed to WaitAdhoc: it owns the pidfd PrepareAdhoc asked for.
 func WaitAdhoc(cmd *exec.Cmd) error { return waitAdhoc(cmd) }
+
+// PrepareAdhoc asks cmd.Start for a pidfd of the child, made by clone
+// itself, which WaitAdhoc parks on in the netpoller instead of holding a
+// thread in waitid. It must come after any assignment to cmd.SysProcAttr.
+//
+// The pidfd has to come from clone: one opened by pid after Start may
+// name another process, should PID 1's reaper have collected the child
+// and its pid been reused in between, and the wait then lasted as long
+// as that process did.
+func PrepareAdhoc(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	// -1 stays if the kernel cannot provide one (< 5.2) or Start fails:
+	// syscall closes the pidfd and resets it when exec fails, and os
+	// keeps a dup of its own for cmd.Process, so this one is ours.
+	pidfd := -1
+	cmd.SysProcAttr.PidFD = &pidfd
+}
+
+// takeAdhocPidfd returns the pidfd PrepareAdhoc obtained for cmd, or -1,
+// and leaves -1 in its place: the caller now owns it and must close it.
+func takeAdhocPidfd(cmd *exec.Cmd) int {
+	if cmd.SysProcAttr == nil || cmd.SysProcAttr.PidFD == nil {
+		return -1
+	}
+	fd := *cmd.SysProcAttr.PidFD
+	*cmd.SysProcAttr.PidFD = -1
+	return fd
+}
 
 // waitAdhoc waits for an already-started cmd, preferring cmd.Wait()'s
 // own answer and falling back to the router when it has none.
@@ -174,8 +209,11 @@ func waitAdhoc(cmd *exec.Cmd) error {
 	// cmd.Wait() blocks in waitid, holding an OS thread until the child
 	// exits: for an output logger, for as long as its service runs, and
 	// a thread is a task the kernel may refuse the runtime. Wait for the
-	// exit in the netpoller first.
-	early, haveEarly := parkUntilExit(pid, routed)
+	// exit in the netpoller first, on the pidfd clone made: it names
+	// this child even if the reaper has already collected it.
+	if fd := takeAdhocPidfd(cmd); fd >= 0 {
+		parkOnPidfd(fd)
+	}
 
 	type result struct {
 		err   error
@@ -218,9 +256,6 @@ func waitAdhoc(cmd *exec.Cmd) error {
 	// cmd.Wait() lost the child. The real status went to the reaper,
 	// which routes it here — already in the router's pending table, or
 	// arriving within microseconds.
-	if haveEarly {
-		routed = routedStatus(early)
-	}
 	select {
 	case status := <-routed:
 		if status.Signaled() || status.ExitStatus() != 0 {
@@ -236,12 +271,4 @@ func waitAdhoc(cmd *exec.Cmd) error {
 			pid, waitStatusGrace, res.err)
 		return res.err
 	}
-}
-
-// routedStatus is a channel holding status, standing in for the router's
-// channel once parkUntilExit has taken the status from it.
-func routedStatus(status syscall.WaitStatus) <-chan syscall.WaitStatus {
-	ch := make(chan syscall.WaitStatus, 1)
-	ch <- status
-	return ch
 }
