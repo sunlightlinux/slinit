@@ -230,6 +230,16 @@ verified with `git tag -v`.
   (`sleep 30` on the reused pid: still blocked after 10 s). The pidfd
   now comes from `clone` itself, so it can only name the child.
 
+- **`--cpu-affinity` pins all of slinit, not one thread of it.** It
+  called `sched_setaffinity` for the calling thread only, and after the
+  thread reserve had been made: `slinit -u --cpu-affinity 0` on 12 CPUs
+  left 34 of 35 threads on every CPU. New threads copy their creator's
+  mask and a child copies the forking thread's, so a command forked
+  from another thread without an affinity of its own (a hook, a health
+  check, a cron job) could land on any CPU: 18 of 20 did in the test.
+  Every thread is now set. Compat: such commands now run within the
+  `--cpu-affinity` set, as the option documents.
+
 - **An on-demand service waiting for its first client no longer holds
   an OS thread.** Each `socket-activation = on-demand` watcher sat in
   `poll(2)`: 500 such services meant 518 threads, and with 1500 other

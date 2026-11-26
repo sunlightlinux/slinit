@@ -1132,12 +1132,12 @@ func main() {
 		if err != nil {
 			logger.Error("Invalid --cpu-affinity %q: %v", cpuAffinityStr, err)
 		} else {
-			// Apply to slinit daemon itself
+			// Apply to slinit daemon itself, every thread of it
 			var cpuSet unix.CPUSet
 			for _, c := range cpus {
 				cpuSet.Set(int(c))
 			}
-			if err := unix.SchedSetaffinity(0, &cpuSet); err != nil {
+			if err := setDaemonAffinity(&cpuSet); err != nil {
 				logger.Error("Failed to set daemon CPU affinity: %v", err)
 			} else {
 				logger.Info("Daemon CPU affinity set to: %s", cpuAffinityStr)
