@@ -108,6 +108,17 @@ type ProcessService struct {
 	postStartCancel context.CancelFunc
 	postStartDone   chan struct{}
 
+	// stateHook is the hook a transition is waiting on — pre-start
+	// (with the start's environment), pre-stop-hook, a stop's
+	// control-command or finish-command — run off queueMu (statehook.go).
+	// Set and cleared under queueMu; atomic so the shutdown teardown can
+	// cancel it without the lock.
+	stateHook atomic.Pointer[stateHook]
+	// pendingExit is a main-process exit that arrived while a stop's
+	// pre-stop-hook or control-command was running. It is handled once
+	// that hook has finished, as it was when the hook held the lock.
+	pendingExit *process.ChildExit
+
 	// Credentials
 	runAsUID          uint32
 	runAsGID          uint32
@@ -1908,9 +1919,11 @@ func annotateHookTimeout(err error, ctx context.Context, timeout time.Duration) 
 }
 
 // BringDown stops the service process.
-// If a pre-stop-hook is configured, it runs first (synchronously with timeout).
-// Then if a stop-command is configured, it is executed. If it fails to
-// start, we fall back to sending the termination signal directly.
+// If a pre-stop-hook is configured, it runs first, off the lock and bounded
+// by hook-timeout; the service stays STOPPING and the hook's completion
+// goes on with the rest (issueStopLocked). Then if a stop-command is
+// configured, it is executed. If it fails to start, we fall back to
+// sending the termination signal directly.
 func (s *ProcessService) BringDown() {
 	// A start-delay still counting down has nothing left to launch, nor
 	// has a start-when-idle wait, nor a smooth recovery waiting out
@@ -1930,6 +1943,19 @@ func (s *ProcessService) BringDown() {
 	// Close readiness pipe if still open (no longer waiting for readiness)
 	s.closeReadyPipe()
 
+	// A state hook is running off the lock (statehook.go). Its
+	// completion carries the stop on: a pre-stop-hook or
+	// control-command goes on to the stop signal, a finish-command to
+	// the exit's dispatch, which finds the service STOPPING. A pre-start
+	// has nothing left to do once the start is called off, so it is
+	// ended now.
+	if h := s.stateHook.Load(); h != nil {
+		if h.kind == hookPreStart {
+			h.cancel()
+		}
+		return
+	}
+
 	if s.pid <= 0 {
 		// Process already dead
 		s.cancelTimer()
@@ -1941,11 +1967,35 @@ func (s *ProcessService) BringDown() {
 		return
 	}
 
-	// Run pre-stop-hook before any stop action
+	// Run pre-stop-hook before any stop action. It runs off the lock;
+	// its completion issues the stop (issueStopLocked), or, if the
+	// process has exited meanwhile, handles that exit.
 	if len(s.preStopHook) > 0 {
-		s.execPreStopHook()
+		s.startStateHookLocked(hookPreStop, s.preparePreStopHook, func(error, bool) {
+			if exit, ok := s.takePendingExit(); ok {
+				s.afterExitLocked(exit)
+				return
+			}
+			if s.state.Load() != StateStopping || s.pid <= 0 {
+				// Nothing else moves a service out of STOPPING
+				// while the hook runs; should it, let the
+				// transition look again.
+				if s.state.Load() == StateStopping {
+					s.services.AddTransitionQueue(s)
+				}
+				return
+			}
+			s.issueStopLocked()
+		})
+		return
 	}
+	s.issueStopLocked()
+}
 
+// issueStopLocked is the stop proper, once any pre-stop-hook has run:
+// the stop-command, or the stop signal (or the control-command that
+// stands in for it), then the stop-timeout. Caller holds queueMu.
+func (s *ProcessService) issueStopLocked() {
 	// Try stop-command first (like dinit's process_service::bring_down)
 	if len(s.stopCommand) > 0 {
 		if s.execStopCommand() {
@@ -1981,17 +2031,44 @@ func (s *ProcessService) BringDown() {
 
 	sigName := signalName(sig)
 	if cmd, ok := s.controlCommands[sigName]; ok && len(cmd) > 0 {
-		// Run custom control command instead of raw signal
-		s.execControlCommand(sigName, cmd)
-	} else {
-		s.services.logger.Info("Service '%s': sending %s to process %d",
-			s.serviceName, signalName(sig), s.pid)
-
-		err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
-		if err != nil {
-			s.logStopSignalFailure(err)
-		}
+		// Run custom control command instead of raw signal, off the
+		// lock. What follows the signal follows the command's
+		// completion, as it followed the command before.
+		s.startStateHookLocked(hookStopControl,
+			func(ctx context.Context) func() error {
+				return s.prepareControlCommandCtx(ctx, sigName, cmd)
+			},
+			func(error, bool) {
+				s.stopSignalSentLocked(sig)
+				if exit, ok := s.takePendingExit(); ok {
+					s.afterExitLocked(exit)
+					return
+				}
+				if s.stopTimeout > 0 {
+					s.armTimer(s.stopTimeout, timerStopTimeout)
+				}
+			})
+		return
 	}
+
+	s.services.logger.Info("Service '%s': sending %s to process %d",
+		s.serviceName, signalName(sig), s.pid)
+
+	err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+	if err != nil {
+		s.logStopSignalFailure(err)
+	}
+	s.stopSignalSentLocked(sig)
+
+	// Arm stop timeout for SIGKILL escalation
+	if s.stopTimeout > 0 {
+		s.armTimer(s.stopTimeout, timerStopTimeout)
+	}
+}
+
+// stopSignalSentLocked is what follows the stop signal, or the
+// control-command sent in its place. Caller holds queueMu.
+func (s *ProcessService) stopSignalSentLocked(sig syscall.Signal) {
 	s.resumeForStop()
 
 	s.stopIssued = true
@@ -2002,11 +2079,6 @@ func (s *ProcessService) BringDown() {
 	// kill-mode=control-group is set.
 	if s.Flags.KillAllOnStop || s.Record().KillMode() == KillModeControlGroup {
 		s.killCgroupTree(sig)
-	}
-
-	// Arm stop timeout for SIGKILL escalation
-	if s.stopTimeout > 0 {
-		s.armTimer(s.stopTimeout, timerStopTimeout)
 	}
 }
 
@@ -2167,7 +2239,7 @@ func (s *ProcessService) execStopCommand() bool {
 
 // CanInterruptStart returns true if the starting process can be interrupted.
 func (s *ProcessService) CanInterruptStart() bool {
-	if s.waitingForDeps || s.waitingToLaunch() {
+	if s.waitingForDeps || s.waitingToLaunch() || s.stateHookRunning() {
 		return true
 	}
 	// Can interrupt if process is running (we'll send SIGINT)
@@ -2192,6 +2264,13 @@ func (s *ProcessService) InterruptStart() bool {
 	if s.waitingToLaunch() {
 		s.cancelStartDelay()
 		s.cancelIdleWait()
+		return true
+	}
+	// A state hook is running: a pre-start-command (BringDown, reached
+	// next, kills it) or the finish-command of a process that died
+	// while starting. There is no process, and the service goes
+	// STOPPING; the hook's completion finishes the stop.
+	if s.stateHookRunning() {
 		return true
 	}
 
@@ -3285,11 +3364,41 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 		}
 	}
 
-	// Run finish-command if configured (before restart decision)
-	if len(s.finishCommand) > 0 && exit.ExecErr == nil {
-		s.execFinishCommand(exit)
+	// A pre-stop-hook or a stop's control-command is still running: the
+	// exit is handled when it has finished, so the finish-command still
+	// follows the pre-stop-hook and the stop is not declared over under
+	// a hook that is still at work.
+	if s.stateHookRunning() {
+		e := exit
+		s.pendingExit = &e
+		return
 	}
+	s.afterExitLocked(exit)
+}
 
+// afterExitLocked runs the finish-command for a main-process exit, if
+// one is configured, and then hands the exit to the state machine
+// (dispatchExitLocked). The finish-command runs off the lock and the
+// service stays where it is meanwhile; a stop that arrives in the
+// meantime waits for it (BringDown), and the exit is dispatched against
+// the state the service is in once it is done. So it still runs before
+// the restart decision, and before a restart, as systemd's
+// ExecStopPost= does. Caller holds queueMu.
+func (s *ProcessService) afterExitLocked(exit process.ChildExit) {
+	if len(s.finishCommand) > 0 && exit.ExecErr == nil {
+		s.startStateHookLocked(hookFinish,
+			func(ctx context.Context) func() error {
+				return s.prepareFinishCommand(ctx, exit)
+			},
+			func(error, bool) { s.dispatchExitLocked(exit) })
+		return
+	}
+	s.dispatchExitLocked(exit)
+}
+
+// dispatchExitLocked is the state-machine half of a main-process exit,
+// after its finish-command. Caller holds queueMu.
+func (s *ProcessService) dispatchExitLocked(exit process.ChildExit) {
 	if exit.ExecErr != nil {
 		// Process failed during exec/setup
 		s.services.logger.Error("Service '%s': exec failed: %v",
@@ -3726,6 +3835,15 @@ func (s *ProcessService) applyRunAs(cmd *exec.Cmd) {
 // It passes the exit code and signal number as arguments.
 // Runs synchronously with a timeout so it doesn't block forever.
 func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
+	_ = s.prepareFinishCommand(context.Background(), exit)()
+}
+
+// prepareFinishCommand builds the finish-command for exit and returns
+// the function that runs it, bounded by hook-timeout and ended early by
+// parent; failures are logged, and the error is returned for the
+// caller's information only. Everything is read from the service here,
+// so a caller holding queueMu can let it go before the run.
+func (s *ProcessService) prepareFinishCommand(parent context.Context, exit process.ChildExit) func() error {
 	exitCode := "-1"
 	waitStatus := "0"
 	if exit.Exited() {
@@ -3740,8 +3858,7 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	args = append(args, exitCode, waitStatus)
 
 	timeout := s.effectiveHookTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(parent, timeout)
 
 	cmd := newHookCmd(ctx, append([]string{s.finishCommand[0]}, args...))
 	cmd.Dir = s.workingDir
@@ -3750,17 +3867,23 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 		s.applyRunAs(cmd)
 	}
 
-	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
-	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil && !isECHILDErr(err) {
-		// RunAdhoc registers the child with the exit router, so the
-		// PID-1 reaper claiming the zombie first no longer turns a
-		// clean run into "waitid: no child processes". The ECHILD
-		// check stays as a fallback for the case where the router has
-		// no status either: the finish-command still ran, and a
-		// spurious failure line on every shutdown of a runit-style
-		// service is the worse outcome.
-		s.services.logger.Error("Service '%s': finish-command failed: %v",
-			s.serviceName, err)
+	return func() error {
+		defer cancel()
+		s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
+		err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout)
+		if err != nil && !isECHILDErr(err) {
+			// RunAdhoc registers the child with the exit router, so the
+			// PID-1 reaper claiming the zombie first no longer turns a
+			// clean run into "waitid: no child processes". The ECHILD
+			// check stays as a fallback for the case where the router has
+			// no status either: the finish-command still ran, and a
+			// spurious failure line on every shutdown of a runit-style
+			// service is the worse outcome.
+			s.services.logger.Error("Service '%s': finish-command failed: %v",
+				s.serviceName, err)
+			return err
+		}
+		return nil
 	}
 }
 
@@ -3866,13 +3989,20 @@ func (s *ProcessService) runReadyCheck(ctx context.Context) bool {
 // Runs synchronously with a timeout. The hook receives the service PID
 // as first argument (like runit's control scripts).
 func (s *ProcessService) execPreStopHook() {
+	_ = s.preparePreStopHook(context.Background())()
+}
+
+// preparePreStopHook builds the pre-stop-hook, with the service's pid
+// as its last argument, and returns the function that runs it, bounded
+// by hook-timeout and ended early by parent. As prepareControlCommand,
+// it reads everything from the service here, so the run needs no lock.
+func (s *ProcessService) preparePreStopHook(parent context.Context) func() error {
 	args := make([]string, len(s.preStopHook)-1, len(s.preStopHook))
 	copy(args, s.preStopHook[1:])
 	args = append(args, strconv.Itoa(s.pid))
 
 	timeout := s.effectiveHookTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(parent, timeout)
 
 	cmd := newHookCmd(ctx, append([]string{s.preStopHook[0]}, args...))
 	cmd.Dir = s.workingDir
@@ -3881,10 +4011,15 @@ func (s *ProcessService) execPreStopHook() {
 		s.applyRunAs(cmd)
 	}
 
-	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
-	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
-		s.services.logger.Error("Service '%s': pre-stop-hook failed: %v",
-			s.serviceName, err)
+	return func() error {
+		defer cancel()
+		s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
+		err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout)
+		if err != nil {
+			s.services.logger.Error("Service '%s': pre-stop-hook failed: %v",
+				s.serviceName, err)
+		}
+		return err
 	}
 }
 
@@ -3901,12 +4036,20 @@ func (s *ProcessService) execControlCommand(sigName string, command []string) {
 // holding queueMu can let the lock go before running the command, which
 // may take up to the hook timeout.
 func (s *ProcessService) prepareControlCommand(sigName string, command []string) func() {
+	run := s.prepareControlCommandCtx(context.Background(), sigName, command)
+	return func() { _ = run() }
+}
+
+// prepareControlCommandCtx is prepareControlCommand with a run that
+// parent can end early, and that returns the command's error (already
+// logged).
+func (s *ProcessService) prepareControlCommandCtx(parent context.Context, sigName string, command []string) func() error {
 	args := make([]string, len(command)-1, len(command))
 	copy(args, command[1:])
 	args = append(args, strconv.Itoa(s.pid))
 
 	timeout := s.effectiveHookTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 
 	cmd := newHookCmd(ctx, append([]string{command[0]}, args...))
 	cmd.Dir = s.workingDir
@@ -3915,13 +4058,15 @@ func (s *ProcessService) prepareControlCommand(sigName string, command []string)
 		s.applyRunAs(cmd)
 	}
 
-	return func() {
+	return func() error {
 		defer cancel()
 		s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
-		if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
+		err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout)
+		if err != nil {
 			s.services.logger.Error("Service '%s': control-command-%s failed: %v",
 				s.serviceName, sigName, err)
 		}
+		return err
 	}
 }
 

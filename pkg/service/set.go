@@ -968,6 +968,13 @@ func (ss *ServiceSet) KillActiveServices() {
 			cleaning = append(cleaning, sc)
 			continue
 		}
+		// A hook a transition is waiting on (pre-start, pre-stop,
+		// control-command, finish-command) runs off the lock with its
+		// own process group, which the kill below does not reach. It
+		// is ended too, and its completion moves the service on.
+		if ps, ok := svc.(*ProcessService); ok {
+			ps.cancelStateHook()
+		}
 		pid := svc.PID()
 		if pid > 0 {
 			killFunc(pid, syscall.SIGKILL)
