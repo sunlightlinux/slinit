@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // log-processor ran as root. It gets the service's run-as through
@@ -210,5 +213,71 @@ func TestPeriodicHooksReuseStartEnv(t *testing.T) {
 	b, _ := os.ReadFile(count)
 	if n := strings.Count(string(b), "x"); n != 1 {
 		t.Errorf("env-generator ran %d times for one start and 3 checks, want 1", n)
+	}
+}
+
+// A hook's environment was the service's alone once the service had a
+// variable of its own: cmd.Env set to it dropped PATH, HOME and the rest
+// of slinit's environment, which the main process and a hook with no
+// Env both inherit. Each hook path now gets slinit's environment
+// (filtered as the main process's is) followed by the service's.
+func TestHookCmdEnvInheritsSlinitEnv(t *testing.T) {
+	t.Setenv("SLINIT_HOOKTEST_INHERITED", "yes")
+	set, _ := newTestSet()
+	p := NewProcessService(set, "p")
+	sc := NewScriptedService(set, "sc")
+	bg := NewBGProcessService(set, "bg")
+	for _, r := range []*ServiceRecord{p.Record(), sc.Record(), bg.Record()} {
+		r.SetEnvVar("SLINIT_HOOKTEST_OWN", "svc")
+	}
+	check := func(what string, env []string) {
+		t.Helper()
+		if !envHas(env, "SLINIT_HOOKTEST_INHERITED=yes") {
+			t.Errorf("%s: slinit's own environment lost", what)
+		}
+		if !envHas(env, "SLINIT_HOOKTEST_OWN=svc") {
+			t.Errorf("%s: the service's variable lost", what)
+		}
+	}
+
+	set.queueMu.Lock()
+	for _, svc := range []hookCmdPreparer{p, sc, bg} {
+		cmd := exec.Command("/bin/true")
+		svc.prepareHookCmdLocked(cmd)
+		check(fmt.Sprintf("%T prepareHookCmdLocked", svc), cmd.Env)
+	}
+	set.queueMu.Unlock()
+
+	cmd := exec.Command("/bin/true")
+	if !p.prepareHookCmd(context.Background(), cmd) {
+		t.Fatal("prepareHookCmd refused")
+	}
+	check("prepareHookCmd (cron, health, log-processor)", cmd.Env)
+	check("finish/pre-stop/control/ready-check/pre-start", p.hookCmdEnv())
+
+	// pass-environment filters it as it does the main process's.
+	p.Record().SetPassEnvironment([]string{"SLINIT_HOOKTEST_OWN"}, true)
+	env := p.hookCmdEnv()
+	if envHas(env, "SLINIT_HOOKTEST_INHERITED=yes") {
+		t.Error("pass-environment did not filter the inherited environment")
+	}
+	if !envHas(env, "SLINIT_HOOKTEST_OWN=svc") {
+		t.Error("pass-environment dropped the allowed variable")
+	}
+}
+
+// The finish-command itself sees an inherited variable.
+func TestFinishCommandSeesInheritedEnv(t *testing.T) {
+	t.Setenv("SLINIT_HOOKTEST_INHERITED", "yes")
+	out := filepath.Join(t.TempDir(), "out")
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	s.SetEnvVar("SLINIT_HOOKTEST_OWN", "svc")
+	s.SetFinishCommand([]string{"/bin/sh", "-c",
+		`echo "$SLINIT_HOOKTEST_INHERITED $SLINIT_HOOKTEST_OWN" > ` + out + "; :"})
+	s.execFinishCommand(process.ChildExit{})
+	b, _ := os.ReadFile(out)
+	if got := strings.TrimSpace(string(b)); got != "yes svc" {
+		t.Errorf("finish-command saw %q; want %q", got, "yes svc")
 	}
 }

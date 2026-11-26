@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // hookCmdPreparer is a service whose auxiliary commands take its run-as
@@ -26,7 +28,7 @@ type hookCmdPreparer interface {
 func (s *ProcessService) prepareHookCmdLocked(cmd *exec.Cmd) {
 	s.applyRunAs(cmd)
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
+	cmd.Env = s.Record().withInheritedEnv(s.buildEnv())
 }
 
 // prepareHookCmd is prepareHookCmdLocked for a command started from a
@@ -63,20 +65,29 @@ func (s *ProcessService) prepareHookCmd(ctx context.Context, cmd *exec.Cmd) bool
 	// run the env-generator again for every check.
 	s.applyRunAs(cmd)
 	cmd.Dir = s.workingDir
-	cmd.Env = s.hookEnv()
+	cmd.Env = s.hookCmdEnv()
 	return true
 }
 
 func (s *ScriptedService) prepareHookCmdLocked(cmd *exec.Cmd) {
 	setRunAsCredential(cmd, s.effectiveRunAsUID(), s.effectiveRunAsGID(), s.supplementaryGIDs)
 	cmd.Dir = s.workingDir
-	cmd.Env = s.Record().BuildFullEnv()
+	cmd.Env = s.Record().withInheritedEnv(s.Record().BuildFullEnv())
 }
 
 func (s *BGProcessService) prepareHookCmdLocked(cmd *exec.Cmd) {
 	setRunAsCredential(cmd, s.effectiveRunAsUID(), s.effectiveRunAsGID(), s.supplementaryGIDs)
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
+	cmd.Env = s.Record().withInheritedEnv(s.buildEnv())
+}
+
+// withInheritedEnv returns env as the whole environment of a command run
+// for the service: slinit's own variables, filtered by pass-environment
+// and unset-environment, then env. It is how process.StartProcess builds
+// the environment of the service's process; a hook given env alone lost
+// PATH, HOME and everything else slinit has.
+func (sr *ServiceRecord) withInheritedEnv(env []string) []string {
+	return process.InheritedEnv(env, sr.inheritedEnvFilter())
 }
 
 // setRunAsCredential is ProcessService.applyRunAs for the types that

@@ -215,22 +215,13 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Dir = params.WorkingDir
 	}
 
-	// Environment: cache os.Environ() once, reuse for all env additions
-	baseEnv := os.Environ()
-	if params.InheritEnv != nil {
-		kept := make([]string, 0, len(baseEnv))
-		for _, kv := range baseEnv {
-			if eq := strings.IndexByte(kv, '='); eq > 0 && params.InheritEnv(kv[:eq]) {
-				kept = append(kept, kv)
-			}
-		}
-		baseEnv = kept
-	}
+	// Environment: slinit's own (filtered by InheritEnv), then the
+	// service's. Nil leaves exec to inherit everything; baseEnv is that
+	// everything, for the additions below to start from.
 	if len(params.Env) > 0 || params.InheritEnv != nil {
-		cmd.Env = make([]string, 0, len(baseEnv)+len(params.Env)+3)
-		cmd.Env = append(cmd.Env, baseEnv...)
-		cmd.Env = append(cmd.Env, params.Env...)
+		cmd.Env = InheritedEnv(params.Env, params.InheritEnv)
 	}
+	baseEnv := os.Environ()
 
 	// Set process group so we can signal the group later
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -1383,4 +1374,24 @@ func formatNodeList(nodes []uint) string {
 		parts[i] = strconv.FormatUint(uint64(n), 10)
 	}
 	return strings.Join(parts, ",")
+}
+
+// InheritedEnv returns the environment a service's process gets: the
+// variables slinit itself has, less those keep rejects (nil keeps all),
+// followed by env, so that env wins a name both have (os/exec keeps the
+// last of duplicate names). Commands slinit
+// runs for a service besides its process (hooks, checks) use it too, so
+// they see what the process sees.
+func InheritedEnv(env []string, keep func(name string) bool) []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+len(env)+3)
+	for _, kv := range base {
+		if keep != nil {
+			if eq := strings.IndexByte(kv, '='); eq <= 0 || !keep(kv[:eq]) {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	return append(out, env...)
 }

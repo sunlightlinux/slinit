@@ -1851,7 +1851,7 @@ func (s *ProcessService) runHookCommandCtx(parent context.Context, cmd []string,
 	defer cancel()
 	c := newHookCmd(ctx, cmd)
 	c.Dir = s.workingDir
-	c.Env = s.hookEnv()
+	c.Env = s.hookCmdEnv()
 	s.services.logger.Info("Service '%s': running %s", s.serviceName, label)
 	return annotateHookTimeout(process.RunAdhoc(c), ctx, timeout)
 }
@@ -2277,6 +2277,15 @@ func (s *ProcessService) hookEnv() []string {
 	}
 	s.envMu.Unlock()
 	return env
+}
+
+// hookCmdEnv is hookEnv as a command's whole environment: slinit's own
+// variables (filtered as the main process's are) and then the service's.
+// Setting cmd.Env to hookEnv alone dropped PATH, HOME and the rest of
+// what a hook inherited when Env was nil, as soon as the service had a
+// variable of its own.
+func (s *ProcessService) hookCmdEnv() []string {
+	return s.Record().withInheritedEnv(s.hookEnv())
 }
 
 // buildEnv merges env-file, env-dir, and runtime extraEnv into a single slice.
@@ -3669,7 +3678,7 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 
 	cmd := newHookCmd(ctx, append([]string{s.finishCommand[0]}, args...))
 	cmd.Dir = s.workingDir
-	cmd.Env = s.hookEnv()
+	cmd.Env = s.hookCmdEnv()
 	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
@@ -3766,7 +3775,7 @@ func (s *ProcessService) runReadyCheckOnce() bool {
 func (s *ProcessService) runReadyCheck(ctx context.Context) bool {
 	cmd := newHookCmd(ctx, s.readyCheckCommand)
 	cmd.Dir = s.workingDir
-	cmd.Env = s.hookEnv()
+	cmd.Env = s.hookCmdEnv()
 	s.applyRunAs(cmd)
 	return process.RunAdhoc(cmd) == nil
 }
@@ -3785,7 +3794,7 @@ func (s *ProcessService) execPreStopHook() {
 
 	cmd := newHookCmd(ctx, append([]string{s.preStopHook[0]}, args...))
 	cmd.Dir = s.workingDir
-	cmd.Env = s.hookEnv()
+	cmd.Env = s.hookCmdEnv()
 	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
@@ -3817,7 +3826,7 @@ func (s *ProcessService) prepareControlCommand(sigName string, command []string)
 
 	cmd := newHookCmd(ctx, append([]string{command[0]}, args...))
 	cmd.Dir = s.workingDir
-	cmd.Env = s.hookEnv()
+	cmd.Env = s.hookCmdEnv()
 	s.applyRunAs(cmd)
 
 	return func() {
