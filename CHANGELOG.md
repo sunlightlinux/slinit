@@ -188,6 +188,18 @@ verified with `git tag -v`.
   reaper collects the child first. Kernels without pollable pidfds
   (before 5.4) keep the old wait.
 
+- **slinit no longer aborts when task exhaustion hits before the Go
+  runtime has made its threads.** The runtime creates OS threads
+  lazily, for a GC cycle or a goroutine in a blocking system call, and
+  when `RLIMIT_NPROC` or `pids.max` refuses one it aborts with
+  `pthread_create failed`, a kernel panic as PID 1. slinit now makes
+  GOMAXPROCS+16 threads at start-up and lets them go idle; the runtime
+  reuses idle threads before making new ones and never ends them.
+  Booting 2000 services under a task limit died in 4 of 40 runs with
+  the limit 800 tasks away and 13 of 30 with it 100 away; with the
+  reserve, 0 of 40 and 0 of 20. slinit starts with about 35 threads
+  instead of 18 (12 CPUs).
+
 - **`/etc/hostname` is read the way systemd reads it.** As PID 1, slinit
   passed the whole file to `sethostname`, so a comment line above the
   name became part of the hostname, and `host.example.com.` kept its
