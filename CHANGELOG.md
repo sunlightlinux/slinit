@@ -1020,6 +1020,19 @@ requires.
   pre-stop before the stop signal, finish before a restart). A stop
   during a pre-start kills the hook. A reload is refused while an
   on-demand pre-start or a recovery env-generator runs.
+  `exec-condition` is evaluated off the lock too. A start arriving while
+  a stop waits keeps the process the stop left running, even when that
+  process exits before the start gets a start slot or the console; no
+  new run begins while a hook of the previous one still runs, and no
+  hook starts after the shutdown's final kill.
+- **A hook cancelled as it finished stalled 5s**: when its context ended
+  just as it exited, slinit took the status for lost and waited 5s for
+  it, then logged `ad-hoc command status lost`; the same for a main
+  process whose wait reported a context or `WaitDelay` error.
+- **Opening a path inside a container or image could fail under load**:
+  `openat2` reports `EAGAIN` when a rename or mount anywhere raced its
+  check; slinit now retries, then resolves the path component by
+  component.
 - **Hooks could freeze PID 1 or outlive their service**:
   - a hung `env-generator` blocked every start, stop and `slinitctl`
     command (it ran with no timeout under the global lock); it is now
