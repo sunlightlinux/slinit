@@ -90,16 +90,24 @@ Non-standard, but useful for automated testing:
 :   Read the fstab from *PATH* instead of **/etc/fstab** (only used
     when a netdev filter is active).
 
-**-q**, **--quiet**, **-v**, **--verbose**
-:   Accepted for OpenRC compatibility and ignored; use **EINFO_QUIET**
-    to suppress output.
+# MISC
+
+**-q**, **--quiet**
+:   Print nothing; the exit status still reports whether any entry
+    matched, so **slinit-mountinfo -q /proc && …** is a mount test.
+    Same as OpenRC, where **-q** sets **EINFO_QUIET**.
+
+**-v**, **--verbose**
+:   Accepted for OpenRC compatibility and ignored.
 
 # ENVIRONMENT
 
 **EINFO_QUIET** — when set to a truthy value (**yes**, **1**,
-**true**, **on**) all printing is suppressed; the exit code still
-reflects whether any entry matched. Same convention as
-**slinit-fstabinfo**(8).
+**true**, **on**) all printing is suppressed, as with **-q**; the
+exit code still reflects whether any entry matched. OpenRC's
+**mountinfo** honours an inherited **EINFO_QUIET** and so does this
+tool. (**slinit-fstabinfo**(8) differs: like OpenRC's **fstabinfo**
+it ignores the inherited variable and is silenced only by **-q**.)
 
 # EXIT STATUS
 

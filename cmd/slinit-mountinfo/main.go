@@ -55,6 +55,11 @@ type options struct {
 	// _netdev via /etc/fstab.
 	netdev netFilter
 
+	// quiet is set by -q; an EINFO_QUIET inherited from the
+	// environment silences output too (OpenRC's mountinfo.c, unlike
+	// fstabinfo.c, does not unset it).
+	quiet bool
+
 	// Positional list of mountpoints. When non-empty, only entries
 	// whose fs_file matches one of these are printed.
 	mountpoints []string
@@ -102,7 +107,7 @@ func run(opts options) int {
 		}
 	}
 
-	quiet := isTruthy(os.Getenv("EINFO_QUIET"))
+	quiet := opts.quiet || isTruthy(os.Getenv("EINFO_QUIET"))
 	matched := 0
 	// Reverse iteration matches OpenRC: init.d scripts want the
 	// deepest / most-recent mount first for umount sequencing.

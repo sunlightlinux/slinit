@@ -160,9 +160,12 @@ func parseArgs(args []string) (options, error) {
 			return opts, errHelp
 		case "-V", "--version":
 			return opts, errVersion
-		case "-q", "--quiet", "-v", "--verbose":
-			// Kept for compat; quiet is EINFO_QUIET-driven, verbose has
-			// no per-entry diagnostics to gate.
+		case "-q", "--quiet":
+			// OpenRC's -q sets EINFO_QUIET: no output, exit status
+			// still says whether anything matched.
+			opts.quiet = true
+		case "-v", "--verbose":
+			// No per-entry diagnostics to gate.
 		default:
 			return opts, fmt.Errorf("unknown flag: %s", name)
 		}
@@ -202,6 +205,8 @@ Test seams (non-standard):
       --fstab PATH               alternative fstab (for netdev lookup)
 
 Common:
+  -q, --quiet                    print nothing; exit status still reports a match
+                                 (EINFO_QUIET in the environment does the same)
   -h, --help                     this help
   -V, --version                  version string
 

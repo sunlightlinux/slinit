@@ -327,3 +327,26 @@ func TestRunEinfoQuietSuppresses(t *testing.T) {
 		t.Errorf("EINFO_QUIET should suppress, got %q", out)
 	}
 }
+
+// OpenRC's -q sets EINFO_QUIET: nothing printed, exit status kept.
+func TestRunQuietFlagSuppresses(t *testing.T) {
+	proc, _ := writeFixtures(t)
+	for _, flag := range []string{"-q", "--quiet"} {
+		opts, err := parseArgs([]string{flag, "--proc-mounts", proc, "/"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, code := captureStdout(t, func() int { return run(opts) })
+		if code != exitOK || out != "" {
+			t.Errorf("%s /: out=%q code=%d, want \"\" %d", flag, out, code, exitOK)
+		}
+		opts, err = parseArgs([]string{flag, "--proc-mounts", proc, "/nope"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, code = captureStdout(t, func() int { return run(opts) })
+		if code != exitFailure || out != "" {
+			t.Errorf("%s /nope: out=%q code=%d, want \"\" %d", flag, out, code, exitFailure)
+		}
+	}
+}
