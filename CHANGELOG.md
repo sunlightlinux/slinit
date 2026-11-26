@@ -210,6 +210,14 @@ verified with `git tag -v`.
   died). The wait now parks in the netpoller on the child's pidfd and
   only then collects it (0 of 20). Kernels before 5.3 keep the old wait.
 
+- **An on-demand service waiting for its first client no longer holds
+  an OS thread.** Each `socket-activation = on-demand` watcher sat in
+  `poll(2)`: 500 such services meant 518 threads, and with 1500 other
+  services running under a task limit slinit aborted with
+  `pthread_create failed` in 20 of 20 runs. The sockets are now watched
+  through an epoll instance that waits in the netpoller (0 of 20); the
+  sockets the service inherits are not touched.
+
 - **`/etc/hostname` is read the way systemd reads it.** As PID 1, slinit
   passed the whole file to `sethostname`, so a comment line above the
   name became part of the hostname, and `host.example.com.` kept its

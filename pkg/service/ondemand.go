@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"os"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -91,11 +90,7 @@ func (s *ProcessService) watchOnDemand(fds []int, wakeFD int, gen uint64) {
 	pfds = append(pfds, unix.PollFd{Fd: int32(wakeFD), Events: unix.POLLIN})
 
 	for {
-		_, err := unix.Poll(pfds, -1)
-		if err == syscall.EINTR {
-			continue
-		}
-		if err != nil {
+		if err := pollParked(pfds); err != nil {
 			return
 		}
 		if pfds[len(pfds)-1].Revents != 0 {

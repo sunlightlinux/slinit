@@ -5,7 +5,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -300,4 +302,79 @@ func TestOnDemandBurstOfClientsKeepsHealthyService(t *testing.T) {
 	if st := svc.State(); st != StateStarted {
 		t.Errorf("state after a burst of %d clients = %v, want STARTED", clients, st)
 	}
+}
+
+// Each on-demand service's watcher waited for its first client in
+// poll(2), holding an OS thread until then: 200 idle on-demand services
+// meant 200 threads, every one a task that RLIMIT_NPROC or pids.max
+// can make the Go runtime's next pthread_create fail over. Waiting
+// must not cost a thread per service.
+func TestOnDemandWatchersDoNotHoldThreads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts 200 services")
+	}
+	const n = 200
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	before := osThreadCount(t)
+	svcs := make([]*ProcessService, 0, n)
+	defer func() {
+		for _, svc := range svcs {
+			stopAndWait(t, set, svc)
+		}
+	}()
+	for i := 0; i < n; i++ {
+		svc := newOnDemand(t, set, "od-threads-"+strconv.Itoa(i),
+			filepath.Join(dir, strconv.Itoa(i)+".sock"), []string{"/bin/sleep", "60"})
+		svcs = append(svcs, svc)
+		set.StartService(svc)
+	}
+	for _, svc := range svcs {
+		if got := waitState(t, svc, StateStarted, 5*time.Second); got != StateStarted {
+			t.Fatalf("%s: state = %v, want STARTED", svc.Name(), got)
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	after := osThreadCount(t)
+	bound := before + runtime.GOMAXPROCS(0) + 30
+	t.Logf("threads: %d before, %d with %d on-demand services listening (bound %d)", before, after, n, bound)
+	if after > bound {
+		t.Errorf("%d OS threads with %d on-demand services listening (%d before): a thread per watcher",
+			after, n, before)
+	}
+
+	// And a watcher still sees its client.
+	conn, err := net.DialTimeout("unix", filepath.Join(dir, "7.sock"), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for svcs[7].PID() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if svcs[7].PID() == 0 {
+		t.Error("first client did not launch the service")
+	}
+}
+
+// osThreadCount reads this process's OS thread count from /proc.
+func osThreadCount(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Skipf("no /proc: %v", err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, "Threads:"); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil {
+				t.Fatalf("parse %q: %v", line, err)
+			}
+			return n
+		}
+	}
+	t.Fatal("no Threads: line in /proc/self/status")
+	return 0
 }
