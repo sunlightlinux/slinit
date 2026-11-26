@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -79,8 +80,8 @@ type ProcessService struct {
 	envDir             string // directory with one file per env var
 	// envGenerator: path to an executable that emits `KEY=VALUE\n` lines
 	// on stdout at service-start time. Merged after env-file and env-dir
-	// so it wins conflicts. Failure aborts the start (systemd
-	// EnvironmentGenerator semantics; non-zero exit = fail).
+	// so it wins conflicts. A failure is logged and its output ignored;
+	// the start goes on.
 	envGenerator string
 	chroot       string // chroot before exec
 	lockFile     string // exclusive flock path
@@ -88,6 +89,18 @@ type ProcessService struct {
 	closeStdin   bool   // close fd 0
 	closeStdout  bool   // close fd 1
 	closeStderr  bool   // close fd 2
+
+	// startEnv is the environment computed for the current start —
+	// env-file, env-dir, setenv variables and the env-generator's
+	// output. The main process gets it, and so do the hooks and every
+	// ready-check poll of that start: buildEnv ran the env-generator
+	// again for each of them. startEnvFresh marks an environment
+	// computed ahead of the fork (for pre-start-command) that the fork
+	// has not used yet. envMu guards both: the post-start-command and
+	// ready-check goroutines read startEnv.
+	envMu         sync.Mutex
+	startEnv      []string
+	startEnvFresh bool
 
 	// Credentials
 	runAsUID          uint32
@@ -1706,6 +1719,11 @@ func (s *ProcessService) BringUp() bool {
 	// the main fork, so a failed pre-hook never leaves a half-started
 	// process behind.
 	if len(s.preStartCommand) > 0 {
+		// The environment of this start, computed now so the
+		// pre-start-command sees what the main process will get;
+		// startProcess uses it rather than running the env-generator
+		// a second time.
+		s.prepareStartEnv()
 		if err := s.runHookCommand(s.preStartCommand, "pre-start-command"); err != nil {
 			s.services.logger.Error("Service '%s': pre-start-command failed: %v",
 				s.serviceName, err)
@@ -1781,7 +1799,7 @@ func (s *ProcessService) runHookCommand(cmd []string, label string) error {
 	defer cancel()
 	c := newHookCmd(ctx, cmd)
 	c.Dir = s.workingDir
-	c.Env = s.buildEnv()
+	c.Env = s.hookEnv()
 	s.services.logger.Info("Service '%s': running %s", s.serviceName, label)
 	return annotateHookTimeout(process.RunAdhoc(c), ctx, timeout)
 }
@@ -1958,7 +1976,7 @@ func (s *ProcessService) execStopCommand() bool {
 	params := process.ExecParams{
 		Command:           s.stopCommand,
 		WorkingDir:        s.workingDir,
-		Env:               s.buildEnv(),
+		Env:               s.hookEnv(),
 		RunAsUID:          s.effectiveRunAsUID(),
 		RunAsGID:          s.effectiveRunAsGID(),
 		SupplementaryGIDs: s.supplementaryGIDs,
@@ -2153,6 +2171,58 @@ func (s *ProcessService) CheckRestart() bool {
 	}
 
 	return true
+}
+
+// prepareStartEnv computes the environment for a start that is about to
+// run its pre-start-command, and keeps it for the fork.
+func (s *ProcessService) prepareStartEnv() {
+	env := s.buildEnv()
+	s.envMu.Lock()
+	s.startEnv, s.startEnvFresh = env, true
+	s.envMu.Unlock()
+}
+
+// launchEnv returns the environment for startProcess's fork: the one
+// prepareStartEnv computed for this start if the fork has not used it
+// yet, otherwise a new one (a restart, a smooth recovery). Either way it
+// becomes the environment the hooks of this run see.
+func (s *ProcessService) launchEnv() []string {
+	s.envMu.Lock()
+	if s.startEnvFresh {
+		s.startEnvFresh = false
+		env := s.startEnv
+		s.envMu.Unlock()
+		return env
+	}
+	s.envMu.Unlock()
+	env := s.buildEnv()
+	s.envMu.Lock()
+	s.startEnv = env
+	s.envMu.Unlock()
+	return env
+}
+
+// hookEnv returns the environment for a command run on behalf of the
+// current start: post-start-command, ready-check-command,
+// finish-command, pre-stop-hook, stop-command, control-command-*. It is
+// the start's environment, so the env-generator runs once per start —
+// the man page's "at start time" — rather than once per hook and per
+// ready-check poll, under the scheduling lock for most of them. Only a
+// service never started computes one here.
+func (s *ProcessService) hookEnv() []string {
+	s.envMu.Lock()
+	env := s.startEnv
+	s.envMu.Unlock()
+	if env != nil {
+		return env
+	}
+	env = s.buildEnv()
+	s.envMu.Lock()
+	if s.startEnv == nil {
+		s.startEnv = env
+	}
+	s.envMu.Unlock()
+	return env
 }
 
 // buildEnv merges env-file, env-dir, and runtime extraEnv into a single slice.
@@ -2604,7 +2674,7 @@ func (s *ProcessService) startProcess() error {
 		Command:           s.command,
 		Argv0:             s.argv0,
 		WorkingDir:        s.workingDir,
-		Env:               s.buildEnv(),
+		Env:               s.launchEnv(),
 		TermSignal:        s.termSignal,
 		OnConsole:         s.Flags.RunsOnConsole || s.Flags.StartsOnConsole,
 		UnmaskSigint:      s.Flags.UnmaskIntr,
@@ -3545,7 +3615,7 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 
 	cmd := newHookCmd(ctx, append([]string{s.finishCommand[0]}, args...))
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
+	cmd.Env = s.hookEnv()
 	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
@@ -3609,7 +3679,7 @@ func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
 func (s *ProcessService) runReadyCheckOnce() bool {
 	cmd := exec.Command(s.readyCheckCommand[0], s.readyCheckCommand[1:]...)
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
+	cmd.Env = s.hookEnv()
 	s.applyRunAs(cmd)
 	return process.RunAdhoc(cmd) == nil
 }
@@ -3628,7 +3698,7 @@ func (s *ProcessService) execPreStopHook() {
 
 	cmd := newHookCmd(ctx, append([]string{s.preStopHook[0]}, args...))
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
+	cmd.Env = s.hookEnv()
 	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
@@ -3660,7 +3730,7 @@ func (s *ProcessService) prepareControlCommand(sigName string, command []string)
 
 	cmd := newHookCmd(ctx, append([]string{command[0]}, args...))
 	cmd.Dir = s.workingDir
-	cmd.Env = s.buildEnv()
+	cmd.Env = s.hookEnv()
 	s.applyRunAs(cmd)
 
 	return func() {

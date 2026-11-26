@@ -177,3 +177,45 @@ func TestEnvGeneratorRunsAsRunAs(t *testing.T) {
 		t.Errorf("env-generator ran as uid %q, want the run-as 65534", u)
 	}
 }
+
+// The env-generator ran again for every hook and for every ready-check
+// poll — under the scheduling lock for most of them — while the man page
+// says it runs at start time. Each start now runs it once and the hooks
+// of that start share the result.
+func TestEnvGeneratorRunsOncePerStart(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "egonce")
+	dir := t.TempDir()
+	count := filepath.Join(dir, "count")
+	flag := filepath.Join(dir, "ready")
+	s.SetEnvGenerator(writeScript(t, dir, "gen", "echo x >> "+count+"\necho GENV=1\n"))
+	s.SetCommand([]string{"/bin/sleep", "30"})
+	// Not ready until the flag exists, and only with the generator's
+	// variable in its environment: the cached env must still carry it.
+	s.SetReadyCheckCommand([]string{"/bin/sh", "-c", `test "$GENV" = 1 && test -e ` + flag}, 30*time.Millisecond)
+	s.SetPreStartCommand([]string{"/bin/sh", "-c", `test "$GENV" = 1`})
+	s.SetPostStartCommand([]string{"/bin/true"})
+	s.SetPreStopHook([]string{"/bin/true"})
+	s.SetFinishCommand([]string{"/bin/true"})
+	set.AddService(s)
+
+	runs := func() int {
+		b, _ := os.ReadFile(count)
+		return strings.Count(string(b), "x")
+	}
+	for cycle := 1; cycle <= 2; cycle++ {
+		os.Remove(flag)
+		set.StartService(s)
+		time.Sleep(300 * time.Millisecond) // several failing polls
+		os.WriteFile(flag, nil, 0o644)
+		if st := waitState(t, s, StateStarted, 5*time.Second); st != StateStarted {
+			t.Fatalf("cycle %d: state %v, want STARTED", cycle, st)
+		}
+		set.StopService(s)
+		waitState(t, s, StateStopped, 5*time.Second)
+		if n := runs(); n != cycle {
+			t.Fatalf("after %d start(s) with ready-check polls and hooks the env-generator ran %d times, want %d",
+				cycle, n, cycle)
+		}
+	}
+}

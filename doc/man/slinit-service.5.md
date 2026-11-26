@@ -415,6 +415,14 @@ what tells you the oldest slinit your configuration will run on. See
     slinit's scheduling lock; before these bounds a generator that hung
     held up every other service's start and stop for as long as it hung.
 
+    It runs once per start (before **pre-start-command** when there is
+    one, otherwise just before the fork). The environment computed then
+    is the one the main process, the hooks and every
+    **ready-check-command** poll of that start receive; before, the
+    generator ran again for each hook and each poll. So a variable set
+    with **slinitctl setenv** after the start reaches the hooks only at
+    the next start, as it does the main process.
+
 **pass-environment**=*NAME*...
 :   Allow-list filter applied to the inherited environment, the
     **env-file** variables and **slinitctl setenv** variables (not to
