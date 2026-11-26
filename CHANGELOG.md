@@ -26,6 +26,16 @@ verified with `git tag -v`.
 
 ### Security
 
+- **One user could keep root's syslog messages out of the journal**:
+  the `/dev/log` and `events.sock` rate limit tracks 256 uids per
+  window and suppressed every uid past them, root included. A user with
+  a subordinate uid range (every user `useradd` creates has 65536) sends
+  from as many host uids as it likes through a user namespace, so it
+  could fill the table and silence sudo and login for the window; each
+  of those uids also cost a notice event of its own. Root is now always
+  tracked, and the senders past the table share one count and one
+  notice.
+
 - **One connect could keep PID 1 forking without end
   (`socket-activation = on-demand`)**: a client the launched process
   never accepted stayed in the backlog, so the socket was readable again
