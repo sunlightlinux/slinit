@@ -14,9 +14,11 @@
 // child process the shell forks inherits the scope for accounting
 // and kill-tree semantics.
 //
-// Runtime directory /run/user/<uid> is created if absent (mode 0700,
-// owned by the user); subsequent sessions for the same UID reuse it
-// so per-user apps can co-locate socket/state files there.
+// Runtime directory /run/user/<uid> is a tmpfs mounted at the user's
+// first session (mode 0700, owned by the user, a plain directory where
+// the mount is refused); subsequent sessions for the same UID reuse it
+// so per-user apps can co-locate socket/state files there, and it is
+// removed when the last one ends.
 package main
 
 import (
@@ -461,11 +463,12 @@ func (m *manager) CreateSession(
 	// portals) fail with EACCES on the parent lookup, and every
 	// desktop session comes up broken (no menus, no notifications,
 	// no polkit agent).
+	//
+	// The user's first session mounts a tmpfs of its own there, as
+	// systemd-logind does (makeRuntimeDir).
 	_ = os.MkdirAll("/run/user", 0755)
 	_ = os.Chmod("/run/user", 0755)
-	if err := os.MkdirAll(runtimePath, 0700); err == nil {
-		_ = os.Chown(runtimePath, int(uid), int(uid))
-	}
+	makeRuntimeDir(runtimePath, uid, !fileExists(userFile(uid)))
 
 	rec := SessionRecord{
 		ID:          id,
@@ -610,6 +613,7 @@ func (m *manager) releaseSession(id string) *dbus.Error {
 		_ = os.Remove(compatUserFile(rec.UserID))
 		userSlice := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice", rec.UserID)
 		_ = os.Remove(userSlice)
+		removeRuntimeDir(fmt.Sprintf("/run/user/%d", rec.UserID))
 		if m.conn != nil {
 			m.unregisterUserObject(rec.UserID)
 		}
@@ -623,6 +627,63 @@ func (m *manager) releaseSession(id string) *dbus.Error {
 	// D-Bus Sessions / ActiveSession.
 	m.refreshActiveLocked()
 	return nil
+}
+
+// runtimeDirFallback logs, once, that runtime directories could not be
+// given a tmpfs of their own.
+var runtimeDirFallback sync.Once
+
+// makeRuntimeDir prepares the user's runtime directory. On the user's
+// first session it mounts a tmpfs there, as systemd-logind does
+// (user-runtime-dir.c): mode 0700, owned by the user, nodev, nosuid,
+// capped at the RuntimeDirectorySize and RuntimeDirectoryInodesMax the
+// Manager advertises. A plain directory on /run let any user who could
+// log in fill /run, which holds the sockets, pid files and credentials
+// of PID 1 and every system service.
+//
+// A directory that is already a mount point is left as it is, and so is
+// one of a user with sessions already open: a session that predates this
+// slinit-logind has its sockets in the plain directory, and a mount over
+// it would hide them. Where the mount is refused (no CAP_SYS_ADMIN in a
+// container) it stays a plain directory, as before.
+func makeRuntimeDir(path string, uid uint32, first bool) {
+	if err := os.MkdirAll(path, 0700); err != nil {
+		return
+	}
+	if first && !isMountPoint(path) {
+		size := runtimeDirectorySize()
+		opts := fmt.Sprintf("mode=0700,uid=%d,gid=%d,size=%d,nr_inodes=%d",
+			uid, lookupGID(uid), size, size/4096)
+		err := unix.Mount("tmpfs", path, "tmpfs", unix.MS_NODEV|unix.MS_NOSUID, opts)
+		if err == nil {
+			return
+		}
+		runtimeDirFallback.Do(func() {
+			fmt.Fprintf(os.Stderr, "slinit-logind: cannot mount a tmpfs on %s: %v; user runtime directories stay plain directories on /run\n", path, err)
+		})
+	}
+	_ = os.Chown(path, int(uid), int(uid))
+}
+
+// isMountPoint reports whether path is on a different filesystem from
+// its parent.
+func isMountPoint(path string) bool {
+	var st, parent unix.Stat_t
+	if unix.Lstat(path, &st) != nil || unix.Lstat(filepath.Dir(path), &parent) != nil {
+		return false
+	}
+	return st.Dev != parent.Dev
+}
+
+// removeRuntimeDir takes the user's runtime directory away at the end of
+// their last session, as systemd-logind does for a user without linger:
+// the contents first, so the memory is freed even while something still
+// holds the detached mount, then the mount, then the directory.
+// RemoveAll does not follow symlinks the user left in it.
+func removeRuntimeDir(path string) {
+	_ = os.RemoveAll(path)
+	_ = unix.Unmount(path, unix.MNT_DETACH)
+	_ = os.RemoveAll(path)
 }
 
 // watchSessionLeader drops the session once its leader process exits.

@@ -81,6 +81,23 @@ verified with `git tag -v`.
   (unless `--all`), and a verbose value's continuation is indented past
   its `NAME=`, as systemd does.
 
+- **A local user can no longer fill `/run`.** slinit-logind made
+  `/run/user/<uid>` a plain directory on `/run`, so anyone who could log
+  in could fill the filesystem that holds the control socket, pid files,
+  notify sockets and credentials of PID 1 and every system service; a
+  service needing a new socket or runtime directory then failed to start,
+  and a control socket lost at boot stayed lost. As systemd-logind does,
+  the user's first session now mounts a tmpfs there (mode 0700, owned by
+  the user, `nodev,nosuid`, capped at the advertised
+  `RuntimeDirectorySize`, 10% of RAM, and `RuntimeDirectoryInodesMax`),
+  and the user's last session takes the directory away. Where the mount is
+  refused (no `CAP_SYS_ADMIN` in a container) it stays a plain directory,
+  logged once. Compat: `/run/user/<uid>` is now its own mount and is
+  removed, with whatever a lingering process kept in it, when the user's
+  last session ends (slinit-logind has no linger; `enable-linger` is
+  still accepted and ignored). A user with sessions open across the
+  upgrade keeps the plain directory until their last logout.
+
 - **Release builds use a supported Go toolchain.** CI, the SLSA builder
   and the tarball check all take the Go version from `go.mod`, which said
   only `go 1.25.0`, so release binaries were built with Go 1.25.0, a line
