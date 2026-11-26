@@ -39,6 +39,12 @@ equivalent, scoped to what a slinit-managed system needs:
   0 memory + 0% CPU so the output stays scannable. **\--all** disables
   the filter for capacity planning runs.
 
+- **Cgroup names are escaped** before printing: control characters,
+  other non-printable characters and invalid UTF-8 appear as
+  **\\x**\ *NN* per byte, and a backslash as **\\\\**. Whoever owns
+  a delegated subtree names its cgroups, and a raw escape sequence in
+  a name would drive the viewer's terminal.
+
 Typical use is triage: "which service is eating the machine right
 now" without opening a full monitoring stack.
 

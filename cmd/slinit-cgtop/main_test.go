@@ -1,10 +1,13 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestCountLines(t *testing.T) {
@@ -191,5 +194,45 @@ func TestTakeAllTimestampsEachCgroup(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Errorf("timestamps not per cgroup: %v", seen)
+	}
+}
+
+func TestDisplayPath(t *testing.T) {
+	for in, want := range map[string]string{
+		"system.slice/sshd.service":              "system.slice/sshd.service",
+		"user.slice/evil\x1b]0;PWNED\x07\x1b[2J": `user.slice/evil\x1b]0;PWNED\x07\x1b[2J`,
+		"a\nb\rc\x7f":                            `a\x0ab\x0dc\x7f`,
+		"bad\xffutf8":                            `bad\xffutf8`,
+		"c1\u009bcsi":                            `c1\xc2\x9bcsi`,
+		"bidi\u202eexe":                          `bidi\xe2\x80\xaeexe`,
+		`back\slash`:                             `back\\slash`,
+		"caf\u00e9 \u6f22":                       "caf\u00e9 \u6f22",
+	} {
+		if got := displayPath(in); got != want {
+			t.Errorf("displayPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A user-delegated cgroup named with escape sequences must not reach
+// the terminal raw.
+func TestPrintRowsEscapesNames(t *testing.T) {
+	r, w, _ := os.Pipe()
+	stdout := os.Stdout
+	os.Stdout = w
+	printRows([]row{
+		{path: "user.slice/evil\x1b]0;PWNED\x07\x1b[2J", tasks: 1},
+		{path: strings.Repeat("\u00e9", 60), tasks: 1},
+	})
+	w.Close()
+	os.Stdout = stdout
+	out, _ := io.ReadAll(r)
+	for _, c := range out {
+		if c < 0x20 && c != '\n' || c == 0x7f {
+			t.Fatalf("raw control byte %#x in output:\n%q", c, out)
+		}
+	}
+	if !utf8.Valid(out) {
+		t.Errorf("truncation split a rune:\n%q", out)
 	}
 }
