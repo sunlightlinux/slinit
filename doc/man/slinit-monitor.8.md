@@ -67,7 +67,8 @@ variables fire *COMMAND*. Otherwise every change fires it.
 
 # COMMAND SUBSTITUTIONS
 
-Before *COMMAND* is executed, the following placeholders are replaced:
+*COMMAND* is first split into arguments (see below); then, within each
+argument, the following placeholders are replaced:
 
 **%n**
 :   Service name (service mode) or variable name (env mode).
@@ -84,10 +85,16 @@ Before *COMMAND* is executed, the following placeholders are replaced:
 **%%**
 :   A literal **%** sign.
 
-The result is split on unquoted whitespace; double-quoted segments are
+Any other **%**-sequence, and a trailing lone **%**, is kept as written.
+
+*COMMAND* is split on unquoted whitespace; double-quoted segments are
 preserved as a single argument (the quotes themselves are removed, and
 there is no escape character, so a double quote cannot appear inside
-an argument). Single quotes have no special meaning. **slinit-monitor**
+an argument of the template). Splitting happens before substitution, so
+a substituted value always stays inside the argument that referenced it,
+whatever spaces or quotes it contains, and substituted text is never
+scanned for placeholders again (a service named **a%v** yields
+**a%v**, not the value). Single quotes have no special meaning. **slinit-monitor**
 does **not** spawn a shell: shell syntax such as **&&**, **|** or
 **[ ... ]** is passed to the command as plain arguments. Put any logic
 in a script and call that, passing **%n** and **%s** as arguments.
