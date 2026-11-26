@@ -455,6 +455,24 @@ func (s *ProcessService) SetReadyCheckCommand(cmd []string, interval time.Durati
 // SetPreStopHook sets the pre-stop hook command.
 func (s *ProcessService) SetPreStopHook(cmd []string) { s.preStopHook = cmd }
 
+// openLogFile opens a service's log-file for appending, creating it with
+// perm, never through a symlink. O_NONBLOCK so a FIFO at the path with no
+// reader fails the start with ENXIO instead of blocking PID 1 in open(2)
+// with the service set's lock held; the service gets the fd back in
+// blocking mode, as a plain open would have given it.
+func openLogFile(path string, perm os.FileMode) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, uint32(perm.Perm()))
+	if err == nil {
+		if err = unix.SetNonblock(fd, false); err != nil {
+			unix.Close(fd)
+		}
+	}
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
 // SetEnvDir sets the environment directory path.
 func (s *ProcessService) SetEnvDir(dir string) { s.envDir = dir }
 
@@ -2914,7 +2932,7 @@ func (s *ProcessService) startProcess() error {
 			// O_NOFOLLOW + fchown-via-fd close the symlink-swap window
 			// where slinit (running as root) would otherwise write to —
 			// or chown — an attacker-pointed path.
-			f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, os.FileMode(s.logFilePerms))
+			f, err := openLogFile(s.logFile, os.FileMode(s.logFilePerms))
 			if err != nil {
 				return fmt.Errorf("failed to open logfile '%s': %w", s.logFile, err)
 			}

@@ -30,7 +30,7 @@ func startReturns(t *testing.T, set *ServiceSet, svc Service, unblock ...string)
 			t.Log("queueMu is held by the stuck start")
 		}
 		for _, p := range unblock {
-			if w, err := os.OpenFile(p, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			if w, err := os.OpenFile(p, os.O_RDWR, 0); err == nil {
 				w.Close()
 			}
 		}

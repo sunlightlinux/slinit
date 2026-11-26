@@ -100,6 +100,10 @@ verified with `git tag -v`.
   regular files (symlinks to one are still followed). *Compat:* an
   `env-file` or `env-dir` entry that is a FIFO, socket or device is
   now skipped with an error in the log instead of read.
+- **A `log-file` that is a FIFO with no reader froze PID 1**: the start
+  opened it for writing with the service set's lock held and waited for
+  a reader. *Compat:* such a start now fails (ENXIO) instead of waiting;
+  a FIFO whose reader is already running works as before.
 
 ## [4.0.3] — 2026-11-26
 

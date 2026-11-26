@@ -341,7 +341,7 @@ func (s *ScriptedService) BringUp() bool {
 		// O_NOFOLLOW + fchown-via-fd: close the symlink-swap TOCTOU
 		// where root slinit could be tricked into writing/chowning an
 		// attacker-pointed path.
-		f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, os.FileMode(s.logFilePerms))
+		f, err := openLogFile(s.logFile, os.FileMode(s.logFilePerms))
 		if err != nil {
 			s.services.logger.Error("Service '%s': failed to open logfile '%s': %v",
 				s.serviceName, s.logFile, err)
