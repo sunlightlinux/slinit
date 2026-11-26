@@ -115,6 +115,9 @@ verified with `git tag -v`.
 - **A FIFO at a `lock-file` path froze PID 1**: the start opened it for
   writing with the service set's lock held and waited for a reader; the
   start now fails as for any lock-file that cannot be opened.
+- **A FIFO or terminal named by `condition = file-value` froze PID 1**:
+  the check opened and read it with the service set's lock held. It is
+  now read without blocking; an empty FIFO reads as empty.
 
 ## [4.0.3] — 2026-11-26
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -434,7 +435,9 @@ func checkFileValue(param string) (bool, string) {
 	if path == "" {
 		return false, "file-value: empty path"
 	}
-	f, err := os.Open(path)
+	// O_NONBLOCK: this runs under the service set's lock, and a FIFO
+	// or a terminal at the path would block the open or the read.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return false, fmt.Sprintf("file-value: %v", err)
 	}

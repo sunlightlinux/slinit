@@ -109,3 +109,16 @@ func TestLockFileFIFODoesNotBlockStart(t *testing.T) {
 		t.Errorf("state %v, want the start to fail", st)
 	}
 }
+
+// condition file-value opened and read its file under the service
+// set's lock; a FIFO blocked the open. A FIFO with nothing in it now
+// reads as empty, so the condition is false and the start is skipped.
+func TestFileValueFIFODoesNotBlockStart(t *testing.T) {
+	fifoStart(t, func(s *ProcessService, f string) {
+		s.Record().SetPredicates([]Predicate{{Kind: PredFileValue, Param: f + ":1"}})
+	})
+	ok, _ := Predicate{Kind: PredFileValue, Param: mkfifo(t) + ":1"}.Evaluate()
+	if ok {
+		t.Error("an empty FIFO matched file-value :1")
+	}
+}
