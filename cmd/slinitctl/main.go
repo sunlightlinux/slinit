@@ -3337,9 +3337,42 @@ func cmdSwitchRoot(conn net.Conn, args []string) error {
 	}
 }
 
+// editDescriptionPath finds the file the daemon loaded name's
+// description from: the directory comes from CmdQueryServiceLoadDir
+// (CmdQueryServiceDscDir is the loader's search path, not this
+// service's), and the file in it is named as the loader looks for it —
+// the full name, a template's base name before '@', or a systemd
+// unit's NAME.service.
+func editDescriptionPath(conn net.Conn, name string) (string, error) {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return "", err
+	}
+	dir, err := queryServiceLoadDir(conn, handle)
+	if err != nil {
+		return "", fmt.Errorf("edit: %s: %w", name, err)
+	}
+	if dir == "" {
+		return "", fmt.Errorf("edit: %s has no description file (not loaded from disk)", name)
+	}
+	cands := []string{name}
+	if i := strings.IndexByte(name, '@'); i >= 0 {
+		cands = append(cands, name[:i])
+	}
+	if !strings.HasSuffix(name, ".service") {
+		cands = append(cands, name+".service")
+	}
+	for _, c := range cands {
+		p := filepath.Join(dir, c)
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("edit: no description file for %s in %s", name, dir)
+}
+
 // cmdEdit implements `slinitctl edit NAME`: fetch the service's
-// on-disk description path via CmdQueryServiceLoadDir + LoadService
-// (same lookup as `status`), open it in $EDITOR / $VISUAL / vi as
+// on-disk description path (editDescriptionPath), open it in $EDITOR / $VISUAL / vi as
 // fallback, then trigger a reload once the editor exits with success.
 // finit-parity `initctl edit NAME` polish.
 func cmdEdit(conn net.Conn, args []string) error {
@@ -3347,29 +3380,9 @@ func cmdEdit(conn net.Conn, args []string) error {
 		return usagef("usage: slinitctl edit NAME")
 	}
 	name := args[0]
-	// Resolve the description file path by loading the service and
-	// asking the daemon where its description lives.
-	handle, err := loadServiceHandle(conn, name)
+	svcPath, err := editDescriptionPath(conn, name)
 	if err != nil {
 		return err
-	}
-	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, control.EncodeHandle(handle)); err != nil {
-		return err
-	}
-	rply, payload, err := readReply(conn)
-	if err != nil {
-		return err
-	}
-	if rply != control.RplyLoaderMech {
-		return fmt.Errorf("edit: could not resolve description dir for %q (reply %d)", name, rply)
-	}
-	// LoaderMech reply carries the directory path — the service file
-	// itself is <dir>/<name>. That mirrors how the on-disk loader
-	// composes the path when reading the description at start time.
-	dir := string(payload)
-	svcPath := filepath.Join(dir, name)
-	if _, err := os.Stat(svcPath); err != nil {
-		return fmt.Errorf("edit: %s: %w", svcPath, err)
 	}
 	// Editor priority: $VISUAL (systemctl edit convention), $EDITOR,
 	// then vi as the POSIX guaranteed fallback.
