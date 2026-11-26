@@ -433,6 +433,14 @@ func (ss *ServiceSet) unloadService(svc Service, allowed func() bool) bool {
 		ss.queueMu.Unlock()
 		return false
 	}
+	// A state hook's completion still refers to the service: not
+	// expected (the service cannot be STOPPED meanwhile), refused all
+	// the same.
+	if stateHookBusy(svc) {
+		ss.queueMu.Unlock()
+		ss.logger.Error("Service '%s': not unloaded: a hook of it still runs", svc.Name())
+		return false
+	}
 	if consumer := rec.logConsumer; consumer != nil {
 		ph = NewPlaceholderService(ss, svc.Name())
 		r, w := rec.TransferOutputPipe()

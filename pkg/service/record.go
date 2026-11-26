@@ -2648,8 +2648,14 @@ func (sr *ServiceRecord) IsFundamentallyStopped() bool {
 }
 
 // CanInterruptStop returns true if a STOPPING service can immediately go back to STARTED.
+//
+// Not while a state hook runs (statehook.go): the start would begin a
+// new run under a finish-command or env-generator whose completion
+// still has the old run's exit, or end of recovery, to deliver. The
+// start is not lost: desired stays STARTED, and the stop, once the hook
+// is done, restarts the service.
 func (sr *ServiceRecord) CanInterruptStop() bool {
-	return sr.waitingForDeps && !sr.forceStop
+	return sr.waitingForDeps && !sr.forceStop && !stateHookBusy(sr.self)
 }
 
 // --- State machine methods ---

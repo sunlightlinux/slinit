@@ -35,6 +35,13 @@ import (
 //     parked in pendingExit and handled when the hook is done, so its
 //     finish-command still runs after the pre-stop-hook.
 //   - The shutdown teardown (KillActiveServices) cancels it.
+//   - No new run of the service begins: a start does not cancel a stop
+//     still waiting for its dependents (CanInterruptStop), the service
+//     cannot reach STOPPED, so it is neither restarted nor unloaded
+//     under the hook, and BringUp, should it be reached anyway, waits
+//     for the hook (bringUpBlockedLocked). A new run forked while a
+//     finish-command still ran had that hook's exit dispatched against
+//     it, which killed it.
 
 // hookKind names what a state hook is for.
 type hookKind uint8
@@ -90,14 +97,21 @@ func (s *ProcessService) startStateHookLocked(kind hookKind,
 	then func(err error, cancelled bool)) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &stateHook{kind: kind, cancel: cancel, done: make(chan struct{})}
-	run := prepare(ctx)
-	if prev := s.stateHook.Swap(h); prev != nil {
-		// Not expected: every caller checks first. Do not leave the
-		// earlier run unbounded.
-		s.services.logger.Error("Service '%s': %s started while %s still runs",
+	if prev := s.stateHook.Load(); prev != nil {
+		// Not expected: every caller checks first. Superseding the
+		// running hook lost its completion (a finish-command's exit was
+		// never dispatched, a smooth recovery never ended), so this one
+		// waits for it instead, and starts from its completion.
+		cancel()
+		s.services.logger.Error("Service '%s': %s started while %s still runs; it waits for it",
 			s.serviceName, kind, prev.kind)
-		prev.cancel()
+		s.queuedHooks = append(s.queuedHooks, func() {
+			s.startStateHookLocked(kind, prepare, then)
+		})
+		return
 	}
+	run := prepare(ctx)
+	s.stateHook.Store(h)
 	go func() {
 		defer close(h.done)
 		err := run()
@@ -105,12 +119,60 @@ func (s *ProcessService) startStateHookLocked(kind hookKind,
 		cancel()
 		s.services.queueMu.Lock()
 		defer s.services.queueMu.Unlock()
-		if !s.stateHook.CompareAndSwap(h, nil) {
-			return // superseded; see above
-		}
+		s.stateHook.CompareAndSwap(h, nil)
 		then(err, cancelled)
+		s.afterStateHookLocked()
 		s.services.processQueuesLocked()
 	}()
+}
+
+// afterStateHookLocked is what follows every state hook's completion.
+// A start that found the hook running (bringUpBlockedLocked) waits in
+// STARTING as though for a dependency, and is looked at again now; a
+// hook that found another running starts now. Caller holds queueMu.
+func (s *ProcessService) afterStateHookLocked() {
+	if s.stateHookRunning() {
+		return
+	}
+	if s.state.Load() == StateStarting && s.waitingForDeps {
+		s.services.AddTransitionQueue(s)
+	}
+	if len(s.queuedHooks) > 0 {
+		next := s.queuedHooks[0]
+		s.queuedHooks = s.queuedHooks[1:]
+		next()
+	}
+}
+
+// bringUpBlockedLocked reports whether BringUp must not begin a new run
+// now, and if so leaves the service STARTING, waiting as it waits for a
+// dependency, to be brought up when the hook is done
+// (afterStateHookLocked). Nothing is expected to reach BringUp while a
+// hook runs: a start does not interrupt a stop then, and the service
+// cannot be STOPPED. Caller holds queueMu.
+func (s *ProcessService) bringUpBlockedLocked() bool {
+	h := s.stateHook.Load()
+	if h == nil {
+		return false
+	}
+	s.services.logger.Error("Service '%s': start while its %s still runs; it waits for it",
+		s.serviceName, h.kind)
+	s.waitingForDeps = true
+	// The slot allDepsStarted took is taken again then.
+	s.dropStartSlot()
+	return true
+}
+
+// stateHookHolder is a service that runs state hooks (ProcessService).
+type stateHookHolder interface {
+	stateHookRunning() bool
+}
+
+// stateHookBusy reports whether svc has a state hook running. Caller
+// holds queueMu.
+func stateHookBusy(svc Service) bool {
+	h, ok := svc.(stateHookHolder)
+	return ok && h.stateHookRunning()
 }
 
 // stateHookRunning reports whether a state hook is running. Caller holds

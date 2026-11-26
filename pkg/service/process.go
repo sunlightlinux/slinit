@@ -118,6 +118,10 @@ type ProcessService struct {
 	// pre-stop-hook or control-command was running. It is handled once
 	// that hook has finished, as it was when the hook held the lock.
 	pendingExit *process.ChildExit
+	// queuedHooks are state hooks asked for while another ran, started
+	// one at a time as each completes (see startStateHookLocked). Not
+	// expected to be used.
+	queuedHooks []func()
 
 	// Credentials
 	runAsUID          uint32
@@ -1668,6 +1672,12 @@ func (s *ProcessService) BringUp() bool {
 	if len(s.command) == 0 {
 		s.services.logger.Error("Service '%s': no command specified", s.serviceName)
 		return false
+	}
+
+	// The previous run's state hook (a finish-command, say) is still
+	// running: a new run must not begin under it (statehook.go).
+	if s.bringUpBlockedLocked() {
+		return true
 	}
 
 	if err := s.Record().resolveDeferredRunAs(); err != nil {
