@@ -37,6 +37,18 @@ verified with `git tag -v`.
   The minimum stays Go 1.25, so a distribution that builds with
   `GOTOOLCHAIN=local` and an older patched Go is unaffected.
 
+- **A bgprocess pid file not owned by root can no longer name a foreign
+  process.** slinit adopted whatever pid the file held and later sent it
+  the stop signals, so a `run-as` service could write sshd's pid (or
+  another service's) into its own pid file and have PID 1 SIGTERM and
+  SIGKILL it. As systemd does (`service_load_pid_file`), a pid from a file
+  owned by someone other than slinit's uid is now accepted only when it is
+  in the service's own cgroup, or, for a service without one, when the
+  process's real or saved uid is the file's owner (one the owner could
+  signal anyway). Applies to `pid-file` and `follow-pid`. Compat: a
+  daemon that runs as one user while its pid file is owned by another
+  non-root user now fails to start; give it a cgroup or fix the owner.
+
 ### Fixed
 
 - **`/etc/hostname` is read the way systemd reads it.** As PID 1, slinit

@@ -42,26 +42,37 @@ const (
 // set's lock, and opening a FIFO left at the path would block PID 1
 // until someone opened the other end.
 func ReadPIDFile(path string) (int, PIDResult, error) {
+	pid, result, _, err := ReadPIDFileOwner(path)
+	return pid, result, err
+}
+
+// ReadPIDFileOwner is ReadPIDFile, also returning the uid that owns the
+// file read (from an Fstat of the open file, so it is the file read).
+// Whoever owns it chose the pid.
+func ReadPIDFileOwner(path string) (int, PIDResult, uint32, error) {
+	var owner uint32
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
-		return 0, PIDResultFailed, fmt.Errorf("reading PID file: %w", err)
+		return 0, PIDResultFailed, owner, fmt.Errorf("reading PID file: %w", err)
 	}
 	defer f.Close()
 	if fi, err := f.Stat(); err != nil {
-		return 0, PIDResultFailed, fmt.Errorf("reading PID file: %w", err)
+		return 0, PIDResultFailed, owner, fmt.Errorf("reading PID file: %w", err)
 	} else if !fi.Mode().IsRegular() {
-		return 0, PIDResultFailed, fmt.Errorf("reading PID file %s: not a regular file (%s)", path, fi.Mode().Type())
+		return 0, PIDResultFailed, owner, fmt.Errorf("reading PID file %s: not a regular file (%s)", path, fi.Mode().Type())
+	} else if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		owner = st.Uid
 	}
 	// Cap the read so a hostile/junk file can't drive an unbounded
 	// allocation. A real PID file is < 64 bytes; 4 KiB is generous.
 	data, err := io.ReadAll(io.LimitReader(f, 4096))
 	if err != nil {
-		return 0, PIDResultFailed, fmt.Errorf("reading PID file: %w", err)
+		return 0, PIDResultFailed, owner, fmt.Errorf("reading PID file: %w", err)
 	}
 
 	content := strings.TrimSpace(string(data))
 	if content == "" {
-		return 0, PIDResultFailed, ErrPIDFileEmpty
+		return 0, PIDResultFailed, owner, ErrPIDFileEmpty
 	}
 
 	// PID file may contain PID on first line followed by other data
@@ -71,37 +82,37 @@ func ReadPIDFile(path string) (int, PIDResult, error) {
 
 	pid, err := strconv.Atoi(strings.TrimSpace(content))
 	if err != nil {
-		return 0, PIDResultFailed, fmt.Errorf("invalid PID in file: %w", err)
+		return 0, PIDResultFailed, owner, fmt.Errorf("invalid PID in file: %w", err)
 	}
 
 	if pid <= 0 {
-		return 0, PIDResultFailed, fmt.Errorf("invalid PID value: %d", pid)
+		return 0, PIDResultFailed, owner, fmt.Errorf("invalid PID value: %d", pid)
 	}
 	// Init and slinit itself are never a service's daemon, and the pid
 	// read here is what stop signals: a file naming 1 (or us) would turn
 	// a service stop into a SIGTERM to PID 1, which is a reboot request.
 	// systemd refuses the same two.
 	if pid == 1 || pid == os.Getpid() {
-		return 0, PIDResultFailed, fmt.Errorf("refusing PID %d from PID file: "+
+		return 0, PIDResultFailed, owner, fmt.Errorf("refusing PID %d from PID file: "+
 			"it is init or the service manager itself", pid)
 	}
 
 	// Check if process exists
 	err = syscall.Kill(pid, 0)
 	if err == nil {
-		return pid, PIDResultOK, nil
+		return pid, PIDResultOK, owner, nil
 	}
 
 	if errors.Is(err, syscall.ESRCH) {
-		return pid, PIDResultTerminated, nil
+		return pid, PIDResultTerminated, owner, nil
 	}
 
 	// EPERM means the process exists but we don't have permission to signal it
 	if errors.Is(err, syscall.EPERM) {
-		return pid, PIDResultOK, nil
+		return pid, PIDResultOK, owner, nil
 	}
 
-	return pid, PIDResultFailed, fmt.Errorf("checking process %d: %w", pid, err)
+	return pid, PIDResultFailed, owner, fmt.Errorf("checking process %d: %w", pid, err)
 }
 
 // PIDFileInsecure says why a pidfile cannot be trusted to name the
