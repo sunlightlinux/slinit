@@ -348,7 +348,8 @@ func (q QueryFilter) isEmpty() bool {
 		len(q.ExcludeIdentifiers) == 0 &&
 		q.GrepPattern == "" &&
 		q.InvocationID == "" &&
-		q.Namespace == ""
+		q.Namespace == "" &&
+		q.BootID == ""
 }
 
 // Query returns events from the buffer matching filter, in chronological

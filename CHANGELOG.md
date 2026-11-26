@@ -127,6 +127,10 @@ verified with `git tag -v`.
   EPIPE when records were overwritten before slinit read them, and the
   reader took that as fatal and stopped for the rest of the boot. It now
   carries on from the oldest record left, as systemd-journald does.
+- **A journal query filtered on the boot alone returned every event.**
+  The ring buffer's "no filter set" fast path did not look at the boot
+  ID, so a `boot_id`-only `CmdJournalQuery` got events of every boot,
+  while the same query with any other filter added dropped them.
 
 - **A FIFO named in `required-files` froze PID 1**: the readability check
   opened it and waited for a writer with the service set's lock held.
