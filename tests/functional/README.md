@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (268 cases)
+# Run all tests (276 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -379,6 +379,11 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 269 | chroot-runner | `chroot` + `no-new-privs`: a runner planted inside the jail never runs; the service runs jailed with NoNewPrivs and `working-dir` resolved in the jail |
 | 270 | postfork-attrs-first-child | a FIFO service's at-once forked child is FIFO 20 (reset-on-fork = no) and has its `rlimit-nofile`: the runner waits at a start gate until slinit has set them |
 | 271 | getty-reclaims-tty | slinit-getty (with `new-session = yes`) takes a stale tty back: root-owned, mode 0620/0600, vhangup survived, tty2 its controlling terminal |
+| 272 | runas-aux-commands | `exec-condition`, `cron-command` and `healthcheck-command` of a `run-as = nobody` service run as nobody, not root |
+| 273 | seedrng-refuses-symlinks | slinit-seedrng removes planted `seed.*` symlinks without reading or writing through them: a dangling link's target is never created |
+| 274 | hook-timeout-kills-group | a `pre-start-command` / `pre-stop-hook` killed by `hook-timeout` takes its backgrounded children with it |
+| 275 | ssd-exec-symlink | slinit-start-stop-daemon `--exec` through a symlinked dir (merged /usr) finds the daemon; an `--exec` busybox applet link matches no other busybox process |
+| 276 | systemd-exec-comment-continuation | a `#`/`;` comment line inside a backslash-continued `ExecStart=` is skipped for a directly loaded `.service` unit |
 
 ## How It Works
 
