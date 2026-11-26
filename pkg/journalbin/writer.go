@@ -53,6 +53,13 @@ type Writer struct {
 	entryArrayTail     uint64 // offset of last array (0 if none yet)
 	entryArrayTailCap  int    // capacity of the tail array
 	entryArrayTailFill int    // used slots in the tail array
+
+	// dataBuckets is the DATA hash table's slot count, read from the
+	// file on the first Append. The table is allocated once, when the
+	// file is created, and never resized, so it cannot change while
+	// this Writer has the file open; re-reading it cost every field of
+	// every Append a pread.
+	dataBuckets int
 	// forceNewArray flips to true after a TAG is written; the next
 	// Append then allocates a fresh entry-array (linked to the
 	// current tail) instead of patching a slot in the sealed array.
@@ -622,12 +629,16 @@ func (w *Writer) Append(evt *journal.Event) (uint64, error) {
 func (w *Writer) findOrInsertDataLocked(payload []byte) (uint64, uint64, error) {
 	hash := Hash64(payload)
 	tableStart := w.header.DataHashTableOffset
-	n, err := nBuckets(w.f, tableStart)
-	if err != nil {
-		return 0, 0, err
-	}
+	n := w.dataBuckets
 	if n == 0 {
-		return 0, 0, fmt.Errorf("journalbin: DATA hash table at %d is empty", tableStart)
+		var err error
+		if n, err = nBuckets(w.f, tableStart); err != nil {
+			return 0, 0, err
+		}
+		if n == 0 {
+			return 0, 0, fmt.Errorf("journalbin: DATA hash table at %d is empty", tableStart)
+		}
+		w.dataBuckets = n
 	}
 	bucket := int(hash % uint64(n))
 	head, tail, err := readHashItem(w.f, tableStart, bucket)

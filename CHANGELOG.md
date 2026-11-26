@@ -24,6 +24,7 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+
 ### Security
 
 - **Release builds use a supported Go toolchain.** CI, the SLSA builder
@@ -69,6 +70,13 @@ verified with `git tag -v`.
   default one. Both now take the first name line and normalise it as
   systemd's `hostname_cleanup` does (trailing dots and stray separators
   dropped, cut at 64 bytes); a name that is still invalid is ignored.
+
+- **slinit-journald (binary format) read the DATA hash table's size
+  from disk for every field of every entry**, one `pread` each, though
+  the table is sized when the file is created and never changes. The
+  size is now read once per open file: an append to a file holding 50k
+  entries went from 5.42 to 4.57 µs, and ingesting 100k events from
+  2.80 to 2.56 s of journald CPU.
 
 ## [4.0.3] — 2026-11-26
 
