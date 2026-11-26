@@ -26,6 +26,15 @@ verified with `git tag -v`.
 
 ### Security
 
+- **Mount churn kept PID 1 parsing the mount table (`start-on-mount`)**:
+  every change to PID 1's mount table woke the watcher for a full
+  re-read, and any user can mount and unmount FUSE filesystems there;
+  one process looping mount and unmount cost about 21000 parses a
+  second. Re-reads are now held to systemd's mount rate limit, 5 a
+  second. *Compat:* under more than 5 mount changes a second a
+  `start-on-mount` trigger can fire up to a second late, and a mount
+  that appears and goes again within that second is not seen.
+
 - **One user could keep root's syslog messages out of the journal**:
   the `/dev/log` and `events.sock` rate limit tracks 256 uids per
   window and suppressed every uid past them, root included. A user with
