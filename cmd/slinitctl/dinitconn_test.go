@@ -24,7 +24,7 @@ func startTestDinit(t *testing.T) (net.Conn, string) {
 	if bin == "" {
 		var err error
 		if bin, err = exec.LookPath("dinit"); err != nil {
-			t.Skip("no dinit binary: set SLINIT_TEST_DINIT or put dinit on PATH")
+			t.Skip("no dinit binary: set SLINIT_TEST_DINIT (make in a dinit checkout builds src/dinit, no install needed) or put dinit on PATH")
 		}
 	}
 	dir, err := os.MkdirTemp("", "dc")

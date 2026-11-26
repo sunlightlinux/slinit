@@ -25,7 +25,7 @@ import (
 func PrivateBus(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("dbus-daemon"); err != nil {
-		t.Skip("dbus-daemon not installed")
+		t.Skip("dbus-daemon not on PATH (the reference daemon; dbus-broker cannot stand in, its launcher needs a systemd manager)")
 	}
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "bus.conf")
