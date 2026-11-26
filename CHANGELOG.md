@@ -160,6 +160,14 @@ verified with `git tag -v`.
   SIGKILL cannot end (stuck in uninterruptible sleep) now holds the
   shutdown for that grace (3s by default, `--shutdown-grace`) once more.
 
+- **`slinitctl stop` during a restart delay stops the service.** Between
+  a process's exit and its restart (a crashing service with `restart`,
+  or the middle of `slinitctl restart`) the service is STOPPED but still
+  wanted up. A stop then, forced or not, answered "already stopped" and
+  changed nothing, and the service started again when the delay ran out.
+  The stop now drops the service's activation first, as dinit's does.
+  Found by the new control protocol fuzzer.
+
 - **`slinitctl add-dep`/`rm-dep` with `prepared-by` work.** slinitctl
   accepted the kind and slinitctl(8) documents it, but the daemon took
   only the kinds up to `after` and refused every prepared-by request, so

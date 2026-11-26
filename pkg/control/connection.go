@@ -904,6 +904,11 @@ func (c *Connection) handleStopService(payload []byte) error {
 	}
 
 	if svc.State() == service.StateStopped {
+		// Drop its activation anyway, as dinit's stop always does: a
+		// service waiting out its restart delay (after a crash, or in
+		// the middle of a restart) is STOPPED but still wanted, and
+		// answering "already stopped" alone let it start again.
+		c.server.services.StopService(svc)
 		// Pin it anyway, as dinit does and as the start side does for a
 		// service already up: the operator asked for it to stay down.
 		// Answering "already stopped" first dropped the pin, so the next
