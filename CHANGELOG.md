@@ -986,6 +986,19 @@ requires.
 
 ### Fixed
 
+- **slinit-openrc-convert produced services that lost arguments or did
+  not load**:
+  - a `command_args` built from shell variables or set inside `if`/`case`
+    (upstream rarpd, syslogd, nscd) became a command that loads with the
+    arguments gone; such scripts now go through the openrc-run wrapper,
+    with a WARN;
+  - a quoted value spanning lines was cut at the first line;
+  - a one-line `depend() { need net; }` was dropped;
+  - wrapped scripts carried `${respawn_period:-60}`-style values that the
+    loader rejects (upstream agetty), and `command_user` made openrc-run
+    itself run as that user;
+  - every start-stop-daemon script got `restart = yes`, though OpenRC
+    respawns only under `supervisor=supervise-daemon`.
 - **slinit-runit-convert mistranslated `chpst`**: grouped flags
   (`-P0`, `-Pu nobody`) lost every letter after the first, so
   `chpst -Pu nobody daemon` became `command = nobody daemon` with no
