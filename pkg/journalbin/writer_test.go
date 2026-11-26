@@ -299,6 +299,12 @@ func TestReaderDetectsObjectBounds(t *testing.T) {
 	if _, err := f.WriteAt(buf, int64(tail)); err != nil {
 		t.Fatal(err)
 	}
+	// And the header's tail past it, or the readers stop before it.
+	var tb [8]byte
+	binary.LittleEndian.PutUint64(tb[:], tail+ObjectHeaderSize)
+	if _, err := f.WriteAt(tb[:], 136); err != nil {
+		t.Fatal(err)
+	}
 	f.Close()
 
 	r2, err := OpenReader(path)

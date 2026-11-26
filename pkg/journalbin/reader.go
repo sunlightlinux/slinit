@@ -101,9 +101,15 @@ func (r *Reader) Header() *Header { return r.header }
 // offset in on-disk order (which is arrival order — Writer only
 // appends). Empty when the file has no entries. Useful for callers
 // that want random access to entries without a linear file scan.
+// Entries past the header's tail object offset are not returned: the
+// header is written last, so they were never completed.
 func (r *Reader) EntryOffsets() ([]uint64, error) {
+	end := r.header.TailObjectOffset
+	if end < HeaderSize {
+		end = ^uint64(0)
+	}
 	var out []uint64
-	if err := walkEntryOffsets(r.f, r.header.EntryArrayOffset, func(off uint64) bool {
+	if err := walkEntryOffsets(r.f, r.header.EntryArrayOffset, end, func(off uint64) bool {
 		out = append(out, off)
 		return true
 	}); err != nil {
@@ -210,6 +216,12 @@ func (r *Reader) Iter(fn func(*journal.Event) bool) error {
 	// initial read horizon — the reader semantics match what
 	// systemd's sd_journal_next does with a static-file view.
 	fileSize := r.fileSize
+	// Nor past the header's tail: the header is written last, so what
+	// lies beyond it is an append the writer did not finish, torn
+	// wherever it died.
+	if t := r.header.TailObjectOffset; t >= HeaderSize && t < fileSize {
+		fileSize = t
+	}
 
 	r.shared, r.sharedLeft = map[uint64]string{}, fileSize
 	defer func() { r.shared = nil }()

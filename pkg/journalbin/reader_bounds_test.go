@@ -390,7 +390,8 @@ func TestEntryOffsetsOverlappingArraysBounded(t *testing.T) {
 }
 
 // appendItemEntries appends one tiny ENTRY per target, each with a
-// single item naming that DATA offset.
+// single item naming that DATA offset, and moves the header's tail
+// past them, as a hostile file would.
 func appendItemEntries(t *testing.T, f *os.File, targets []uint64) int64 {
 	t.Helper()
 	st, err := f.Stat()
@@ -411,6 +412,11 @@ func appendItemEntries(t *testing.T, f *os.File, targets []uint64) int64 {
 			t.Fatal(err)
 		}
 		at += int64(len(ent))
+	}
+	var tail [8]byte
+	binary.LittleEndian.PutUint64(tail[:], uint64(at))
+	if _, err := f.WriteAt(tail[:], 136); err != nil {
+		t.Fatal(err)
 	}
 	return at
 }

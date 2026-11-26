@@ -131,6 +131,12 @@ const minEntryObjectSize = ObjectHeaderSize + 8 + 8 + 8 + 16 + 8
 // chain starting at rootOff. Stops when fn returns false or the
 // chain ends. rootOff == 0 walks nothing.
 //
+// Offsets at or past end are not followed. A writer that dies part
+// way through an append has already written the array slot, or linked
+// the array, of an entry its header never took in; past that header's
+// tail lies a torn object or nothing, and following it failed the
+// whole read.
+//
 // The writer only appends, so each array's next lies past it. A next
 // that does not is refused: a self-referential chain was walked
 // forever, growing its caller's slice until memory ran out. Nor may
@@ -138,17 +144,17 @@ const minEntryObjectSize = ObjectHeaderSize + 8 + 8 + 8 + 16 + 8
 // each other's headers as offsets, and 96 KB of file yielded 13.5M of
 // them. A file cannot hold more entries than fit in it, so a chain
 // yielding more is refused too.
-func walkEntryOffsets(f *os.File, rootOff uint64, fn func(uint64) bool) error {
+func walkEntryOffsets(f *os.File, rootOff, end uint64, fn func(uint64) bool) error {
 	limit := uint64(fileSize(f)) / minEntryObjectSize
 	var seen uint64
 	cur := rootOff
-	for cur != 0 {
+	for cur != 0 && cur < end {
 		next, items, err := readEntryArray(f, cur)
 		if err != nil {
 			return err
 		}
 		for _, e := range items {
-			if e == 0 {
+			if e == 0 || e >= end {
 				// Trailing zero → we've reached the fill point of
 				// this array; nothing beyond it in this array. If
 				// there's a next array the loop below continues.

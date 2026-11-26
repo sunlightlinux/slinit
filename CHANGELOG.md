@@ -149,6 +149,17 @@ verified with `git tag -v`.
   or `| grep` saw nothing. The usage text asked for with `-h`/`--help`
   now goes to stdout, as `dinitctl --help` does; the usage printed for
   a missing command is still an error and stays on stderr.
+
+- **A journal file left by a crashed writer reads again.** The binary
+  writer updates the ENTRY_ARRAY slot (or link) of an entry before it
+  rewrites the header, so a slinit-journald killed in that window left a
+  file whose array names an entry the header never took in, torn or
+  missing. `slinit-journalctl -D` and `--list-boots`, and the sd_journal
+  API, then failed on the whole directory with `EOF` or `claims size
+  past file end`, and `--file` stopped with an error after the good
+  entries. The readers now stop at the header's tail, as the header is
+  written last: every entry it describes is shown, the unfinished one
+  is not.
 - **The shutdown hook runs after the final sweep even at the task
   limit.** The final SIGKILL sweep did not wait for the killed to exit
   and nothing reaped them any more, so every one stayed a zombie until
