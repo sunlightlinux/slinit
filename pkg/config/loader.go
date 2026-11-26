@@ -1148,6 +1148,13 @@ func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
 				"close-stdout/close-stderr are only supported for type = process; "+
 				"ignored for type = %s\n", name, desc.Type)
 		}
+		// The start hooks are wired into process services only; on
+		// any other type they never ran, without a word. A converted
+		// Type=oneshot with ExecStartPre= lost its hook that way.
+		if len(desc.PreStartCommand) > 0 || len(desc.PostStartCommand) > 0 {
+			fmt.Fprintf(os.Stderr, "slinit: service %q: pre-start-command/post-start-command "+
+				"are only supported for type = process; ignored for type = %s\n", name, desc.Type)
+		}
 	}
 
 	// chroot is entered by slinit-runner after its filesystem sandbox and
