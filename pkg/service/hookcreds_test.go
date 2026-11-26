@@ -358,3 +358,35 @@ func TestStartAfterFailedPreStartSeesNewEnv(t *testing.T) {
 	set.StopService(s)
 	waitState(t, s, StateStopped, 5*time.Second)
 }
+
+// An exec-condition ran the env-generator for its own environment and
+// the start ran it again. The start's environment is now computed once,
+// before the predicates, and the condition, the pre-start-command and
+// the process all get it.
+func TestExecConditionSharesTheStartEnv(t *testing.T) {
+	for _, preStart := range []bool{false, true} {
+		set, _ := newTestSet()
+		s := NewProcessService(set, "p")
+		dir := t.TempDir()
+		count := filepath.Join(dir, "count")
+		out := filepath.Join(dir, "out")
+		s.SetEnvGenerator(writeScript(t, dir, "gen", "echo x >> "+count+"\necho GENV=1\n"))
+		s.SetPredicates([]Predicate{{Kind: PredExecCondition,
+			Param: writeScript(t, dir, "cond", `test "$GENV" = 1`)}})
+		if preStart {
+			s.SetPreStartCommand([]string{"/bin/sh", "-c", `test "$GENV" = 1`})
+		}
+		s.SetCommand([]string{"/bin/sh", "-c", `echo "$GENV" > ` + out + "; exec sleep 30"})
+		set.AddService(s)
+		set.StartService(s)
+		if got := waitForFile(out); got != "1" {
+			t.Errorf("pre-start %v: the process saw GENV=%q, want 1 (state %v)", preStart, got, s.State())
+		}
+		b, _ := os.ReadFile(count)
+		if n := strings.Count(string(b), "x"); n != 1 {
+			t.Errorf("pre-start %v: env-generator ran %d times for a start with an exec-condition, want 1", preStart, n)
+		}
+		set.StopService(s)
+		waitState(t, s, StateStopped, 5*time.Second)
+	}
+}

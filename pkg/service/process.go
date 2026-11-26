@@ -1685,6 +1685,17 @@ func (s *ProcessService) BringUp() bool {
 	// Evaluate systemd-style start preconditions. assert-* failure aborts
 	// the start; condition-* failure short-circuits to STARTED with no
 	// process so dependents see a satisfied dep.
+	//
+	// An environment kept for a fork that never came (an earlier start
+	// that failed before it) is not this start's. An exec-condition runs
+	// with the start's environment, so with an env-generator that is
+	// computed now, once, and the pre-start-command and the fork reuse
+	// it: the generator ran once for the condition and again for the
+	// start.
+	s.discardStartEnv()
+	if s.envGenerator != "" && s.hasExecCondition() {
+		s.prepareStartEnv()
+	}
 	switch outcome, reason := s.CheckPredicates(); outcome {
 	case PredFailed:
 		s.services.logger.Error("Service '%s': %s", s.serviceName, reason)
@@ -1719,6 +1730,9 @@ func (s *ProcessService) BringUp() bool {
 		}
 		s.services.logger.Info("Service '%s': listening, process starts on the first client",
 			s.serviceName)
+		// The first client may come much later: the launch then
+		// computes its environment.
+		s.discardStartEnv()
 		s.Started()
 		return true
 	}
@@ -1731,8 +1745,8 @@ func (s *ProcessService) BringUp() bool {
 		// The environment of this start, computed now so the
 		// pre-start-command sees what the main process will get;
 		// startProcess uses it rather than running the env-generator
-		// a second time.
-		s.prepareStartEnv()
+		// a second time. An exec-condition may have computed it already.
+		s.ensureStartEnv()
 		if err := s.runHookCommand(s.preStartCommand, "pre-start-command"); err != nil {
 			s.services.logger.Error("Service '%s': pre-start-command failed: %v",
 				s.serviceName, err)
@@ -2255,6 +2269,29 @@ func (s *ProcessService) launchEnv() []string {
 	s.startEnv = env
 	s.envMu.Unlock()
 	return env
+}
+
+// ensureStartEnv is prepareStartEnv unless this start has computed its
+// environment already (for an exec-condition) and the fork has not used
+// it yet.
+func (s *ProcessService) ensureStartEnv() {
+	s.envMu.Lock()
+	fresh := s.startEnvFresh
+	s.envMu.Unlock()
+	if !fresh {
+		s.prepareStartEnv()
+	}
+}
+
+// hasExecCondition reports whether an exec-condition is among the
+// service's predicates.
+func (s *ProcessService) hasExecCondition() bool {
+	for _, p := range s.predicates {
+		if p.Kind == PredExecCondition {
+			return true
+		}
+	}
+	return false
 }
 
 // discardStartEnv drops the environment prepareStartEnv kept for a fork

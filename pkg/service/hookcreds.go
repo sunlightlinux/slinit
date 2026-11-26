@@ -28,7 +28,10 @@ type hookCmdPreparer interface {
 func (s *ProcessService) prepareHookCmdLocked(cmd *exec.Cmd) {
 	s.applyRunAs(cmd)
 	cmd.Dir = s.workingDir
-	cmd.Env = s.Record().withInheritedEnv(s.buildEnv())
+	// The start's environment (hookEnv): BringUp computes it before the
+	// predicates when an env-generator is configured, so the generator
+	// runs once for the exec-condition and the start together.
+	cmd.Env = s.hookCmdEnv()
 }
 
 // prepareHookCmd is prepareHookCmdLocked for a command started from a
