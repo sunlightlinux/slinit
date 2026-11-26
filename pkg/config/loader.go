@@ -1903,6 +1903,10 @@ func resolveAlertLevel(alertFile string, parsed int) int {
 // applyLogSettings applies log type configuration to a process-based service.
 func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 	switch desc.LogType {
+	case service.LogNone:
+		// Set too: a reload of a stopped service updates the record in
+		// place, and a log type the file no longer names must go.
+		svc.SetLogType(desc.LogType)
 	case service.LogToBuffer:
 		svc.SetLogType(desc.LogType)
 		svc.SetLogBufMax(desc.LogBufMax)
@@ -1915,10 +1919,11 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 		// bgprocess services do not run the stdio plumbing it hooks
 		// into. Asserted rather than added to logSettable so the
 		// interface keeps describing what every type can do.
+		// Set even when empty, so a reload that drops it takes it away.
+		if ps, ok := svc.(interface{ SetStderrLogFile(string) }); ok {
+			ps.SetStderrLogFile(desc.StderrLogFile)
+		}
 		if desc.StderrLogFile != "" {
-			if ps, ok := svc.(interface{ SetStderrLogFile(string) }); ok {
-				ps.SetStderrLogFile(desc.StderrLogFile)
-			}
 			if ps, ok := svc.(interface {
 				SetStderrLogRotation(int64, int, time.Duration)
 			}); ok {

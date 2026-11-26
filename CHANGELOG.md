@@ -160,6 +160,12 @@ verified with `git tag -v`.
   `mount`: a helper it had forked (`mount.nfs`) still held its output
   pipe, and slinit waited for that pipe for ever. It now gives up on the
   output 2 s after the timeout and starts the shell.
+- **Reloading a stopped service did not take away a log setting the
+  file no longer had.** With `logfile`, `log-type` or `stderr-logfile`
+  removed from the description, `slinitctl reload` left the service
+  writing to the old log file or buffer, or still splitting stderr into
+  the old stderr file, until slinit restarted. A reload now leaves the
+  log settings as a fresh load of the file would.
 
 - **A FIFO named in `required-files` froze PID 1**: the readability check
   opened it and waited for a writer with the service set's lock held.
