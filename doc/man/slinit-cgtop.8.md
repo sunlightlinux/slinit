@@ -28,7 +28,9 @@ equivalent, scoped to what a slinit-managed system needs:
 
 - **Rate-based fields** (CPU%, IO bytes/sec) are computed as a
   delta over the sampling interval, so a cold snapshot lands in one
-  **\--delay** cycle.
+  **\--delay** cycle. The interval is measured per cgroup, between its
+  two reads: walking a large tree can take longer than **\--delay**,
+  and dividing by the nominal delay would inflate the rates.
 
 - **kernfs virtual files** always report `st_size = 0`; the tool
   counts lines in **cgroup.procs** instead of relying on stat.

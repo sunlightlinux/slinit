@@ -139,3 +139,57 @@ func TestDepthOf(t *testing.T) {
 		}
 	}
 }
+
+// Rates are per the measured time between the two reads of a cgroup,
+// not the nominal --delay: a scan of a large tree took seconds, and a
+// cgroup busy on one core for those 3s showed 300% with --delay=1s.
+func TestDiffUsesMeasuredInterval(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	prev := map[string]sample{
+		"busy": {path: "busy", tasks: 1, cpuUsageUS: 0, ioRead: 0, at: t0},
+	}
+	curr := map[string]sample{
+		"busy": {path: "busy", tasks: 1, cpuUsageUS: 3_000_000, ioRead: 3072, at: t0.Add(3 * time.Second)},
+	}
+	rows := diff(prev, curr, time.Second, false)
+	if len(rows) != 1 {
+		t.Fatalf("diff: got %d rows, want 1", len(rows))
+	}
+	if got := rows[0].cpuPct; got < 99.9 || got > 100.1 {
+		t.Errorf("cpuPct over a measured 3s: got %.1f, want 100.0", got)
+	}
+	if got := rows[0].ioReadRate; got != 1024 {
+		t.Errorf("ioReadRate over a measured 3s: got %d, want 1024", got)
+	}
+}
+
+// takeAll stamps every cgroup with its own read time: in a slow scan
+// the first and last cgroups are read seconds apart.
+func TestTakeAllTimestampsEachCgroup(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"a", "b"} {
+		os.Mkdir(filepath.Join(root, d), 0o755)
+		os.WriteFile(filepath.Join(root, d, "cpu.stat"), []byte("usage_usec 5\n"), 0o644)
+	}
+	prevRoot, prevClock := cgroupRoot, clock
+	defer func() { cgroupRoot, clock = prevRoot, prevClock }()
+	cgroupRoot = root
+	tick := time.Unix(1000, 0)
+	clock = func() time.Time { tick = tick.Add(time.Second); return tick }
+
+	got, err := takeAll(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[time.Time]bool{}
+	for _, p := range []string{"", "a", "b"} {
+		s, ok := got[p]
+		if !ok || s.at.IsZero() {
+			t.Fatalf("cgroup %q: no timestamp (%+v)", p, s)
+		}
+		seen[s.at] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("timestamps not per cgroup: %v", seen)
+	}
+}
