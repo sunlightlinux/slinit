@@ -943,6 +943,14 @@ requires.
 
 ### Fixed
 
+- **slinit-sysctl ignored all of systemd's `50-default.conf`**: one glob
+  key (`net.ipv4.conf.*.rp_filter`) or `-key` exclusion line failed the
+  whole file, so `fs.protected_*`, `kernel.sysrq` and the rest were never
+  set. A bad line is now reported and skipped; globs are expanded and
+  `-key` lines exclude keys from them; all files form one set where a
+  later assignment wins. A missing key is a warning and EROFS/EACCES/EPERM
+  are ignored, as in systemd, unless `--strict`. The exit status is still
+  1 after a bad line.
 - **slinit-sysusers applied lines in file order**, so a `u`/`m` line
   naming a group declared later (or in a later file) failed and a
   `g name GID` after `u name` got an automatic GID. Like
