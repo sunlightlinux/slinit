@@ -251,7 +251,14 @@ func (p Predicate) String() string {
 // underlying check on a negated predicate is OK; a succeeding check on
 // a negated predicate is the failure path.
 func (p Predicate) Evaluate() (bool, string) {
-	raw, reason := evalRaw(p)
+	return p.evaluateWith(nil)
+}
+
+// evaluateWith is Evaluate with prep applied to an exec-condition's
+// command before it runs: the service's run-as, working directory and
+// environment (see prepareExecCondition). Nil runs it as slinit.
+func (p Predicate) evaluateWith(prep func(*exec.Cmd)) (bool, string) {
+	raw, reason := evalRaw(p, prep)
 	if p.Negate {
 		if raw {
 			return false, fmt.Sprintf("%s is true (negated)", p.String())
@@ -264,7 +271,7 @@ func (p Predicate) Evaluate() (bool, string) {
 	return true, ""
 }
 
-func evalRaw(p Predicate) (bool, string) {
+func evalRaw(p Predicate, prep func(*exec.Cmd)) (bool, string) {
 	switch p.Kind {
 	case PredPathExists:
 		if _, err := os.Stat(p.Param); err != nil {
@@ -371,7 +378,7 @@ func evalRaw(p Predicate) (bool, string) {
 	case PredIOPressure:
 		return checkPSIPressure("/proc/pressure/io", p.Param)
 	case PredExecCondition:
-		return checkExecCondition(p.Param)
+		return checkExecConditionWith(p.Param, prep)
 	case PredBootCond:
 		return checkBootCond(p.Param)
 	case PredFileValue:
@@ -426,15 +433,25 @@ func checkFileValue(param string) (bool, string) {
 // checkExecCondition runs the pre-flight command line through /bin/sh -c
 // with a bounded timeout. Exit 0 = OK; any non-zero exit or timeout
 // causes the predicate to fail (service is skipped, or fails if used as
-// assert-exec-condition). The command inherits slinit's environment so
-// operators can consume env-file / setenv values in the check.
+// assert-exec-condition), as slinit itself.
 func checkExecCondition(cmdline string) (bool, string) {
+	return checkExecConditionWith(cmdline, nil)
+}
+
+// checkExecConditionWith is checkExecCondition with prep, which, when
+// set, gives the command the service's run-as user and groups, working
+// directory and environment: systemd runs ExecCondition= as User=, and
+// this ran as root. A service without run-as still runs it as root.
+func checkExecConditionWith(cmdline string, prep func(*exec.Cmd)) (bool, string) {
 	if strings.TrimSpace(cmdline) == "" {
 		return false, "exec-condition: empty command"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), execConditionTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdline)
+	if prep != nil {
+		prep(cmd)
+	}
 	if err := process.RunAdhoc(cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return false, fmt.Sprintf("exec-condition %q timed out after %s", cmdline, execConditionTimeout)

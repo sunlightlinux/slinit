@@ -1203,7 +1203,9 @@ func (sr *ServiceRecord) CheckPredicates() (PredicateOutcome, string) {
 		if p.Kind == PredServiceStarted {
 			ok, why = sr.checkServiceStarted(p)
 		} else {
-			ok, why = p.Evaluate()
+			// The caller (BringUp) holds queueMu, as prepareHookCmdLocked wants.
+			hp, _ := sr.self.(hookCmdPreparer)
+			ok, why = p.evaluateWith(prepareExecCondition(hp))
 		}
 		if ok {
 			continue

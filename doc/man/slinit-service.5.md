@@ -1170,7 +1170,8 @@ apply OS-level changes:
     LogRotator).
 
 **log-processor**=*program* [*args*...]
-:   Pipe lines through *program* before they hit the log target.
+:   Run *program* on each rotated log file, with the rotated file's
+    path appended as the last argument; 60-second timeout.
 
 **output-logger**=*program* [*args*...], **error-logger**=*program* [*args*...]
 :   Spawn separate child processes for stdout / stderr. Implies
@@ -2285,7 +2286,10 @@ watch; the service remains startable via `slinitctl start`.
     **watchdog-timeout** expires: hard dependents stop with it, and the
     **restart** policy decides whether it comes back (and its
     dependents with it). After a restart, checking starts over.
-    **type**=*process* only.
+    **type**=*process* only. The check runs with the service's
+    **run-as** user and **supplementary-groups**, **working-dir** and
+    environment, as **finish-command** does (until 4.0.3 it ran as
+    root).
 
 **healthcheck-interval**=*duration*, **healthcheck-delay**=*duration*,
 **healthcheck-max-failures**=*N*
@@ -2294,7 +2298,9 @@ watch; the service remains startable via `slinitctl start`.
 
 **unhealthy-command**=*program* [*args*...]
 :   Run after *each* failed check, with a 10-second timeout (e.g. send
-    a notification, kick a circuit breaker).
+    a notification, kick a circuit breaker). Same **run-as**
+    user, groups, **working-dir** and environment as the check (until
+    4.0.3 it ran as root).
 
 ## CRON-LIKE PERIODIC TASKS
 
@@ -2303,6 +2309,12 @@ watch; the service remains startable via `slinitctl start`.
     **type**=*process* and, since 3.13.0, **type**=*internal*, which is
     the way to write a periodic job with nothing to supervise between
     runs; other types ignore every **cron-\*** setting.
+
+    The command runs with the service's **run-as** user and
+    **supplementary-groups**, **working-dir** and environment, as
+    **finish-command** does (until 4.0.3 it ran as root); an internal
+    service has no **run-as**, so its command runs as slinit. A
+    **reload** that changes them applies from the next run.
 
     A run under **cron-interval** may not outlive its period. A run under
     **cron-calendar** has no limit (until 3.13.0 it had a minute); wrap the
@@ -2742,6 +2754,11 @@ form):
     command = fail. **condition-** form skips silently on non-zero
     (matches other **condition-\*** family); **assert-** form
     fails the start and cascades. Systemd's **ExecCondition=**.
+    Like systemd's, it runs with the service's **run-as** user and
+    **supplementary-groups** (until 4.0.3 it ran as root), its
+    environment, and its **working-dir** when that exists already (a
+    directory slinit creates for the service, such as a
+    **state-directory**, is not made until the process starts).
 
 **condition-boot-cond**=*name*, **assert-boot-cond**=*name*
 :   Match a value from the comma-separated **slinit.cond=** kernel-

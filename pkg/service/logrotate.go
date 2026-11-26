@@ -51,6 +51,10 @@ type LogRotator struct {
 	processor []string      // command to run on rotated file
 	includes  []*regexp.Regexp
 	excludes  []*regexp.Regexp
+
+	// run-as, working-dir and environment for processor; nil = slinit's own
+	prepareProc func(context.Context, *exec.Cmd) bool
+
 	// s6-log-style regex selection chain. Each entry carries a
 	// polarity (+ = include, - = exclude) and a compiled regex.
 	// Evaluated left-to-right per line; the LAST-MATCHED verdict
@@ -220,6 +224,12 @@ type LogRotatorConfig struct {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
 	}
+
+	// PrepareProcessor gives the log-processor command the service's
+	// run-as, working directory and environment (prepareHookCmd); it ran
+	// as root. False: ctx ended before it could, do not run it. Nil
+	// leaves the command as slinit's own.
+	PrepareProcessor func(context.Context, *exec.Cmd) bool
 }
 
 // NewLogRotator creates a new LogRotator with the given configuration.
@@ -234,6 +244,7 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 		minFiles:     cfg.MinFiles,
 		rotateInt:    cfg.RotateTime,
 		processor:    cfg.Processor,
+		prepareProc:  cfg.PrepareProcessor,
 		serviceName:  cfg.ServiceName,
 		getPID:       cfg.GetPID,
 		logger:       cfg.Logger,
@@ -1010,6 +1021,13 @@ func (lr *LogRotator) runProcessor(rotatedFile string) {
 	args = append(args, rotatedFile)
 
 	cmd := exec.CommandContext(ctx, lr.processor[0], args...)
+	if lr.prepareProc != nil && !lr.prepareProc(ctx, cmd) {
+		if lr.logger != nil {
+			lr.logger.Error("Service '%s': log-processor not run on %s: %v",
+				lr.serviceName, rotatedFile, ctx.Err())
+		}
+		return
+	}
 	if lr.logger != nil {
 		lr.logger.Info("Service '%s': running log-processor on %s", lr.serviceName, rotatedFile)
 	}

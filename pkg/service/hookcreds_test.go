@@ -1,0 +1,173 @@
+package service
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// log-processor ran as root. It gets the service's run-as through
+// LogRotatorConfig.PrepareProcessor.
+func TestLogProcessorHonoursRunAs(t *testing.T) {
+	if !inRootUserNS(t) {
+		return
+	}
+	dir := worldWritableDir(t)
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	s.SetRunAs(65534, 65534)
+	lr := &LogRotator{
+		processor:   reportUID(dir, "log-processor"),
+		prepareProc: s.prepareHookCmd,
+	}
+	lr.runProcessor("/dev/null")
+	wantRunAsUID(t, dir, "log-processor")
+}
+
+// Without run-as nothing changes: no credential, the command stays
+// slinit's own user.
+func TestHookCmdNoRunAsKeepsSlinitCredentials(t *testing.T) {
+	set, _ := newTestSet()
+	p := NewProcessService(set, "p")
+	sc := NewScriptedService(set, "sc")
+	bg := NewBGProcessService(set, "bg")
+	set.queueMu.Lock()
+	defer set.queueMu.Unlock()
+	for _, svc := range []hookCmdPreparer{p, sc, bg} {
+		cmd := exec.Command("/bin/true")
+		svc.prepareHookCmdLocked(cmd)
+		if cmd.SysProcAttr != nil && cmd.SysProcAttr.Credential != nil {
+			t.Errorf("%T without run-as got credential %+v", svc, cmd.SysProcAttr.Credential)
+		}
+	}
+}
+
+// The credential is added to what the caller set: cron's Setpgid stays.
+func TestHookCmdKeepsSetpgid(t *testing.T) {
+	set, _ := newTestSet()
+	p := NewProcessService(set, "p")
+	p.SetRunAs(65534, 65534)
+	p.SetSupplementaryGroups([]uint32{10, 20})
+	cmd := exec.Command("/bin/true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if !p.prepareHookCmd(context.Background(), cmd) {
+		t.Fatal("prepareHookCmd refused with a live context")
+	}
+	if !cmd.SysProcAttr.Setpgid {
+		t.Error("Setpgid lost")
+	}
+	c := cmd.SysProcAttr.Credential
+	if c == nil || c.Uid != 65534 || c.Gid != 65534 || len(c.Groups) != 2 {
+		t.Errorf("credential %+v; want 65534:65534 groups [10 20]", c)
+	}
+}
+
+// Working directory and environment, as the finish-command gets them.
+func TestCronCommandGetsWorkingDirAndEnv(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out")
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	s.SetWorkingDir(dir)
+	s.SetEnvVar("SLINIT_HOOK_PROBE", "cron-env")
+	cr := NewCronRunner(s, []string{"/bin/sh", "-c",
+		`echo "$(pwd) $SLINIT_HOOK_PROBE" > ` + out}, time.Second, 0, "", set.logger)
+	if err := cr.executeCommand(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(out)
+	if got, want := strings.TrimSpace(string(b)), dir+" cron-env"; got != want {
+		t.Errorf("cron-command saw %q; want %q", got, want)
+	}
+}
+
+// An exec-condition runs before the process that creates the managed
+// directories: a working-dir that does not exist yet must not fail it.
+func TestExecConditionMissingWorkingDir(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	s.SetWorkingDir(filepath.Join(t.TempDir(), "not-yet"))
+	s.SetPredicates([]Predicate{{Kind: PredExecCondition, Param: "true"}})
+	set.queueMu.Lock()
+	outcome, why := s.CheckPredicates()
+	set.queueMu.Unlock()
+	if outcome != PredOK {
+		t.Errorf("exec-condition with a missing working-dir: %v %s", outcome, why)
+	}
+}
+
+// BringDown stops the health checker with queueMu held and waits for
+// its loop. A check waiting for that lock to read run-as must give up,
+// or PID 1 deadlocks.
+func TestHealthCheckStopUnderQueueMuWhileCheckWaits(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	hc := NewHealthChecker(s, []string{"/bin/true"}, 50*time.Millisecond, 0, 0,
+		nil, set.logger, nil)
+	set.queueMu.Lock()
+	hc.Start()
+	time.Sleep(100 * time.Millisecond) // the first check is now waiting for the lock
+	stopped := make(chan struct{})
+	go func() {
+		hc.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		set.queueMu.Unlock()
+		t.Fatal("HealthChecker.Stop under queueMu deadlocked against a check waiting for the lock")
+	}
+	set.queueMu.Unlock()
+	// The abandoned read lock is given back once the writer lets go.
+	done := make(chan struct{})
+	go func() {
+		set.queueMu.Lock()
+		set.queueMu.Unlock()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queueMu still held after the abandoned check")
+	}
+}
+
+// A check firing while a reload changes run-as and working-dir (under
+// queueMu, as the loader does) reads them under the same lock: run with
+// -race.
+func TestHookCmdConcurrentReload(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	dir := t.TempDir()
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			set.queueMu.Lock()
+			s.SetRunAs(uint32(i%2)*65534, uint32(i%2)*65534)
+			s.SetSupplementaryGroups([]uint32{uint32(i)})
+			s.SetWorkingDir(dir)
+			set.queueMu.Unlock()
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		cmd := exec.Command("/bin/true")
+		s.prepareHookCmd(context.Background(), cmd)
+	}
+	close(stop)
+	wg.Wait()
+}

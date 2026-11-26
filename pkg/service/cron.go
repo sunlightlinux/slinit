@@ -609,6 +609,16 @@ func (cr *CronRunner) executeCommand() error {
 
 	cmd := exec.CommandContext(ctx, cr.command[0], cr.command[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The service's run-as, working directory and environment; it ran as
+	// root. Setpgid stays: applyRunAs adds the credential to it.
+	if !prepareHookCmdFor(ctx, cr.svc, cmd) {
+		select {
+		case <-cr.stopCh:
+			return nil // stopped before it could start
+		default:
+			return ctx.Err()
+		}
+	}
 	cmd.WaitDelay = cronStopGrace
 	cmd.Cancel = func() error {
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)

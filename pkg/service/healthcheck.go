@@ -159,6 +159,13 @@ func (hc *HealthChecker) checkOnce(ctx context.Context) bool {
 	defer cancel()
 
 	cmd := exec.CommandContext(checkCtx, hc.command[0], hc.command[1:]...)
+	// The service's run-as, working directory and environment; it ran as root.
+	if !prepareHookCmdFor(checkCtx, hc.svc, cmd) {
+		if ctx.Err() != nil {
+			return false // stopped
+		}
+		return true // the lock was held for the whole interval: try again next tick
+	}
 	err := process.RunAdhoc(cmd)
 	if ctx.Err() != nil {
 		return false // stopped: the check was cut short, not failed
@@ -218,6 +225,9 @@ func (hc *HealthChecker) runUnhealthyCmd(ctx context.Context) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, hc.unhealthyCmd[0], hc.unhealthyCmd[1:]...)
+	if !prepareHookCmdFor(ctx, hc.svc, cmd) { // run-as, working-dir, environment
+		return
+	}
 	if err := process.RunAdhoc(cmd); err != nil {
 		hc.logger.Info("Service '%s': unhealthy-command failed: %v", hc.svc.Name(), err)
 	}
