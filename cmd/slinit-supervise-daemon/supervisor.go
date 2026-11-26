@@ -216,20 +216,8 @@ func stopDaemon(opts Options, pid int) error {
 	if err != nil {
 		return err
 	}
-	for _, step := range steps {
-		if step.Signal != 0 {
-			_ = syscall.Kill(pid, step.Signal)
-		}
-		if step.Timeout == 0 {
-			// "wait forever" tail.
-			for processAlive(pid) {
-				time.Sleep(50 * time.Millisecond)
-			}
-			return nil
-		}
-		if waitExit(pid, step.Timeout) {
-			return nil
-		}
+	if runSchedule(pid, steps) {
+		return nil
 	}
 	return fmt.Errorf("daemon pid=%d still alive after retry schedule", pid)
 }

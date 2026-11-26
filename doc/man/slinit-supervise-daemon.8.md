@@ -159,7 +159,16 @@ Go's **time.ParseDuration** style (**500ms**, **2h**).
 
     - Integer seconds: **--retry 5** is shorthand for
       **--retry TERM/5/KILL/5**.
-    - Slash-separated: **--retry TERM/30/KILL/5**.
+    - Slash-separated: **--retry TERM/30/KILL/5**. A signal is a
+      name with or without **SIG**, or a number, optionally with one
+      leading **-** (**-TERM/30/-KILL/5**, as **start-stop-daemon**(8)
+      writes it). A number without **-** is a timeout in seconds. A
+      signal followed directly by another signal is sent without
+      waiting; a trailing signal waits for the exit forever.
+    - **forever** (at most once) repeats the items after it until the
+      process is gone: **TERM/30/forever/KILL/5** sends **SIGKILL**
+      every five seconds after the first thirty. A trailing
+      **forever** just waits.
 
     Default: **TERM/5/KILL/5**.
 

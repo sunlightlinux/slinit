@@ -52,15 +52,9 @@ func cmdStop(opts Options) int {
 	if opts.Retry != "" {
 		steps, err := ParseRetry(opts.Retry, syscall.SIGTERM)
 		if err == nil {
-			// Sum the timeouts — the last step's Timeout=0 means
-			// "forever" so we bail out cleanly with a big number.
-			total := time.Duration(0)
-			for _, s := range steps {
-				if s.Timeout == 0 {
-					total = 5 * time.Minute
-					break
-				}
-				total += s.Timeout
+			total, unbounded := scheduleBudget(steps)
+			if unbounded {
+				total = 5 * time.Minute
 			}
 			if total > 0 {
 				timeout = total
