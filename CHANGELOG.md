@@ -987,6 +987,16 @@ requires.
   and the launcher waits for it as for SIGTERM, and the init gets
   SIGKILL as its parent death signal, as under systemd-nspawn, so a
   launcher killed outright takes the container with it.
+- **`slinit-nspawn` passed its whole environment to the container.**
+  The init inherited the launcher's credentials, SSH agent socket and
+  the internal `_SLINIT_NSPAWN_*` launch parameters, so an
+  `slinit-nspawn` run inside the container took the child path and
+  failed. The init now gets systemd-nspawn's set: `PATH`,
+  `container=slinit-nspawn`, `TERM`/`COLORTERM`/`NO_COLOR` from a
+  terminal (else `TERM=dumb`), `HOME=/root`, `USER` and `LOGNAME`; and
+  the new `--setenv`/`-E NAME[=VALUE]` adds or overrides entries.
+  *Compat:* a container that relied on a variable from the launcher's
+  environment needs `--setenv NAME`.
 - **slinit-start-stop-daemon `--exec` never matched through a symlinked
   directory** (merged /usr: `/usr/sbin -> bin`): `--start` launched a
   duplicate each time and `--stop` left the daemon running and returned

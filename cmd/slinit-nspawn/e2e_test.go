@@ -410,3 +410,47 @@ true
 		t.Error("the container kept running after its launcher was killed")
 	}
 }
+
+// TestContainerEnvironment: the init got the launcher's whole
+// environment, secrets and SSH agent included, and the variables that
+// carry the launch parameters, so an slinit-nspawn started inside the
+// container saw _SLINIT_NSPAWN_CHILD and ran as a child. It now gets
+// systemd-nspawn's fixed set and --setenv, and a nested launch works.
+func TestContainerEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines" "$ROOTFS/nspawn" "$ROOTFS/inner"
+cp "$NSPAWN" "$ROOTFS/nspawn/slinit-nspawn"
+for d in usr bin lib lib64 sbin; do
+	if [ -L /$d ]; then ln -s "$(readlink /$d)" "$ROOTFS/inner/$d"
+	elif [ -d /$d ]; then mkdir -p "$ROOTFS/inner/$d" && mount --rbind /$d "$ROOTFS/inner/$d"
+	fi
+done
+export HOST_SECRET=hunter2 TERM=xterm
+echo "== env"
+"$NSPAWN" --name t15 --boot "$ROOTFS" --machine-dir "$DIR/machines" --setenv FOO=bar -E HOST_SECRET=overridden --init /usr/bin/env </dev/null
+echo "== nested"
+"$NSPAWN" --name t16 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /nspawn/slinit-nspawn -- --name inner --boot /inner --machine-dir /tmp --init /bin/sh -- -c 'echo NESTED-RAN' </dev/null
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	env, nested, _ := strings.Cut(out, "== nested")
+	vars := map[string]string{}
+	for _, l := range strings.Split(env, "\n") {
+		if k, v, ok := strings.Cut(l, "="); ok {
+			vars[k] = v
+		}
+	}
+	for k, want := range map[string]string{"container": "slinit-nspawn", "HOME": "/root", "USER": "root",
+		"PATH": defaultPath, "TERM": "dumb", "FOO": "bar", "HOST_SECRET": "overridden"} {
+		if vars[k] != want {
+			t.Errorf("%s=%q in the container, want %q", k, vars[k], want)
+		}
+	}
+	for k := range vars {
+		if strings.HasPrefix(k, "_SLINIT_NSPAWN_") || strings.HasPrefix(k, "NSPAWN") || k == "ROOTFS" || k == "DIR" {
+			t.Errorf("the launcher's %s reached the container", k)
+		}
+	}
+	if !strings.Contains(nested, "NESTED-RAN") {
+		t.Error("slinit-nspawn inside the container did not launch its own container")
+	}
+}

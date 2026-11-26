@@ -146,3 +146,61 @@ func TestSeccompDenyListCoversNspawn(t *testing.T) {
 		}
 	}
 }
+
+// TestContainerEnv: the init's environment is systemd-nspawn's fixed
+// set plus --setenv, which overrides it, and nothing of the launcher's.
+func TestContainerEnv(t *testing.T) {
+	host := map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor",
+		"SSH_AUTH_SOCK": "/tmp/agent", "_SLINIT_NSPAWN_CHILD": "1", "HOME": "/home/u"}
+	lookup := func(k string) (string, bool) { v, ok := host[k]; return v, ok }
+
+	got := containerEnv(lookup, true, []string{"FOO=bar", "HOME=/srv"})
+	want := []string{"PATH=" + defaultPath, "container=slinit-nspawn", "TERM=xterm-256color",
+		"COLORTERM=truecolor", "HOME=/srv", "USER=root", "LOGNAME=root", "FOO=bar"}
+	if !slices.Equal(got, want) {
+		t.Errorf("on a terminal:\n got %q\nwant %q", got, want)
+	}
+
+	got = containerEnv(lookup, false, nil)
+	want = []string{"PATH=" + defaultPath, "container=slinit-nspawn", "TERM=dumb",
+		"HOME=/root", "USER=root", "LOGNAME=root"}
+	if !slices.Equal(got, want) {
+		t.Errorf("not on a terminal:\n got %q\nwant %q", got, want)
+	}
+
+	host["TERM"] = "dumb"
+	if got := containerEnv(lookup, true, nil); !slices.Contains(got, "TERM=dumb") || slices.Contains(got, "COLORTERM=truecolor") {
+		t.Errorf("with TERM=dumb: %q", got)
+	}
+}
+
+// TestSetenvFlag: --setenv takes NAME=VALUE, or NAME for the
+// launcher's value, and refuses names systemd-nspawn refuses and the
+// launch parameters' own.
+func TestSetenvFlag(t *testing.T) {
+	t.Setenv("NSPAWN_TEST_PASS", "from-host")
+	var f setenvFlag
+	for _, a := range []string{"A=1", "B=x=y", "C=", "NSPAWN_TEST_PASS", "NSPAWN_TEST_UNSET"} {
+		if err := f.Set(a); err != nil {
+			t.Errorf("Set(%q): %v", a, err)
+		}
+	}
+	want := setenvFlag{"A=1", "B=x=y", "C=", "NSPAWN_TEST_PASS=from-host", "NSPAWN_TEST_UNSET="}
+	if !slices.Equal(f, want) {
+		t.Errorf("got %q, want %q", f, want)
+	}
+	for _, a := range []string{"", "=x", "1A=x", "A-B=x", "A B=x", "_SLINIT_NSPAWN_CHILD=1", "A=x\x00y"} {
+		if err := f.Set(a); err == nil {
+			t.Errorf("Set(%q) accepted", a)
+		}
+	}
+}
+
+// TestWithoutPayload: launch parameters the launcher inherited do not
+// reach its own child.
+func TestWithoutPayload(t *testing.T) {
+	got := withoutPayload([]string{"A=1", "_SLINIT_NSPAWN_PRIVATE_NET=1", "_SLINIT_NSPAWN_CHILD=1", "B=2"})
+	if want := []string{"A=1", "B=2"}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

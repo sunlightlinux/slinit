@@ -54,6 +54,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -70,6 +71,11 @@ import (
 // the parent flow.
 const reexecEnv = "_SLINIT_NSPAWN_CHILD"
 
+// payloadPrefix starts the name of every variable that carries the
+// launch parameters to the child, reexecEnv included. None of them
+// reaches the container's init.
+const payloadPrefix = "_SLINIT_NSPAWN_"
+
 // childPayload is what the parent hands to the child via env vars.
 // Kept env-based (not a pipe) so the child can be a bare re-exec of
 // this same binary — no fork/exec dance, no fd inheritance juggling.
@@ -81,6 +87,7 @@ type childPayload struct {
 	PrivateNet  bool     // CLONE_NEWNET
 	Hostname    string   // container UTS hostname (default = name)
 	RegistryDir string   // override for machine.SetDir (default /run/slinit/machines)
+	SetEnv      []string // --setenv assignments, NAME=VALUE, for the init
 }
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -138,7 +145,10 @@ func parentMain() error {
 		privateNet = fs.Bool("private-network", false, "create CLONE_NEWNET so container has an empty network stack")
 		machineDir = fs.String("machine-dir", machine.DefaultDir, "registry directory to write into")
 		showHelp   = fs.Bool("h", false, "show help")
+		setenv     setenvFlag
 	)
+	fs.Var(&setenv, "setenv", "NAME[=VALUE]: set an environment variable for the container's init; NAME alone passes on the launcher's (repeatable)")
+	fs.Var(&setenv, "E", "short for --setenv")
 	// --help as well as -h. Only "h" was registered, so --help reached
 	// Go's flag package as an undefined flag: it printed the usage and
 	// returned ErrHelp, which this command turned into exit 1. Every
@@ -200,6 +210,7 @@ Flags:
 		PrivateNet:  *privateNet,
 		Hostname:    uts,
 		RegistryDir: *machineDir,
+		SetEnv:      setenv,
 	}
 	return runParent(payload)
 }
@@ -215,7 +226,7 @@ func runParent(p childPayload) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(withoutPayload(os.Environ()),
 		reexecEnv+"=1",
 		"_SLINIT_NSPAWN_NAME="+p.Name,
 		"_SLINIT_NSPAWN_ROOTFS="+p.Rootfs,
@@ -225,6 +236,10 @@ func runParent(p childPayload) error {
 	)
 	if p.PrivateNet {
 		cmd.Env = append(cmd.Env, "_SLINIT_NSPAWN_PRIVATE_NET=1")
+	}
+	// One variable each, so a value may hold any byte but NUL.
+	for i, a := range p.SetEnv {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%sSETENV_%d=%s", payloadPrefix, i, a))
 	}
 
 	// CLONE_NEWCGROUP as systemd-nspawn: the container sees its own
@@ -357,6 +372,22 @@ func childMain() error {
 	hostname := os.Getenv("_SLINIT_NSPAWN_HOSTNAME")
 	rawArgs := os.Getenv("_SLINIT_NSPAWN_INIT_ARGS")
 	privateNet := os.Getenv("_SLINIT_NSPAWN_PRIVATE_NET") != ""
+	var setenv []string
+	for i := 0; ; i++ {
+		a, ok := os.LookupEnv(fmt.Sprintf("%sSETENV_%d", payloadPrefix, i))
+		if !ok {
+			break
+		}
+		setenv = append(setenv, a)
+	}
+	// The payload is read: drop it, so that nothing below, and no
+	// slinit-nspawn started inside the container, takes it for its own.
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, payloadPrefix) {
+			os.Unsetenv(k)
+		}
+	}
+	initEnv := containerEnv(os.LookupEnv, isTerminal(0), setenv)
 	var initArgs []string
 	if rawArgs != "" {
 		// US (0x1f) separator — envs are C strings so NUL is unusable,
@@ -495,7 +526,7 @@ func childMain() error {
 	// Exec the init. slinit expects PID 1 semantics; nothing to teach
 	// it about our namespaces since it always is one.
 	argv := append([]string{initBin}, initArgs...)
-	if err := syscall.Exec(initBin, argv, os.Environ()); err != nil {
+	if err := syscall.Exec(initBin, argv, initEnv); err != nil {
 		// execve ENOENT is famously ambiguous — the target binary
 		// missing, its dynamic interpreter missing, or a #! shebang
 		// pointing at nothing all look identical. Investigate before
@@ -504,6 +535,97 @@ func childMain() error {
 		return fmt.Errorf("exec %s: %w%s", initBin, err, hint)
 	}
 	return nil
+}
+
+// defaultPath is the init's PATH, systemd-nspawn's DEFAULT_PATH_COMPAT
+// for a split /usr: the init and what it starts find programs whether
+// or not the image has merged /usr.
+const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// containerEnv is the environment the container's init starts with,
+// systemd-nspawn's (nspawn.c, inner_child) less what slinit-nspawn
+// does not provide (container_uuid, NOTIFY_SOCKET, LISTEN_FDS,
+// credentials): PATH, container=, the terminal's TERM, COLORTERM and
+// NO_COLOR when stdin is one (TERM=dumb otherwise), root's HOME, USER
+// and LOGNAME, and then the --setenv assignments, which override.
+// Nothing else of the launcher's environment, its secrets, SSH agent
+// or the launch parameters for the child, reaches the container.
+func containerEnv(lookup func(string) (string, bool), tty bool, setenv []string) []string {
+	env := []string{"PATH=" + defaultPath, "container=slinit-nspawn"}
+	if term, _ := lookup("TERM"); tty && term != "" && term != "dumb" {
+		for _, k := range []string{"TERM", "COLORTERM", "NO_COLOR"} {
+			if v, ok := lookup(k); ok {
+				env = append(env, k+"="+v)
+			}
+		}
+	} else {
+		env = append(env, "TERM=dumb")
+	}
+	env = append(env, "HOME=/root", "USER=root", "LOGNAME=root")
+	for _, a := range setenv {
+		k, _, _ := strings.Cut(a, "=")
+		i := slices.IndexFunc(env, func(kv string) bool { return strings.HasPrefix(kv, k+"=") })
+		if i >= 0 {
+			env[i] = a
+		} else {
+			env = append(env, a)
+		}
+	}
+	return env
+}
+
+// withoutPayload is env less any variable named with payloadPrefix:
+// the launcher passes the child only the parameters it sets itself,
+// not ones it inherited, from a container it runs in, say.
+func withoutPayload(env []string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		return strings.HasPrefix(kv, payloadPrefix)
+	})
+}
+
+// setenvFlag collects --setenv NAME[=VALUE] assignments, as
+// systemd-nspawn's: NAME alone takes the launcher's value, or the
+// empty string.
+type setenvFlag []string
+
+func (f *setenvFlag) String() string { return strings.Join(*f, " ") }
+
+func (f *setenvFlag) Set(a string) error {
+	k, _, hasValue := strings.Cut(a, "=")
+	if !validEnvName(k) {
+		return fmt.Errorf("%q: not a valid environment variable name", k)
+	}
+	if strings.HasPrefix(k, payloadPrefix) {
+		return fmt.Errorf("%q: reserved for slinit-nspawn itself", k)
+	}
+	if strings.ContainsRune(a, 0) {
+		return fmt.Errorf("%q: NUL in the value", k)
+	}
+	if !hasValue {
+		a = k + "=" + os.Getenv(k)
+	}
+	*f = append(*f, a)
+	return nil
+}
+
+// validEnvName is systemd's env_name_is_valid: letters, digits and
+// underscores, not starting with a digit.
+func validEnvName(k string) bool {
+	if k == "" || k[0] >= '0' && k[0] <= '9' {
+		return false
+	}
+	for _, c := range []byte(k) {
+		if !(c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+// isTerminal reports whether fd is a terminal.
+func isTerminal(fd int) bool {
+	_, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	return err == nil
 }
 
 // devNodes are the host device nodes a container's /dev gets: the

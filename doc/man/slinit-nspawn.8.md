@@ -171,6 +171,14 @@ needs a user namespace, which it does not provide.
     A failure to write the entry is reported but does not stop the
     container.
 
+**--setenv** *NAME*[=*VALUE*], **-E** *NAME*[=*VALUE*]
+:   Set *NAME* in the container's init's environment (since 4.0.3), as
+    **systemd-nspawn**(1)'s **--setenv**. Without **=**, the value is
+    *NAME*'s in **slinit-nspawn**'s own environment, or empty. Can be
+    given more than once; a later one for the same *NAME* wins, and any
+    one overrides the defaults listed in **ENVIRONMENT**. *NAME* is
+    letters, digits and underscores, not starting with a digit.
+
 **--** *INIT-ARGS*...
 :   Everything after **--** is passed verbatim to the container's
     init as argv, after argv[0]. Use this to hand *slinit* its own
@@ -181,15 +189,32 @@ needs a user namespace, which it does not provide.
 
 # ENVIRONMENT
 
-The container's init inherits the environment **slinit-nspawn** was
-started with, plus the internal variables **_SLINIT_NSPAWN_CHILD**,
-**_SLINIT_NSPAWN_NAME**, **_SLINIT_NSPAWN_ROOTFS**,
-**_SLINIT_NSPAWN_INIT**, **_SLINIT_NSPAWN_HOSTNAME**,
-**_SLINIT_NSPAWN_INIT_ARGS** and, with **--private-network**,
-**_SLINIT_NSPAWN_PRIVATE_NET** that carry the launch parameters into the
-child. The container's own service files control what each service
-actually sees at exec time via **env-file** and related directives
-(see **slinit-service**(5)).
+The container's init starts with **systemd-nspawn**(1)'s environment
+(since 4.0.3), not **slinit-nspawn**'s:
+
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    container=slinit-nspawn
+    TERM=...  COLORTERM=...  NO_COLOR=...
+    HOME=/root  USER=root  LOGNAME=root
+
+*TERM*, *COLORTERM* and *NO_COLOR* are passed on from **slinit-nspawn**'s
+environment, where set, when standard input is a terminal and *TERM* is
+set and not *dumb*; otherwise *TERM* is *dumb*. **--setenv** adds to the
+list or overrides an entry. Nothing else reaches the container: before
+4.0.3 the init inherited **slinit-nspawn**'s whole environment,
+credentials and **ssh-agent**(1) socket included, and the internal
+**_SLINIT_NSPAWN_**\* variables that carry the launch parameters into
+the child, so an **slinit-nspawn** run inside the container took itself
+for such a child and failed. Those variables are now removed before the
+init is executed, and ones **slinit-nspawn** inherits are not passed on.
+Unlike **systemd-nspawn**(1) there is no *container_uuid*,
+*NOTIFY_SOCKET* or *LISTEN_FDS*.
+
+**slinit**(8) recognises *container=systemd-nspawn* and the other
+well-known values for its platform keywords, but not
+*slinit-nspawn*; the container's own service files control what each
+service actually sees at exec time via **env-file** and related
+directives (see **slinit-service**(5)).
 
 # EXIT STATUS
 
