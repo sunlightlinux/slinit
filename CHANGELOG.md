@@ -26,6 +26,15 @@ verified with `git tag -v`.
 
 ### Security
 
+- **`slinit-journalctl` printed sender-chosen fields raw**: only the
+  message was escaped. The syslog identifier (any local user writes
+  `IDENT:` to `/dev/log`), the hostname, the unit and, in `-o verbose`,
+  every field reached the reader's terminal unescaped, so an escape
+  sequence could drive it and a newline in a verbose value forged a
+  field line (`    _UID=0`). They are now escaped like the message
+  (unless `--all`), and a verbose value's continuation is indented past
+  its `NAME=`, as systemd does.
+
 - **Release builds use a supported Go toolchain.** CI, the SLSA builder
   and the tarball check all take the Go version from `go.mod`, which said
   only `go 1.25.0`, so release binaries were built with Go 1.25.0, a line
