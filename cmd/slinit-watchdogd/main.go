@@ -151,6 +151,10 @@ func disarm(fd int) {
 // one used is derived from the timeout the driver actually set.
 // Returns on SIGTERM / SIGINT (graceful disarm) or SIGPWR
 // (handover to an external watchdogd — WDT stays armed).
+// beforeOpenHook runs between installing the signal handler and
+// opening the device; tests use it to deliver a signal in that window.
+var beforeOpenHook = func() {}
+
 func run(device string, timeoutSec, intervalSec int, verbose bool) error {
 	// Signal wiring comes first. Opening the device arms the WDT, and
 	// a SIGTERM (or SIGPWR, whose default action also terminates)
@@ -160,6 +164,20 @@ func run(device string, timeoutSec, intervalSec int, verbose bool) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPWR, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
+
+	beforeOpenHook()
+	// A stop that came before the open must not arm the device just
+	// to disarm it: on a nowayout driver the magic close does nothing
+	// and the board would reset. Leave without opening.
+	select {
+	case sig := <-sigCh:
+		switch sig {
+		case syscall.SIGTERM, syscall.SIGINT, syscall.SIGPWR:
+			fmt.Fprintf(os.Stderr, "slinit-watchdogd: %s before arming; exiting\n", sig)
+			return nil
+		}
+	default:
+	}
 
 	// syscall.Open (not os.OpenFile) so no *os.File finalizer can
 	// race the magic-close ceremony below.

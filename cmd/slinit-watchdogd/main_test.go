@@ -175,3 +175,24 @@ func blockedInFifoOpen(pid int) bool {
 	}
 	return false
 }
+
+// A SIGTERM that is already pending when the daemon gets to the open
+// must not arm the device (a nowayout driver cannot be disarmed).
+func TestSignalBeforeOpenDoesNotArm(t *testing.T) {
+	dev := filepath.Join(t.TempDir(), "watchdog")
+	if err := os.WriteFile(dev, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := beforeOpenHook
+	t.Cleanup(func() { beforeOpenHook = old })
+	beforeOpenHook = func() {
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		time.Sleep(200 * time.Millisecond)
+	}
+	if err := run(dev, 60, 0, false); err != nil {
+		t.Fatalf("run = %v, want a clean exit without opening", err)
+	}
+	if got, _ := os.ReadFile(dev); len(got) != 0 {
+		t.Errorf("device was opened and written (%q) after a pending SIGTERM", got)
+	}
+}
