@@ -160,6 +160,15 @@ verified with `git tag -v`.
   SIGKILL cannot end (stuck in uninterruptible sleep) now holds the
   shutdown for that grace (3s by default, `--shutdown-grace`) once more.
 
+- **A milestone dependency of a pinned service could never be stopped
+  again.** `start --pin` on a service whose `depends-ms` dependency was
+  still starting passed the pin to that dependency; once it had started
+  the edge was soft, and unpin walked only hard edges, so the dependency
+  kept the pin after its dependent was unpinned and stopped. Stop, a
+  forced stop and shutdown all left it running, so a shutdown waited on
+  it. Unpin now travels milestone edges too. Found by the new control
+  protocol fuzzer.
+
 - **A control socket that could not be bound at boot no longer crashes
   PID 1 later.** When `/run` had no free inode at boot (a local user can
   fill it, and `/run` survives a soft-reboot), slinit went on without

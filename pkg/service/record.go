@@ -2837,8 +2837,11 @@ func (sr *ServiceRecord) Unpin() {
 			return
 		}
 
+		// A milestone counts although it may be soft by now: the pin
+		// reached its target while the edge was still hard, and the
+		// target must recompute it (see carriesPin).
 		for _, dep := range sr.dependsOn {
-			if dep.IsHard() {
+			if dep.carriesPin() {
 				toRec := dep.To.Record()
 				if toRec.deptPinnedStarted {
 					toRec.propPinDpt = true
@@ -3040,7 +3043,7 @@ func (sr *ServiceRecord) DoPropagation() {
 		if deptPin != sr.deptPinnedStarted {
 			sr.deptPinnedStarted = deptPin
 			for _, dep := range sr.dependsOn {
-				if dep.IsHard() {
+				if dep.carriesPin() {
 					toRec := dep.To.Record()
 					if toRec.deptPinnedStarted != deptPin {
 						toRec.propPinDpt = true
