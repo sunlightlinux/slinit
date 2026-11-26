@@ -1046,6 +1046,10 @@ requires.
   stayed STOPPING forever**: the stop-timeout SIGKILL was sent to a
   process group the daemon does not lead. It now reaches the daemon's
   group, as the stop signal does.
+- **`slinitctl --pin stop` on a service already stopped did not pin it**:
+  the reply said "already stopped" and the pin was dropped, so the next
+  start, a dependent's or `start-all`'s, brought it up. It is pinned now,
+  as in dinit and as `--pin start` already did for a running service.
 - **`nice=` with `sched-policy = batch` or `idle`** was undone (as root)
   or made the policy fail with EPERM (unprivileged); likewise
   `slinit-start-stop-daemon --nicelevel` with `--scheduler batch|idle`.

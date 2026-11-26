@@ -901,6 +901,16 @@ func (c *Connection) handleStopService(payload []byte) error {
 	}
 
 	if svc.State() == service.StateStopped {
+		// Pin it anyway, as dinit does and as the start side does for a
+		// service already up: the operator asked for it to stay down.
+		// Answering "already stopped" first dropped the pin, so the next
+		// start, a dependent's or start-all's, brought it up.
+		if pin {
+			c.server.services.PinStopService(svc)
+			if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStopped); err != nil {
+				fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
+			}
+		}
 		return c.writePacket(RplyAlreadySS, nil)
 	}
 
