@@ -342,14 +342,22 @@ func (c *Connection) EnvEvent(varString string, override bool) {
 var readIdleTimeout = 30 * time.Second
 
 // countingReader counts the bytes read through it, so serve can tell a
-// timeout between packets from one in the middle of a packet.
+// timeout between packets from one in the middle of a packet. When the
+// first bytes of a packet arrive it calls started, so the rest of the
+// packet gets a deadline of its own: the idle one may run out between
+// the header read and the payload read with the payload already
+// buffered, and Go's poller then reports a timeout without reading.
 type countingReader struct {
-	r io.Reader
-	n int
+	r       io.Reader
+	n       int
+	started func()
 }
 
 func (cr *countingReader) Read(p []byte) (int, error) {
 	n, err := cr.r.Read(p)
+	if cr.n == 0 && n > 0 && cr.started != nil {
+		cr.started()
+	}
 	cr.n += n
 	return n, err
 }
@@ -366,11 +374,14 @@ func (c *Connection) serve() {
 
 		// Set a read deadline so we periodically re-check ctx.Done
 		// instead of blocking indefinitely on a dead connection.
+		cr := countingReader{r: c.conn}
 		if tc, ok := c.conn.(interface{ SetReadDeadline(time.Time) error }); ok {
 			tc.SetReadDeadline(time.Now().Add(readIdleTimeout))
+			// A client stalled inside a packet for a whole timeout is
+			// still dropped below; one whose packet straddled the idle
+			// deadline is not.
+			cr.started = func() { tc.SetReadDeadline(time.Now().Add(readIdleTimeout)) }
 		}
-
-		cr := countingReader{r: c.conn}
 		cmd, payload, err := ReadPacket(&cr)
 		if err != nil {
 			// A timeout between packets is idleness: loop back to check
