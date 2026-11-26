@@ -219,3 +219,52 @@ func TestEnvGeneratorRunsOncePerStart(t *testing.T) {
 		}
 	}
 }
+
+// ready-check-command ran with no context: a check that hung outlived
+// the start-timeout failure and the stop, and every restart added one.
+// The watch now kills a check under way when it ends.
+func TestReadyCheckKilledWhenTheWatchEnds(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "rcleak")
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	s.SetHookTimeout(30 * time.Second)
+	s.SetReadyCheckCommand(backgroundedSleep(pidFile, "43.9"), 100*time.Millisecond)
+	s.SetStartTimeout(500 * time.Millisecond)
+	s.SetCommand([]string{"/bin/sleep", "30"})
+	set.AddService(s)
+	set.StartService(s)
+	pid := pidFromFile(t, pidFile)
+	if st := waitState(t, s, StateStopped, 5*time.Second); st != StateStopped {
+		t.Fatalf("state %v after the start-timeout, want STOPPED", st)
+	}
+	if !processGone(pid, 2*time.Second) {
+		t.Errorf("ready-check (pid %d) still running after the start timed out and the service stopped", pid)
+	}
+}
+
+// One ready-check attempt that hung was the last: the watch waited on it
+// and never polled again. Each attempt is now bounded by hook-timeout.
+func TestReadyCheckAttemptBounded(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "rcbound")
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	mark := filepath.Join(dir, "tried")
+	s.SetHookTimeout(300 * time.Millisecond)
+	// The first attempt hangs; any later one passes.
+	s.SetReadyCheckCommand([]string{"/bin/sh", "-c",
+		"test -e " + mark + " && exit 0; touch " + mark + "; " + backgroundedSleep(pidFile, "44.7")[2]},
+		50*time.Millisecond)
+	s.SetCommand([]string{"/bin/sleep", "30"})
+	set.AddService(s)
+	set.StartService(s)
+	pid := pidFromFile(t, pidFile)
+	if st := waitState(t, s, StateStarted, 3*time.Second); st != StateStarted {
+		t.Errorf("state %v: a hung ready-check attempt blocked the later ones", st)
+	}
+	if !processGone(pid, 2*time.Second) {
+		t.Errorf("the timed-out ready-check attempt (pid %d) is still running", pid)
+	}
+	set.StopService(s)
+	waitState(t, s, StateStopped, 5*time.Second)
+}

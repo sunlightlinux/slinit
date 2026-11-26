@@ -241,6 +241,13 @@ what tells you the oldest slinit your configuration will run on. See
 :   A program polled until it exits 0; the service is considered
     started only when the check passes.
 
+    Each attempt may run for **hook-timeout**; one that runs longer has
+    its process group killed and counts as not ready, and the polling
+    goes on. A check under way is likewise killed when the wait for
+    readiness ends — the start timing out, the process exiting, the
+    service being stopped. Before, a check that hung was never polled
+    again and outlived the service, one more with each restart.
+
 **ready-check-interval**=*duration*
 :   How often to retry **ready-check-command**, with a unit (*500ms*,
     *2s*); a bare number is rejected. Default *1s*. The check also runs

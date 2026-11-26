@@ -3647,11 +3647,26 @@ func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
 		interval = defaultReadyCheckInterval
 	}
 
+	// A check under way ends with the watch: when the start times out,
+	// the process exits or the service is stopped, done closes and the
+	// check's process group is killed. Before, a check that hung kept
+	// running after the service had failed or stopped, and each restart
+	// added another.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	// Immediate first check. The doneCh race is handled by the loop
 	// below — if we return here on success, all good; if the command
 	// fails, fall through to the polling loop which will also serve
 	// any pending doneCh signal.
-	if s.runReadyCheckOnce() {
+	if s.runReadyCheck(ctx) {
 		ch <- true
 		return
 	}
@@ -3665,7 +3680,7 @@ func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
 			ch <- false
 			return
 		case <-ticker.C:
-			if s.runReadyCheckOnce() {
+			if s.runReadyCheck(ctx) {
 				ch <- true
 				return
 			}
@@ -3674,10 +3689,20 @@ func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
 }
 
 // runReadyCheckOnce executes the configured ready-check-command exactly
-// once and reports whether it exited 0. Kept as a tiny helper so the
-// immediate-first-check and the polling loop share one code path.
+// once and reports whether it exited 0.
 func (s *ProcessService) runReadyCheckOnce() bool {
-	cmd := exec.Command(s.readyCheckCommand[0], s.readyCheckCommand[1:]...)
+	return s.runReadyCheck(context.Background())
+}
+
+// runReadyCheck runs one ready-check attempt, ended by parent or by
+// hook-timeout, whichever comes first, with its process group killed.
+// The immediate first check and the polling loop share it. Without a
+// bound, one check that hung was the last: the watch waited on it and
+// never polled again.
+func (s *ProcessService) runReadyCheck(parent context.Context) bool {
+	ctx, cancel := context.WithTimeout(parent, s.effectiveHookTimeout())
+	defer cancel()
+	cmd := newHookCmd(ctx, s.readyCheckCommand)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.hookEnv()
 	s.applyRunAs(cmd)
