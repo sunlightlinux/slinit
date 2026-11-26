@@ -53,6 +53,15 @@ check_prereqs() {
     fi
 }
 
+# harness_skip NAME REASON — a case the host cannot boot as asked (no
+# lts kernel). Reported like a guest-side skip_case, reason
+# included, and never as a pass.
+harness_skip() {
+    log_skip "$1"
+    echo "    SKIP: $2"
+    SKIPPED=$((SKIPPED + 1))
+}
+
 # Build the base VM image (once).
 #
 # Staleness check: rebuild if anything under cmd/ or pkg/ is newer than
@@ -210,6 +219,32 @@ SVC
         rm -f "${overlay_dir}/etc/slinit.d/kernel-args"
     fi
 
+    # A different kernel, by flavour: `lts` for 126, which needs
+    # CONFIG_NUMA, and linux-virt is built without it. build-vm.sh fetches
+    # vmlinuz-lts (pinned) next to vmlinuz-virt; when it could not, the
+    # case is reported SKIP here with the reason, not booted on the wrong
+    # kernel to skip less legibly inside.
+    #
+    # Only virt has virtio built in — lts makes it modules, and the image
+    # carries none for it — so any other kernel gets the result channel
+    # on a second UART (ttyS1) instead of virtio-serial, and is told so on
+    # its command line; guest-runner.sh reads it from /proc/cmdline.
+    local kernel_flavor="virt"
+    if [ -f "${services_dir}/kernel" ]; then
+        kernel_flavor=$(grep -v '^#' "${services_dir}/kernel" | tr -d ' \t\n')
+        rm -f "${overlay_dir}/etc/slinit.d/kernel"
+    fi
+    local kernel_image="${OUTPUT_DIR}/vmlinuz-${kernel_flavor}"
+    if [ ! -f "${kernel_image}" ]; then
+        harness_skip "${test_name}" "kernel '${kernel_flavor}' not built (build-vm.sh could not fetch vmlinuz-${kernel_flavor})"
+        return 0
+    fi
+    local result_args="-device virtio-serial -device virtserialport,chardev=testresult,name=test.0"
+    if [ "${kernel_flavor}" != "virt" ]; then
+        result_args="-device isa-serial,chardev=testresult,index=1"
+        extra_kernel_args="${extra_kernel_args} slinit_test.result=/dev/ttyS1"
+    fi
+
     # Create the overlay cpio and concatenate with base
     local overlay_cpio="${test_dir}/overlay.cpio.gz"
     # -R 0:0 as for the base image: the overlay's "." entry otherwise
@@ -247,7 +282,7 @@ SVC
     # every case failed with "service 'boot' not found".
     qemu-system-x86_64 \
         ${kvm_args} \
-        -kernel "${OUTPUT_DIR}/vmlinuz-virt" \
+        -kernel "${kernel_image}" \
         -initrd "${test_dir}/initramfs.cpio.gz" \
         -append "console=ttyS0 rdinit=/sbin/init loglevel=3 quiet ${extra_kernel_args}" \
         -m 384 \
@@ -255,9 +290,8 @@ SVC
         -nographic \
         -no-reboot \
         -serial file:"${console_log}" \
-        -device virtio-serial \
         -chardev socket,id=testresult,path="${chardev_path}",server=on,wait=off \
-        -device virtserialport,chardev=testresult,name=test.0 \
+        ${result_args} \
         &>"${test_dir}/qemu-stderr.log" &
     local qemu_pid=$!
 
@@ -327,7 +361,9 @@ SVC
     fi
 
     local result_line
-    result_line=$(grep "^TEST_RESULT:" "${result_file}" | tail -1)
+    # tr: a UART result channel (non-virt kernels) is a tty; the guest
+    # sets it raw, and a stray CR must still not turn PASS into FAIL.
+    result_line=$(grep "^TEST_RESULT:" "${result_file}" | tail -1 | tr -d '\r')
 
     if [ "${VERBOSE:-0}" = "1" ]; then
         echo "    --- test output ---"

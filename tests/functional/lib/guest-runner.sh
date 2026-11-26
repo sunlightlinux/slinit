@@ -8,6 +8,20 @@ set -e
 RESULT_DEV="/dev/vport0p1"
 TEST_SCRIPT="/test/current-test.sh"
 
+# A kernel without virtio built in (the lts kernel 126 boots for NUMA)
+# gets the result channel on a UART instead, and run-tests.sh says which
+# on the command line. A tty cooks what it is given — LF becomes CRLF,
+# and the harness then matches "TEST_RESULT:PASS\r" against nothing — so
+# the line is put in raw mode first.
+for _arg in $(cat /proc/cmdline 2>/dev/null); do
+    case "$_arg" in
+        slinit_test.result=*) RESULT_DEV="${_arg#*=}" ;;
+    esac
+done
+case "$RESULT_DEV" in
+    /dev/tty*) stty -F "$RESULT_DEV" raw -echo 2>/dev/null || true ;;
+esac
+
 # Source assertion helpers
 . /test/assert.sh
 

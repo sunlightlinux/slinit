@@ -9,6 +9,18 @@ ALPINE_ARCH="x86_64"
 ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
 MINIROOTFS_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/alpine-minirootfs-${ALPINE_RELEASE}-${ALPINE_ARCH}.tar.gz"
 KERNEL_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/netboot/vmlinuz-virt"
+# The lts kernel, for the one case the virt kernel cannot serve:
+# linux-virt is built without CONFIG_NUMA, so /sys/devices/system/node
+# never exists and 126-numa-mempolicy has nothing to bind to. linux-lts
+# has NUMA (and ACPI SRAT parsing), and that case boots it through its
+# .d/kernel file; everything else stays on virt. Only the kernel is
+# needed — lts builds virtio as modules, so that case reads its result
+# over a second UART instead of virtio-serial (see run-tests.sh).
+# Pinned: netboot carries only the current build, so when Alpine ships
+# a new lts this no longer matches, the fetch is refused, and 126 skips
+# naming the reason — update the checksum from the mirror.
+KERNEL_LTS_URL="${KERNEL_URL%/*}/vmlinuz-lts"
+KERNEL_LTS_SHA256="2f26de528e0a846b24b297e7b8d3ffce5b3510866a8e51197b2ec33abddc3258"   # 6.12.115-0-lts
 PACKAGES_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/${ALPINE_ARCH}"
 
 # nginx, for case 226 (a real daemon started from a systemd .service unit).
@@ -377,5 +389,11 @@ cd "${ROOTFS_DIR}"
 # process was still the runner (see the case).
 find . | cpio -o -H newc -R 0:0 2>/dev/null | gzip > "${OUTPUT_DIR}/initramfs-base.cpio.gz"
 cp "${KERNEL}" "${OUTPUT_DIR}/vmlinuz-virt"
+rm -f "${OUTPUT_DIR}/vmlinuz-lts"
+if fetch_pinned "${KERNEL_LTS_URL}" "${CACHE_DIR}/vmlinuz-lts" "${KERNEL_LTS_SHA256}"; then
+    cp "${CACHE_DIR}/vmlinuz-lts" "${OUTPUT_DIR}/vmlinuz-lts"
+else
+    echo "  note: no lts kernel — 126-numa-mempolicy will skip" >&2
+fi
 
 echo "VM build complete."

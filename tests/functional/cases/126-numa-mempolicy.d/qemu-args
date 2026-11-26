@@ -1,0 +1,7 @@
+# Two NUMA nodes, one CPU each, splitting the harness's -m 384 between
+# them, so node 1 exists and a bind to node 0 is a choice.
+-smp 2
+-object memory-backend-ram,id=m0,size=192M
+-object memory-backend-ram,id=m1,size=192M
+-numa node,nodeid=0,cpus=0,memdev=m0
+-numa node,nodeid=1,cpus=1,memdev=m1
