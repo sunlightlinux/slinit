@@ -1011,8 +1011,9 @@ requires.
   - a timed-out hook was killed but its children were not; the whole
     process group is killed now;
   - `ready-check-command` had no timeout and kept running after a failed
-    start or a stop; it now ends with the start (bounded by
-    `start-timeout`, not `hook-timeout`);
+    start or a stop; it now ends with the start, and each attempt is
+    bounded by 30 s (not `hook-timeout`), so a hung attempt is retried
+    and a slow one such as `pg_isready -t 10` still passes;
   - `post-start-command` was never cancelled: it outlived the stop and
     overlapped itself across restarts.
   - hooks that set the service's variables lost slinit's own
