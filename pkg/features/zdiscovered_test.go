@@ -28,3 +28,14 @@ func TestBuiltinListsCurrent(t *testing.T) {
 			GeneratedFile, len(opcodes), len(directives), len(BuiltinOpcodes), len(BuiltinDirectives))
 	}
 }
+
+// Directives the parser handles before applySetting's switch, by a
+// plain `setting == "..."` comparison, are supported too.
+func TestBuiltinHasPreSwitchDirectives(t *testing.T) {
+	r, _ := LoadBuiltin()
+	for _, name := range []string{"exec-condition", "assert-exec-condition"} {
+		if r.Lookup(name) == nil {
+			t.Errorf("%s missing from the built-in registry", name)
+		}
+	}
+}
