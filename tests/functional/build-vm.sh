@@ -24,6 +24,14 @@ PACKAGES_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/${ALPINE_ARCH}"
 NGINX_PKG="nginx-1.26.3-r4.apk"
 PCRE_PKG="pcre-8.45-r3.apk"
 
+# Headers for building libslinit-mlock.so against musl with the host's
+# cc when no musl toolchain is installed (see the mlock block below).
+# Pinned by checksum: when Alpine moves musl-dev on, the mirror drops
+# this file, the fetch fails, and 125-mlockall skips with a note saying
+# so — update both lines from the mirror's current musl-dev.
+MUSL_DEV_PKG="musl-dev-1.2.5-r12.apk"
+MUSL_DEV_SHA256="0b0357736d51253ddf82a4338378848cfbbe6d695aba60cf7790423670d61b2a"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CACHE_DIR="${PROJECT_DIR}/demo/_cache"
@@ -32,6 +40,28 @@ ROOTFS_DIR="${BUILD_DIR}/rootfs"
 OUTPUT_DIR="${SCRIPT_DIR}/_output"
 
 mkdir -p "${CACHE_DIR}" "${BUILD_DIR}" "${OUTPUT_DIR}"
+
+# fetch_pinned URL DEST SHA256 — download once into the cache, verify the
+# checksum every time. Non-zero (and nothing left at DEST) on a failed
+# download or a mismatch: everything fetched this way is optional, and
+# the case that needs it skips with the reason instead of the build dying.
+fetch_pinned() {
+    local url="$1" dest="$2" sum="$3"
+    if [ ! -f "$dest" ]; then
+        if ! curl -fsSL -o "${dest}.tmp" "$url"; then
+            rm -f "${dest}.tmp"
+            echo "  note: could not fetch ${url}" >&2
+            return 1
+        fi
+        mv "${dest}.tmp" "$dest"
+    fi
+    if ! echo "${sum}  ${dest}" | sha256sum -c --status - 2>/dev/null; then
+        echo "  note: ${dest##*/} does not match its pinned sha256 (${sum});" >&2
+        echo "        a corrupt download, or the mirror has moved on — then update the pin" >&2
+        rm -f "$dest"
+        return 1
+    fi
+}
 
 # Download Alpine minirootfs
 ROOTFS_TAR="${CACHE_DIR}/alpine-minirootfs-${ALPINE_RELEASE}-${ALPINE_ARCH}.tar.gz"
@@ -186,12 +216,80 @@ if [ -z "${MLOCK_CC}" ] && command -v zig >/dev/null 2>&1; then
     MLOCK_CC="zig cc -target x86_64-linux-musl"
 fi
 
+# No musl toolchain on the host (the usual case outside Debian/Ubuntu,
+# where musl-tools is one package away): do what musl-gcc does. musl-gcc
+# is not a compiler, it is a specs file that points the host gcc at
+# musl's headers and libc instead of the host's. The headers come from
+# Alpine's own musl-dev (3.4 MB, pinned below), and the library we link
+# against is the image's own /lib/ld-musl-x86_64.so.1 — the exact libc
+# the preload will meet in the guest, so DT_NEEDED comes out as its
+# soname, libc.musl-x86_64.so.1. -nostdlib keeps every host library and
+# startup file out of the link; the result is checked below either way.
+if [ -z "${MLOCK_CC}" ] && command -v cc >/dev/null 2>&1; then
+    if fetch_pinned "${PACKAGES_URL}/${MUSL_DEV_PKG}" "${CACHE_DIR}/${MUSL_DEV_PKG}" "${MUSL_DEV_SHA256}"; then
+        _sys="${BUILD_DIR}/musl-sysroot"
+        rm -rf "${_sys}"
+        mkdir -p "${_sys}/lib"
+        tar xzf "${CACHE_DIR}/${MUSL_DEV_PKG}" -C "${_sys}" usr/include 2>/dev/null || true
+        cp "${ROOTFS_DIR}/lib/ld-musl-x86_64.so.1" "${_sys}/lib/"
+        ln -sf ld-musl-x86_64.so.1 "${_sys}/lib/libc.musl-x86_64.so.1"
+        _gccinc=$(cc -print-file-name=include 2>/dev/null || true)
+        _libgcc=$(cc -print-libgcc-file-name 2>/dev/null || true)
+        {
+            echo '#!/bin/sh'
+            printf 'exec cc -nostdinc -isystem %s/usr/include' "${_sys}"
+            [ -d "${_gccinc}" ] && printf ' -isystem %s' "${_gccinc}"
+            printf ' -nostdlib "$@" -L%s/lib -l:libc.musl-x86_64.so.1' "${_sys}"
+            [ -f "${_libgcc}" ] && printf ' %s' "${_libgcc}"
+            echo
+        } > "${BUILD_DIR}/musl-cc"
+        chmod 755 "${BUILD_DIR}/musl-cc"
+        [ -f "${_sys}/usr/include/sys/mman.h" ] && MLOCK_CC="${BUILD_DIR}/musl-cc"
+    fi
+fi
+
+# check_musl_so FILE — refuse a library that is not musl's. A glibc build
+# loads nowhere in this image and fails in the guest, far from the cause.
+# Two checks: DT_NEEDED names musl's libc and not glibc's, and — when the
+# host can run x86_64 — the image's own loader preloads it and runs its
+# constructor (an invalid SLINIT_MLOCKALL makes the constructor exit 127
+# with its own message, which only happens if it actually ran).
+check_musl_so() {
+    local so="$1" needed out rc
+    if command -v readelf >/dev/null 2>&1; then
+        needed=$(readelf -d "$so" 2>/dev/null | awk '/NEEDED/ { print $NF }' | tr -d '[]')
+    else
+        # No binutils: the names are in .dynstr, plain text in the file.
+        needed=$(grep -aoE 'libc\.so\.6|libc\.musl-x86_64\.so\.1' "$so" | sort -u)
+    fi
+    case " $(echo $needed) " in
+        *" libc.so.6 "*) echo "  note: $so needs glibc's libc.so.6" >&2; return 1 ;;
+        *" libc.musl-x86_64.so.1 "*|*" libc.so "*) ;;
+        *) echo "  note: $so has no musl libc in DT_NEEDED ($needed)" >&2; return 1 ;;
+    esac
+    # The loader check proves loadability, not libc: musl's ld.so also
+    # searches the HOST's /lib, where it would find glibc's libc.so.6 —
+    # measured, a glibc build passes it. Hence the DT_NEEDED check first.
+    if [ "$(uname -m)" = x86_64 ]; then
+        out=$(sh -c 'SLINIT_MLOCKALL=selftest SLINIT_MLOCKALL_PID=$$ exec "$1/lib/ld-musl-x86_64.so.1" --library-path "$1/lib" --preload "$2" "$1/bin/busybox" true' _ "${ROOTFS_DIR}" "$so" 2>&1) && rc=0 || rc=$?
+        if [ "$rc" != 127 ] || [ "${out#*bad SLINIT_MLOCKALL=selftest}" = "$out" ]; then
+            echo "  note: musl's loader did not run $so's constructor (rc=$rc: $out)" >&2
+            return 1
+        fi
+    fi
+}
+
 if [ -n "${MLOCK_CC}" ]; then
     make -s -C "${PROJECT_DIR}/lib/slinit-mlock" clean
     make -s -C "${PROJECT_DIR}/lib/slinit-mlock" CC="${MLOCK_CC}" all
-    install -d "${ROOTFS_DIR}/lib/slinit"
-    install -m 644 "${PROJECT_DIR}/lib/slinit-mlock/libslinit-mlock.so" \
-        "${ROOTFS_DIR}/lib/slinit/libslinit-mlock.so"
+    if check_musl_so "${PROJECT_DIR}/lib/slinit-mlock/libslinit-mlock.so"; then
+        install -d "${ROOTFS_DIR}/lib/slinit"
+        install -m 644 "${PROJECT_DIR}/lib/slinit-mlock/libslinit-mlock.so" \
+            "${ROOTFS_DIR}/lib/slinit/libslinit-mlock.so"
+        echo "  libslinit-mlock.so built with ${MLOCK_CC##*/} (musl)"
+    else
+        echo "  note: libslinit-mlock.so is not a usable musl build; not installed" >&2
+    fi
     make -s -C "${PROJECT_DIR}/lib/slinit-mlock" clean
 else
     # Deliberately install nothing. A glibc library here would be worse
@@ -199,8 +297,8 @@ else
     # mlockall it cannot honour, so an absent library is a clear
     # failure, while a wrong one was a silent one. 125-mlockall skips
     # when the library is missing.
-    echo "  note: no musl compiler (musl-gcc or zig); skipping libslinit-mlock.so" >&2
-    echo "        — 125-mlockall will skip. Install musl-tools or zig to run it."
+    echo "  note: no musl compiler (musl-gcc, zig, or cc + Alpine musl-dev);" >&2
+    echo "        skipping libslinit-mlock.so — 125-mlockall will skip." >&2
 fi
 install -m 755 "${BUILD_DIR}/slinit-binfmt" "${ROOTFS_DIR}/usr/bin/slinit-binfmt"
 install -m 755 "${BUILD_DIR}/slinit-sysctl" "${ROOTFS_DIR}/usr/bin/slinit-sysctl"

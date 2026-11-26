@@ -10,7 +10,7 @@ SVC="test-mlk"
 # none. Without the library the runner refuses to start the service — it
 # will not pretend to honour mlockall — so there is nothing to measure.
 if [ ! -f /lib/slinit/libslinit-mlock.so ]; then
-    skip_case "libslinit-mlock.so not in the image (no musl compiler on the build host)"
+    skip_case "libslinit-mlock.so not in the image (no musl build on the build host — see build-vm.sh output)"
 fi
 
 cat > "/etc/slinit.d/$SVC" <<EOF
@@ -107,7 +107,24 @@ fi
 
 # The lock itself: slinit-runner preloads libslinit-mlock.so, which calls
 # mlockall(2) inside the service's main process, so VmLck is non-zero.
-_lck=$(awk '/^VmLck:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
+#
+# Polled, not read once. The name changes at execve and the lock is taken
+# later, by the library's constructor once ld.so has mapped it, so there
+# is a window in which the process is already `sh` and still unlocked.
+# Sampling tightly in the VM shows it: comm/VmLck went slinit-runner
+# 1227668 → slinit-runner 0 → sh 1632 within 40 ms. This case read VmLck
+# once, the first time it ran with the library actually in the image it
+# landed in that window, and reported "service memory not locked
+# (VmLck='0')" for a service locked a millisecond later. Five seconds is
+# far past the window; a library that never locks still fails.
+_lck=""
+_deadline=$(( $(date +%s) + 5 ))
+while :; do
+    _lck=$(awk '/^VmLck:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
+    [ -n "$_lck" ] && [ "$_lck" -gt 0 ] && break
+    [ "$(date +%s)" -ge "$_deadline" ] && break
+    sleep 0.2
+done
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -n "$_lck" ] && [ "$_lck" -gt 0 ]; then
     echo "OK: service memory locked (VmLck=${_lck} kB)"
