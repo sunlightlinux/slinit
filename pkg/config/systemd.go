@@ -77,6 +77,11 @@ type SystemdConfig struct {
 	stopTimeout  string
 	closeStdin   bool
 
+	// TimeoutStartSec= / TimeoutSec=; startTimeoutSet records that the
+	// unit gave one, which a oneshot's default depends on.
+	startTimeout    string
+	startTimeoutSet bool
+
 	// rlimit-*
 	rlimitNofile string
 	rlimitCore   string
@@ -420,6 +425,13 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		// systemd; ":group" is a run-as slinit rejects.
 		cfg.runAs = "root" + cfg.runAs
 	}
+	if cfg.svcType == "scripted" && !cfg.startTimeoutSet {
+		// systemd gives a oneshot no start timeout unless the unit
+		// sets one (service_add_extras: DefaultTimeoutStartSec does not
+		// apply). slinit's 60 s default interrupted every converted
+		// oneshot that ran longer, an fsck or a firmware load.
+		cfg.startTimeout = "0"
+	}
 	if cfg.argv0 != "" && cfg.svcType == "scripted" {
 		// A scripted service takes no command-argv0.
 		warns = append(warns, warnArgv0("ExecStart", cfg.argv0)...)
@@ -722,11 +734,21 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		}
 	case "RestartSec":
 		cfg.restartDelay = systemdSeconds(val, "")
-	case "TimeoutStopSec", "TimeoutSec":
+	case "TimeoutStopSec":
 		// infinity disables the timeout in both; slinit spells it 0.
+		// systemd reads 0 as infinity too (parse_sec_fix_0), and 0 is
+		// slinit's "wait forever".
 		cfg.stopTimeout = systemdSeconds(val, "0")
-	case "TimeoutStartSec":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("TimeoutStartSec=%s — slinit start-timeout maps this; add manually", val)})
+	case "TimeoutStartSec", "TimeoutSec":
+		// Was a note only, which the converter hides without --verbose,
+		// so every converted unit got slinit's 60 s default: a unit
+		// asking for longer, or for none, was interrupted after a
+		// minute. TimeoutSec= sets both, as in systemd's
+		// config_parse_service_timeout.
+		cfg.startTimeout, cfg.startTimeoutSet = systemdSeconds(val, "0"), true
+		if key == "TimeoutSec" {
+			cfg.stopTimeout = cfg.startTimeout
+		}
 	case "PIDFile":
 		cfg.pidFile = val
 	case "NoNewPrivileges":
@@ -1778,6 +1800,9 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	}
 	if c.restartDelay != "" {
 		fmt.Fprintf(w, "restart-delay = %s\n", c.restartDelay)
+	}
+	if c.startTimeout != "" {
+		fmt.Fprintf(w, "start-timeout = %s\n", c.startTimeout)
 	}
 	if c.stopTimeout != "" {
 		fmt.Fprintf(w, "stop-timeout = %s\n", c.stopTimeout)

@@ -74,6 +74,13 @@ command per service, so of several **ExecStart** lines (a oneshot) only
 the last is kept, with a warning naming the ones dropped; likewise only
 the first **ExecStartPre** and **ExecStartPost**.
 
+**TimeoutStartSec** becomes **start-timeout** and **TimeoutStopSec**
+**stop-timeout**; **TimeoutSec** sets both. **infinity** and **0** both
+mean no timeout, as in systemd, and are written as **0**. A
+**Type=oneshot** unit that sets neither **TimeoutStartSec** nor
+**TimeoutSec** gets **start-timeout = 0**: systemd gives a oneshot no
+start timeout by default, where slinit's default is 60 seconds.
+
 Variables in an **Exec** line are not what they are under systemd,
 which substitutes **$VAR** and **${VAR}** from the unit's
 **Environment** and **EnvironmentFile** when it runs the command:
