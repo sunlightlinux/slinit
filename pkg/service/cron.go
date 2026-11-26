@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -156,10 +157,21 @@ func (cr *CronRunner) SetPersistent(b bool) { cr.persistent = b }
 // cronStopGrace how long a run told to end gets between SIGTERM and SIGKILL.
 // Variables for the tests. The wait holds a shutdown back, so it has a limit;
 // killing at once would be the worst moment to interrupt a system update.
-var (
-	cronStopWait  = time.Minute
-	cronStopGrace = 10 * time.Second
-)
+//
+// Atomic because a test changes them while a runner left over from an
+// earlier test may still read them.
+var cronStopWait, cronStopGrace atomicDuration
+
+func init() {
+	cronStopWait.Store(time.Minute)
+	cronStopGrace.Store(10 * time.Second)
+}
+
+// atomicDuration is a time.Duration safe for concurrent Load and Store.
+type atomicDuration struct{ v atomic.Int64 }
+
+func (d *atomicDuration) Load() time.Duration   { return time.Duration(d.v.Load()) }
+func (d *atomicDuration) Store(x time.Duration) { d.v.Store(int64(x)) }
 
 // Start launches the periodic execution goroutine. Safe to call from any
 // goroutine, and again after Stop: a service restarted used to come back with
@@ -587,7 +599,7 @@ func (cr *CronRunner) fireContext() (context.Context, context.CancelFunc) {
 			return
 		}
 		select {
-		case <-time.After(cronStopWait):
+		case <-time.After(cronStopWait.Load()):
 			cancel()
 		case <-ctx.Done():
 		}
@@ -626,7 +638,7 @@ func (cr *CronRunner) executeCommand() error {
 		}
 		return nil
 	}
-	cmd.WaitDelay = cronStopGrace
+	cmd.WaitDelay = cronStopGrace.Load()
 	cmd.Cancel = func() error {
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		if err == syscall.ESRCH {
