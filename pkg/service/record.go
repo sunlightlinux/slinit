@@ -3569,6 +3569,16 @@ func (sr *ServiceRecord) Stopped() {
 	sr.forceStop = false
 
 	willRestart := sr.desired.Load() == StateStarted && !sr.pinnedStopped
+	if sr.desired.Load() == StateStarted && sr.pinnedStopped {
+		// A dependent asked for a start while this service was
+		// stopping; the stop pin refuses it now, as doStart refuses one
+		// on a STOPPED service. Fail it: left alone, the dependents
+		// waited for good, and their hold kept this service counted
+		// active even once they let go of it, as a release reaching 0
+		// on a STOPPED service does not mark it inactive.
+		sr.desired.Store(StateStopped)
+		sr.cancelDependentsStart()
+	}
 	// restart-limit-count exhausted overrides willRestart: settle into
 	// the FAILED stable state instead of trying initiateStart again.
 	if sr.restartLimitExhausted {
@@ -3716,24 +3726,10 @@ func (sr *ServiceRecord) Stopped() {
 	sr.notifyListeners(EventStopped)
 }
 
-// failedToStart handles start failure.
-func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
-	// Release start limiter slot or cancel waiting
-	sr.dropStartSlot()
-
-	sr.desired.Store(StateStopped)
-
-	if sr.waitingForConsole {
-		sr.services.UnqueueConsole(sr.self)
-		sr.waitingForConsole = false
-	}
-
-	if sr.startExplicit {
-		sr.startExplicit = false
-		sr.Release(false)
-	}
-
-	// Cancel start of dependents
+// cancelDependentsStart fails the start of the hard dependents waiting
+// for this service, lets the soft ones go on without it, and releases
+// what every dependent holds on it.
+func (sr *ServiceRecord) cancelDependentsStart() {
 	for _, dept := range sr.dependents {
 		switch dept.DepType {
 		case DepRegular, DepPreparedBy, DepMilestone:
@@ -3753,6 +3749,26 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 			sr.Release(false)
 		}
 	}
+}
+
+// failedToStart handles start failure.
+func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
+	// Release start limiter slot or cancel waiting
+	sr.dropStartSlot()
+
+	sr.desired.Store(StateStopped)
+
+	if sr.waitingForConsole {
+		sr.services.UnqueueConsole(sr.self)
+		sr.waitingForConsole = false
+	}
+
+	if sr.startExplicit {
+		sr.startExplicit = false
+		sr.Release(false)
+	}
+
+	sr.cancelDependentsStart()
 
 	// A start that failed is over: STOPPING until the process, if any,
 	// is gone (dinit's failed_to_start). Left in STARTING, the process's

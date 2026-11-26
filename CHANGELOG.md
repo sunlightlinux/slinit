@@ -251,6 +251,15 @@ verified with `git tag -v`.
   run). A service that stops with nothing requiring it now lets go of
   its dependencies.
 
+- **A start refused by a stop pin no longer leaves its dependents
+  waiting.** `stop --pin` on a service still stopping, then a start of
+  a service that depends on it: the dependent waited for it, the pin
+  refused the restart once the stop ended, and the dependent waited for
+  good, holding the service on the active count. Once the dependent let
+  go, every service was STOPPED and the shutdown still waited out its
+  emergency timeout. The refused start now fails the dependents, as a
+  start refused on a stopped service already did.
+
 - **`slinitctl add-dep`/`rm-dep` with `prepared-by` work.** slinitctl
   accepted the kind and slinitctl(8) documents it, but the daemon took
   only the kinds up to `after` and refused every prepared-by request, so
