@@ -4020,7 +4020,7 @@ func cmdAnalyze(conn net.Conn, args []string) error {
 	case "plot":
 		return cmdAnalyzePlot(conn)
 	default:
-		return fmt.Errorf("analyze: unknown subcommand %q (want: time, blame, "+
+		return usagef("analyze: unknown subcommand %q (want: time, blame, "+
 			"critical-chain, dot, plot)", sub)
 	}
 }

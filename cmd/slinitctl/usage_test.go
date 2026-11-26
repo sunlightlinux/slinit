@@ -177,6 +177,16 @@ func TestExitStatuses(t *testing.T) {
 	}
 }
 
+// An unknown analyze subcommand is a malformed argument, which
+// slinitctl(8) lists under exit 2 like an unknown signal or shutdown
+// kind; it exited 1, the status for a command that failed.
+func TestAnalyzeUnknownSubcommandIsUsageError(t *testing.T) {
+	var ue usageError
+	if err := cmdAnalyze(nil, []string{"bogus"}); !errors.As(err, &ue) {
+		t.Errorf("analyze bogus: err = %v, not a usage error", err)
+	}
+}
+
 // --help is output the caller asked for, so it goes to stdout, as
 // dinitctl's does: `slinitctl --help | grep reload` found nothing when
 // it went to stderr. With no command at all the usage text is the error

@@ -142,6 +142,9 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`slinitctl analyze` with an unknown subcommand exited 1**, the
+  status for a command that failed, where slinitctl(8) lists a
+  malformed argument under exit 2. *Compat:* it now exits 2.
 - **`slinitctl --help` printed to stderr**: `slinitctl --help | less`
   or `| grep` saw nothing. The usage text asked for with `-h`/`--help`
   now goes to stdout, as `dinitctl --help` does; the usage printed for
