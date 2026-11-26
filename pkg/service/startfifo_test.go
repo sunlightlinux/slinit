@@ -85,3 +85,15 @@ func TestRequiredFileFIFODoesNotBlockStart(t *testing.T) {
 		t.Errorf("state %v, want STARTED", st)
 	}
 }
+
+// standard-input-file was opened in the start, under the service
+// set's lock; a FIFO with no writer blocked that open. The service now
+// starts with the FIFO as fd 0.
+func TestStdinFileFIFODoesNotBlockStart(t *testing.T) {
+	st := fifoStart(t, func(s *ProcessService, f string) {
+		s.Record().SetStandardInputFile(f)
+	})
+	if st != StateStarted {
+		t.Errorf("state %v, want STARTED", st)
+	}
+}

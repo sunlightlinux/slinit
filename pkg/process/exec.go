@@ -406,10 +406,19 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// a start failure — a service told to read a file that is not there
 	// should not come up reading /dev/null instead and look healthy.
 	if params.StdinFile != "" {
-		f, err := os.Open(params.StdinFile)
-		if err != nil {
-			return 0, nil, fmt.Errorf("standard-input-file %s: %w", params.StdinFile, err)
+		// O_NONBLOCK so a FIFO with no writer cannot block PID 1 in
+		// open(2); the child gets fd 0 back in blocking mode.
+		fd, err := unix.Open(params.StdinFile, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		if err == nil {
+			if err = unix.SetNonblock(fd, false); err != nil {
+				unix.Close(fd)
+			}
 		}
+		if err != nil {
+			return 0, nil, fmt.Errorf("standard-input-file %s: %w", params.StdinFile,
+				&os.PathError{Op: "open", Path: params.StdinFile, Err: err})
+		}
+		f := os.NewFile(uintptr(fd), params.StdinFile)
 		defer f.Close()
 		cmd.Stdin = f
 	}

@@ -104,6 +104,10 @@ verified with `git tag -v`.
   opened it for writing with the service set's lock held and waited for
   a reader. *Compat:* such a start now fails (ENXIO) instead of waiting;
   a FIFO whose reader is already running works as before.
+- **A `standard-input-file` that is a FIFO froze PID 1**: the start
+  opened it with the service set's lock held and waited for a writer.
+  *Compat:* the service now starts at once with the FIFO as fd 0; a read
+  before any writer has opened it sees end-of-file.
 
 ### Fixed
 - **A FIFO named in `required-files` froze PID 1**: the readability check
