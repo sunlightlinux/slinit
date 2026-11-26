@@ -17,8 +17,7 @@
 // Runtime directory /run/user/<uid> is a tmpfs mounted at the user's
 // first session (mode 0700, owned by the user, a plain directory where
 // the mount is refused); subsequent sessions for the same UID reuse it
-// so per-user apps can co-locate socket/state files there, and it is
-// removed when the last one ends.
+// so per-user apps can co-locate socket/state files there.
 package main
 
 import (
@@ -613,7 +612,6 @@ func (m *manager) releaseSession(id string) *dbus.Error {
 		_ = os.Remove(compatUserFile(rec.UserID))
 		userSlice := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice", rec.UserID)
 		_ = os.Remove(userSlice)
-		removeRuntimeDir(fmt.Sprintf("/run/user/%d", rec.UserID))
 		if m.conn != nil {
 			m.unregisterUserObject(rec.UserID)
 		}
@@ -642,15 +640,22 @@ var runtimeDirFallback sync.Once
 // of PID 1 and every system service.
 //
 // A directory that is already a mount point is left as it is, and so is
-// one of a user with sessions already open: a session that predates this
-// slinit-logind has its sockets in the plain directory, and a mount over
-// it would hide them. Where the mount is refused (no CAP_SYS_ADMIN in a
-// container) it stays a plain directory, as before.
+// one of a user with sessions already open, or one that is not empty: a
+// session that predates this slinit-logind, or a user instance that
+// outlives its sessions (turnstile, slinit -u), keeps its sockets in the
+// plain directory, and a mount over it would hide them. Where the mount
+// is refused (no CAP_SYS_ADMIN in a container) it stays a plain
+// directory, as before.
+//
+// Unlike systemd-logind, the directory is not removed at the user's last
+// logout: slinit-logind does not implement linger, and a user instance
+// running past the last session still uses it. The tmpfs stays mounted,
+// capped, until reboot.
 func makeRuntimeDir(path string, uid uint32, first bool) {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return
 	}
-	if first && !isMountPoint(path) {
+	if first && !isMountPoint(path) && dirEmpty(path) {
 		size := runtimeDirectorySize()
 		opts := fmt.Sprintf("mode=0700,uid=%d,gid=%d,size=%d,nr_inodes=%d",
 			uid, lookupGID(uid), size, size/4096)
@@ -665,6 +670,17 @@ func makeRuntimeDir(path string, uid uint32, first bool) {
 	_ = os.Chown(path, int(uid), int(uid))
 }
 
+// dirEmpty reports whether the directory at path has no entries.
+func dirEmpty(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, _ := f.Readdirnames(1)
+	return len(names) == 0
+}
+
 // isMountPoint reports whether path is on a different filesystem from
 // its parent.
 func isMountPoint(path string) bool {
@@ -673,17 +689,6 @@ func isMountPoint(path string) bool {
 		return false
 	}
 	return st.Dev != parent.Dev
-}
-
-// removeRuntimeDir takes the user's runtime directory away at the end of
-// their last session, as systemd-logind does for a user without linger:
-// the contents first, so the memory is freed even while something still
-// holds the detached mount, then the mount, then the directory.
-// RemoveAll does not follow symlinks the user left in it.
-func removeRuntimeDir(path string) {
-	_ = os.RemoveAll(path)
-	_ = unix.Unmount(path, unix.MNT_DETACH)
-	_ = os.RemoveAll(path)
 }
 
 // watchSessionLeader drops the session once its leader process exits.

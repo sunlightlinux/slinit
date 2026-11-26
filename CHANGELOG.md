@@ -90,13 +90,14 @@ verified with `git tag -v`.
   the user's first session now mounts a tmpfs there (mode 0700, owned by
   the user, `nodev,nosuid`, capped at the advertised
   `RuntimeDirectorySize`, 10% of RAM, and `RuntimeDirectoryInodesMax`),
-  and the user's last session takes the directory away. Where the mount is
-  refused (no `CAP_SYS_ADMIN` in a container) it stays a plain directory,
-  logged once. Compat: `/run/user/<uid>` is now its own mount and is
-  removed, with whatever a lingering process kept in it, when the user's
-  last session ends (slinit-logind has no linger; `enable-linger` is
-  still accepted and ignored). A user with sessions open across the
-  upgrade keeps the plain directory until their last logout.
+  if the directory is new or empty. Where the mount is refused (no
+  `CAP_SYS_ADMIN` in a container) it stays a plain directory, logged
+  once. Unlike systemd-logind, the directory is kept after the user's
+  last logout: slinit-logind has no linger, and a user instance
+  (turnstile, `slinit -u`) may outlive the sessions. Compat:
+  `/run/user/<uid>` is now its own mount, capped at 10% of RAM. A
+  directory that already has content (a session or user instance from
+  before the upgrade) stays a plain directory until the next boot.
 
 - **Release builds use a supported Go toolchain.** CI, the SLSA builder
   and the tarball check all take the Go version from `go.mod`, which said

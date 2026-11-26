@@ -100,7 +100,8 @@ func nsLogind(t *testing.T) *manager {
 // could log in could fill /run, and with it every pid file, socket and
 // credentials directory PID 1 and the system services make there. Like
 // systemd-logind, slinit-logind now mounts a tmpfs of its own there,
-// capped at 10% of RAM, and takes it away at the user's last logout.
+// capped at 10% of RAM. It is kept after the last logout (no linger in
+// slinit-logind: a user instance may outlive the sessions).
 func TestRuntimeDirIsOwnTmpfs(t *testing.T) {
 	if !inMountNS(t) {
 		return
@@ -139,8 +140,8 @@ func TestRuntimeDirIsOwnTmpfs(t *testing.T) {
 	if derr := m.releaseSession(id); derr != nil {
 		t.Fatalf("releaseSession: %v", derr)
 	}
-	if _, err := os.Lstat(rt); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("runtime dir still there after the last session ended: %v", err)
+	if !isMountPoint(rt) {
+		t.Errorf("runtime dir is no longer its own tmpfs after the last session ended")
 	}
 	if free := freeBytes(t, "/run"); free < before-(256<<10) {
 		t.Errorf("/run free %d KiB after the last logout, %d KiB before the user filled it", free>>10, before>>10)
@@ -199,8 +200,35 @@ func TestRuntimeDirKeptForOpenSessions(t *testing.T) {
 	if derr := m.releaseSession("c7"); derr != nil {
 		t.Fatalf("releaseSession c7: %v", derr)
 	}
-	if _, err := os.Lstat(rt); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("runtime dir still there after the last session ended: %v", err)
+	if _, err := os.Stat(filepath.Join(rt, "bus")); err != nil {
+		t.Errorf("the last logout removed the runtime dir a user instance may still use: %v", err)
+	}
+}
+
+// A user instance that outlives its sessions (turnstile, slinit -u) keeps
+// its sockets in the runtime directory with no session open. A first
+// session must not mount a tmpfs over them.
+func TestRuntimeDirNotMountedOverContent(t *testing.T) {
+	if !inMountNS(t) {
+		return
+	}
+	m := nsLogind(t)
+	if err := os.MkdirAll("/run/user/0", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("/run/user/0/slinit.sock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, rt, _, _, _, _, _, derr := m.CreateSession(root, 0, uint32(os.Getpid()),
+		"login", "tty", "user", "", "", 0, "", "", false, "", "", nil)
+	if derr != nil {
+		t.Fatalf("CreateSession: %v", derr)
+	}
+	if isMountPoint(rt) {
+		t.Errorf("%s was mounted over its existing content", rt)
+	}
+	if _, err := os.Stat(filepath.Join(rt, "slinit.sock")); err != nil {
+		t.Errorf("the user instance's socket is hidden: %v", err)
 	}
 }
 
