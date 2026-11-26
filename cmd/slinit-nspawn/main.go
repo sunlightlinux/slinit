@@ -23,8 +23,9 @@
 //   - Init exec: default /sbin/slinit; override with --init=PATH.
 //     Argv beyond -- is passed through as init's args.
 //   - Registry: parent writes /run/slinit/machines/<name> post-fork,
-//     removes it on child exit. On SIGTERM/SIGINT the parent proxies
-//     SIGTERM to PID 1 inside the container before waiting.
+//     removes it on child exit. SIGTERM and SIGINT are forwarded to
+//     PID 1 inside the container, SIGHUP as SIGTERM; the init has
+//     SIGKILL as its parent death signal.
 //   - Console: the child keeps the launching TTY (no pty allocation
 //     yet — good enough for foreground demos, systemd-nspawn's
 //     -x pseudo-tty is deferred).
@@ -233,10 +234,15 @@ func runParent(p childPayload) error {
 	if p.PrivateNet {
 		flagsUnshare |= unix.CLONE_NEWNET
 	}
+	// Pdeathsig: a launcher that dies, killed or by a signal it does
+	// not catch, takes the container with it, as systemd-nspawn's
+	// PR_SET_PDEATHSIG does, rather than leaving it running with no
+	// one to reap it or remove its registry entry.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:   flagsUnshare,
 		Setpgid:      true,
 		Unshareflags: unix.CLONE_NEWNS,
+		Pdeathsig:    syscall.SIGKILL,
 	}
 	// The container gets a process group of its own. When the launcher
 	// holds the terminal on stdin, that group is made the terminal's
@@ -250,6 +256,12 @@ func runParent(p childPayload) error {
 		cmd.SysProcAttr.Foreground = true
 		cmd.SysProcAttr.Ctty = 0 // a descriptor of this process, for Foreground
 	}
+	// The parent death signal fires when the thread that forked the
+	// child exits, not the process. Go ends a thread only when a
+	// goroutine locked to it returns; held by this goroutine until
+	// the container is reaped, the forking thread can run nothing else.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("clone into namespaces: %w", err)
 	}
@@ -284,14 +296,20 @@ func runParent(p childPayload) error {
 		}
 	}()
 
-	// Signal proxy: forward SIGTERM/SIGINT to the child's PID 1.
+	// Signal proxy: forward SIGTERM/SIGINT to the child's PID 1, and
+	// SIGHUP, the terminal going away, as SIGTERM: for an init SIGHUP
+	// means reload, and the launcher must stay to see the container
+	// exit and remove its registry entry.
 	sigCh := make(chan os.Signal, 4)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	done := make(chan struct{})
 	go func() {
 		for {
 			select {
 			case s := <-sigCh:
+				if s == syscall.SIGHUP {
+					s = syscall.SIGTERM
+				}
 				// Send to the child directly. Inside the container's
 				// PID namespace it appears as PID 1, so init handles
 				// it via its own signal wiring.
@@ -350,6 +368,15 @@ func childMain() error {
 	// The bounding and inheritable sets are per thread: the thread that
 	// narrows them must be the one that execs the init.
 	runtime.LockOSThread()
+
+	// The parent death signal is per thread too. The launcher set it on
+	// this process's first thread, which may not be the one that execs
+	// the init, and the init keeps only the exec'ing thread's. Set here,
+	// it is in place before the exec, and the first thread's covers the
+	// time until then.
+	if err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGKILL), 0, 0, 0); err != nil {
+		return fmt.Errorf("set the parent death signal: %w", err)
+	}
 
 	// Nothing the launcher inherited may reach the container: a host
 	// file or directory fd would outlive pivot_root. Marked

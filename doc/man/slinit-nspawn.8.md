@@ -29,8 +29,13 @@ slinit-nspawn - launch a slinit container in a new set of Linux namespaces
 3. **exec**(2)s */sbin/slinit* (or **--init=**\ *PATH*) as PID 1 inside
    the new PID namespace.
 4. Stays in the foreground: SIGTERM and SIGINT are forwarded to the
-   container's init, and when the container exits **slinit-nspawn**
+   container's init, and SIGHUP, the terminal going away, is forwarded
+   as SIGTERM (since 4.0.3; it killed **slinit-nspawn** and left the
+   container running). When the container exits **slinit-nspawn**
    removes the registry entry and exits with the container's status.
+   If **slinit-nspawn** itself dies, the container's init is killed
+   with it (since 4.0.3), as **systemd-nspawn**(1) does with
+   **PR_SET_PDEATHSIG**: see **prctl**(2).
 
 Contrast with **systemd-nspawn**(1): the design is deliberately
 smaller. There is no D-Bus, no networkd/resolved bridge, no
@@ -208,8 +213,9 @@ signal (since 4.0.3; it was 255).
 
 */run/slinit/machines/*\ *NAME*
 :   Registry entry created on launch and removed when the container
-    exits. If **slinit-nspawn** itself is killed, remove a leftover
-    entry with **slinit-machinectl unregister**.
+    exits. If **slinit-nspawn** itself is killed with SIGKILL, the
+    container dies with it but the entry stays: remove it with
+    **slinit-machinectl unregister**.
 
 # EXAMPLES
 

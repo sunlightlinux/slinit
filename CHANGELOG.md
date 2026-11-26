@@ -980,6 +980,13 @@ requires.
   exits. *Compat:* Ctrl-C reaches the container's init straight from the
   terminal instead of being forwarded by the launcher; Ctrl-Z no longer
   stops the launcher.
+- **Closing `slinit-nspawn`'s terminal left the container running.**
+  SIGHUP killed the launcher, which caught only SIGTERM and SIGINT, and
+  the container had no parent death signal: it ran on unreaped, its
+  registry entry stayed. SIGHUP is now forwarded to the init as SIGTERM
+  and the launcher waits for it as for SIGTERM, and the init gets
+  SIGKILL as its parent death signal, as under systemd-nspawn, so a
+  launcher killed outright takes the container with it.
 - **slinit-start-stop-daemon `--exec` never matched through a symlinked
   directory** (merged /usr: `/usr/sbin -> bin`): `--start` launched a
   duplicate each time and `--stop` left the daemon running and returned

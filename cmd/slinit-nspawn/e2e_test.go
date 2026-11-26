@@ -352,3 +352,61 @@ func TestContainerReadsTerminal(t *testing.T) {
 		t.Error("the shell could not read the terminal after the container exited")
 	}
 }
+
+// TestLauncherHangupStopsContainer: the launcher caught only SIGTERM
+// and SIGINT, so SIGHUP, its terminal going away, killed it while the
+// container kept running, unreaped and still registered. SIGHUP is now
+// forwarded to the init as SIGTERM, and the launcher waits for it and
+// removes the registry entry.
+func TestLauncherHangupStopsContainer(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+S="sleep 46""13" # not the literal, which pgrep -f would find in this script
+"$NSPAWN" --name t13 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c "trap 'exit 7' TERM; $S & wait" </dev/null &
+P=$!
+i=0; until [ -e "$DIR/machines/t13" ] && pgrep -f "$S" >/dev/null; do i=$((i+1)); [ $i -gt 50 ] && break; sleep 0.1; done
+kill -HUP $P
+wait $P; echo "LAUNCHER-EXIT $?"
+sleep 0.2
+pgrep -f "$S" >/dev/null && echo CONTAINER-RUNNING
+pkill -9 -f "$S"
+[ -e "$DIR/machines/t13" ] && echo REGISTRY-LEFT
+true
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "LAUNCHER-EXIT 7") {
+		t.Error("the launcher did not stop the container on SIGHUP and exit with its status")
+	}
+	for _, bad := range []string{"CONTAINER-RUNNING", "REGISTRY-LEFT"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("%s after SIGHUP to the launcher", bad)
+		}
+	}
+}
+
+// TestKilledLauncherKillsContainer: the container had no parent death
+// signal, so a launcher killed outright left it running with no one to
+// reap it. The init now dies with the launcher, as under
+// systemd-nspawn (PR_SET_PDEATHSIG).
+func TestKilledLauncherKillsContainer(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+S="sleep 46""14" # not the literal, which pgrep -f would find in this script
+"$NSPAWN" --name t14 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c "$S & wait" </dev/null &
+P=$!
+i=0; until pgrep -f "$S" >/dev/null; do i=$((i+1)); [ $i -gt 50 ] && break; sleep 0.1; done
+pgrep -f "$S" >/dev/null && echo CONTAINER-STARTED
+kill -KILL $P
+sleep 0.5
+pgrep -f "$S" >/dev/null && echo CONTAINER-RUNNING
+pkill -9 -f "$S"
+true
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "CONTAINER-STARTED") {
+		t.Fatal("the container did not start")
+	}
+	if strings.Contains(out, "CONTAINER-RUNNING") {
+		t.Error("the container kept running after its launcher was killed")
+	}
+}
