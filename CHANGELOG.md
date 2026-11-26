@@ -1029,6 +1029,26 @@ requires.
   just as it exited, slinit took the status for lost and waited 5s for
   it, then logged `ad-hoc command status lost`; the same for a main
   process whose wait reported a context or `WaitDelay` error.
+- **`slinitctl edit` failed for every service**: it asked the daemon for
+  the loader's search path and expected a reply the daemon never sends.
+  It now asks for the service's own load directory and opens the file
+  the loader read (full name, template base name, or `NAME.service`).
+- **`slinitctl activate-profile` did not leave services running**: the
+  services it reported as started were stopped again by the state
+  machine. Profile swaps now start and stop services as
+  `slinitctl start`/`stop` do.
+- **The control socket could drop a client mid-request** when a packet
+  straddled the 30s idle deadline.
+- **`condition-path-is-mount-point`** reported `/proc/`, `/proc/.` and
+  `/proc//` as not mount points, and judged a symlink by the directory
+  it sits in rather than by its target.
+- **A bgprocess daemon that ignores SIGTERM and never called `setsid()`
+  stayed STOPPING forever**: the stop-timeout SIGKILL was sent to a
+  process group the daemon does not lead. It now reaches the daemon's
+  group, as the stop signal does.
+- **`nice=` with `sched-policy = batch` or `idle`** was undone (as root)
+  or made the policy fail with EPERM (unprivileged); likewise
+  `slinit-start-stop-daemon --nicelevel` with `--scheduler batch|idle`.
 - **Opening a path inside a container or image could fail under load**:
   `openat2` reports `EAGAIN` when a rename or mount anywhere raced its
   check; slinit now retries, then resolves the path component by
