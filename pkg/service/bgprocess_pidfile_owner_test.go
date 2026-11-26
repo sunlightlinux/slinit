@@ -193,3 +193,60 @@ func TestBGProcessRefusesRootPIDFileReachedThroughUserSymlink(t *testing.T) {
 			victim, target, name, st, svc.PID())
 	}
 }
+
+// A root daemon that keeps its pid file in a directory belonging to its
+// service user (/run/nginx owned by nginx, the Alpine layout) was refused
+// once directory owners counted as writers. Reached without a symlink,
+// the file read is the one root wrote; only through a symlink (or a hard
+// link) can the directory's owner make slinit read another.
+func TestPIDFileInUserDirectoryWithoutSymlink(t *testing.T) {
+	pretendManagerIsRoot(t)
+	root := foreignRootPID(t)
+	dir := t.TempDir() // owned by the test user: "the service user"
+	path := filepath.Join(dir, "nginx.pid")
+	rootFile := process.PIDFileInfo{Owner: 0, Nlink: 1, NoSymlinks: true}
+
+	w, err := pidFileWriters(path, rootFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pidFileWritersMayName(w, root, ""); err != nil {
+		t.Errorf("root-owned pid file in a user directory, no symlink: %v", err)
+	}
+
+	for name, info := range map[string]process.PIDFileInfo{
+		"through a symlink": {Owner: 0, Nlink: 1},
+		"hard-linked":       {Owner: 0, Nlink: 2, NoSymlinks: true},
+	} {
+		w, err := pidFileWriters(path, info)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pidFileWritersMayName(w, root, "") == nil {
+			t.Errorf("%s: root pid accepted from a file the directory's owner could have pointed at", name)
+		}
+	}
+}
+
+// ReadPIDFileInfo says whether the path was resolved without a symlink.
+func TestReadPIDFileInfoSeesSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "x.pid"), []byte(strconv.Itoa(os.Getppid())+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	_, _, direct, err := process.ReadPIDFileInfo(filepath.Join(real, "x.pid"))
+	if err != nil || !direct.NoSymlinks || direct.Nlink != 1 {
+		t.Errorf("direct path: %+v, %v; want NoSymlinks, one link", direct, err)
+	}
+	_, _, via, err := process.ReadPIDFileInfo(filepath.Join(dir, "link", "x.pid"))
+	if err != nil || via.NoSymlinks {
+		t.Errorf("path through a symlink: %+v, %v; want NoSymlinks false", via, err)
+	}
+}

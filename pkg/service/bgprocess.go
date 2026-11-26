@@ -1155,13 +1155,13 @@ func (s *BGProcessService) recoveredDaemonDiedLocked(pid int) {
 // service writing sshd's pid, or another service's, into its pid file,
 // or a symlink of its own steering slinit to a pid file of root's.
 func (s *BGProcessService) readPIDFile(path string) (int, process.PIDResult, error) {
-	pid, result, owner, err := process.ReadPIDFileOwner(path)
+	pid, result, info, err := process.ReadPIDFileInfo(path)
 	if result != process.PIDResultOK {
 		return pid, result, err
 	}
-	writers, err := pidFileDirOwners(path)
+	writers, err := pidFileWriters(path, info)
 	if err == nil {
-		err = pidFileWritersMayName(append(writers, owner), pid, s.OwnCgroupPath())
+		err = pidFileWritersMayName(writers, pid, s.OwnCgroupPath())
 	}
 	if err != nil {
 		return 0, process.PIDResultFailed, fmt.Errorf("pid file %s: %w", path, err)
@@ -1172,6 +1172,26 @@ func (s *BGProcessService) readPIDFile(path string) (int, process.PIDResult, err
 // pidFileManagerUID is the uid slinit runs as. A variable so tests can
 // judge pid files as a root slinit would.
 var pidFileManagerUID = os.Getuid
+
+// pidFileWriters returns the uids that could have chosen what the pid
+// file read says. When it was reached without following any symlink and
+// has no other link, that is its owner alone: the owner of a directory
+// on the way can delete or rename the file, but anything put in its
+// place is a file of their own, which its owner then shows. Through a
+// symlink (or a hard link) the file read may be one that directory's
+// owner pointed at, so every directory owner on the way counts too.
+// A root daemon keeping its pid file in a directory of its service user
+// (/run/nginx owned by nginx) is accepted that way, as systemd accepts it.
+func pidFileWriters(path string, info process.PIDFileInfo) ([]uint32, error) {
+	if info.NoSymlinks && info.Nlink == 1 {
+		return []uint32{info.Owner}, nil
+	}
+	owners, err := pidFileDirOwners(path)
+	if err != nil {
+		return nil, err
+	}
+	return append(owners, info.Owner), nil
+}
 
 // pidFileDirOwners returns the owner of every directory on the way to
 // path, as the kernel resolves each prefix.
