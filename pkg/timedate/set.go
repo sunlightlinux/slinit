@@ -151,8 +151,10 @@ func SetTimezone(zone string) error {
 }
 
 // setRCConfVar rewrites an uncommented NAME= assignment in /etc/rc.conf to
-// NAME="value". A file without one is left alone: rc.conf then does not
-// steer this setting, and adding a line would make it start to.
+// NAME="value", keeping what stood before NAME — indentation, and an
+// "export " that the shell sourcing rc.conf acts on. A file without one is
+// left alone: rc.conf then does not steer this setting, and adding a line
+// would make it start to.
 func setRCConfVar(name, value string) error {
 	b, err := os.ReadFile(RCConfPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -169,7 +171,8 @@ func setRCConfVar(name, value string) error {
 			t = strings.TrimSpace(strings.TrimPrefix(t, "export "))
 		}
 		if strings.HasPrefix(t, name+"=") {
-			lines[i] = name + "=\"" + value + "\""
+			prefix := l[:strings.Index(l, name+"=")]
+			lines[i] = prefix + name + "=\"" + value + "\""
 			changed = true
 		}
 	}

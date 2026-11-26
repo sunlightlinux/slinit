@@ -217,3 +217,48 @@ func TestServiceStateTellsUnknownFromStopped(t *testing.T) {
 		}
 	}
 }
+
+// TIMEZONE= is rewritten in place: an "export " before it, which the shell
+// sourcing rc.conf acts on, and the line's indentation stay; a commented
+// line and a variable that only starts with the name are not touched; a
+// file without the assignment is left exactly as it was.
+func TestSetRCConfVarKeepsTheLineShape(t *testing.T) {
+	old := RCConfPath
+	t.Cleanup(func() { RCConfPath = old })
+	RCConfPath = filepath.Join(t.TempDir(), "rc.conf")
+
+	in := "# rc.conf\n#TIMEZONE=\"UTC\"\nexport TIMEZONE=\"Europe/Bucharest\"\n" +
+		"  TIMEZONE=Old/Zone\nTIMEZONE_EXTRA=keep\nKEYMAP=us\n"
+	if err := os.WriteFile(RCConfPath, []byte(in), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := setRCConfVar("TIMEZONE", "Europe/Paris"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(RCConfPath)
+	want := "# rc.conf\n#TIMEZONE=\"UTC\"\nexport TIMEZONE=\"Europe/Paris\"\n" +
+		"  TIMEZONE=\"Europe/Paris\"\nTIMEZONE_EXTRA=keep\nKEYMAP=us\n"
+	if string(b) != want {
+		t.Errorf("rc.conf:\n%s\nwant:\n%s", b, want)
+	}
+	if st, _ := os.Stat(RCConfPath); st.Mode().Perm() != 0o640 {
+		t.Errorf("mode %v, want the file's own 0640", st.Mode().Perm())
+	}
+
+	untouched := "KEYMAP=us\n#TIMEZONE=\"UTC\"\n"
+	os.WriteFile(RCConfPath, []byte(untouched), 0o644)
+	if err := setRCConfVar("TIMEZONE", "Europe/Paris"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(RCConfPath); string(b) != untouched {
+		t.Errorf("a file without TIMEZONE= was changed:\n%s", b)
+	}
+
+	os.Remove(RCConfPath)
+	if err := setRCConfVar("TIMEZONE", "Europe/Paris"); err != nil {
+		t.Errorf("missing rc.conf: %v", err)
+	}
+	if _, err := os.Stat(RCConfPath); !os.IsNotExist(err) {
+		t.Errorf("a missing rc.conf was created")
+	}
+}

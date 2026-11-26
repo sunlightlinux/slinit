@@ -1046,6 +1046,9 @@ requires.
   stayed STOPPING forever**: the stop-timeout SIGKILL was sent to a
   process group the daemon does not lead. It now reaches the daemon's
   group, as the stop signal does.
+- **`timedatectl set-timezone` dropped `export` from `rc.conf`**: an
+  `export TIMEZONE=...` line, or an indented one, was rewritten as a bare
+  `TIMEZONE=...`. What stands before the name is kept now.
 - **`stderr-logfile` without `logfile` wrote nothing**: the service's
   stderr went to `/dev/null` and the file was never created, so its
   rotation settings had nothing to rotate. stderr was wired to its own
