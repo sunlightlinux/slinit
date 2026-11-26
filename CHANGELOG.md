@@ -79,6 +79,11 @@ verified with `git tag -v`.
   default one. Both now take the first name line and normalise it as
   systemd's `hostname_cleanup` does (trailing dots and stray separators
   dropped, cut at 64 bytes); a name that is still invalid is ignored.
+  *Compat:* characters systemd does not allow are dropped, so
+  `my_host` in `/etc/hostname` now names the host `myhost`. PID 1
+  leaves the kernel's name alone when it already equals the file's
+  line as written, so a container whose runtime set `my_host` is not
+  renamed.
 
 - **PID 1 died once about 9900 services were running at the same
   time** ("fatal error: thread exhaustion"). Waiting for a child holds

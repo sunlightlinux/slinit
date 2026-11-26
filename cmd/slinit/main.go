@@ -63,6 +63,23 @@ const (
 	defaultUserSocket       = ".slinitctl"
 )
 
+// bootHostnameToSet returns the name PID 1 gives the kernel from
+// /etc/hostname, or "" to leave cur alone. The first name line is
+// normalised as systemd does: the whole file used to be passed, so a
+// comment above the name became the hostname, and "host.example.com."
+// kept its dot. The name as written is compared first: a container
+// runtime sets the UTS name to the file's content verbatim, and a name
+// systemd would normalise (my_host) must not be renamed under it.
+func bootHostnameToSet(cur string) string {
+	if etchostname.ReadStaticRaw() == cur {
+		return ""
+	}
+	if h := etchostname.ReadStatic(); h != cur {
+		return h
+	}
+	return ""
+}
+
 // maxOSThreads replaces the Go runtime's default limit of 10000 OS
 // threads, past which it kills the process ("fatal error: thread
 // exhaustion"). slinit holds one thread per running child: os/exec
@@ -556,14 +573,10 @@ func main() {
 	// before starting us, and without CAP_SYS_ADMIN the redundant call
 	// failed, putting a WARN at the top of every container's log.
 	if isPID1 {
-		// The first name line, normalised as systemd does: the whole
-		// file used to be passed, so a comment above the name became
-		// the hostname, and "host.example.com." kept its dot.
-		if h := etchostname.ReadStatic(); h != "" {
-			if cur, _ := os.Hostname(); h != cur {
-				if err := unix.Sethostname([]byte(h)); err != nil {
-					logger.Warn("sethostname(%q) failed: %v", h, err)
-				}
+		cur, _ := os.Hostname()
+		if h := bootHostnameToSet(cur); h != "" {
+			if err := unix.Sethostname([]byte(h)); err != nil {
+				logger.Warn("sethostname(%q) failed: %v", h, err)
 			}
 		}
 	}

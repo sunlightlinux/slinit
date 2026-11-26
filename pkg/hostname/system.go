@@ -93,6 +93,15 @@ func ValidDeployment(s string) bool {
 // systemd's read_etc_hostname, a name that is still not Valid reads as
 // none, so it is never handed to the kernel.
 func ReadStatic() string {
+	if l := Cleanup(ReadStaticRaw()); Valid(l) {
+		return l
+	}
+	return ""
+}
+
+// ReadStaticRaw returns the first line of /etc/hostname that is neither
+// empty nor a comment, as written, before Cleanup.
+func ReadStaticRaw() string {
 	b, err := os.ReadFile(HostnamePath)
 	if err != nil {
 		return ""
@@ -100,10 +109,7 @@ func ReadStatic() string {
 	for _, l := range strings.Split(string(b), "\n") {
 		l = strings.TrimSpace(l)
 		if l != "" && !strings.HasPrefix(l, "#") {
-			if l = Cleanup(l); Valid(l) {
-				return l
-			}
-			return ""
+			return l
 		}
 	}
 	return ""
