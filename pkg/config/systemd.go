@@ -144,13 +144,13 @@ var systemdHardeningNames = map[string]string{
 	"ProtectKernelLogs":      "protect-kernel-logs",
 }
 
-// specifierKeys are the mapped directives, Exec lines and paths, whose
-// %-specifiers are expanded. systemd expands them there when it loads
-// the unit; slinit has none.
+// specifierKeys are the mapped directives and paths whose %-specifiers
+// are expanded. systemd expands them there when it loads the unit;
+// slinit has none. The Exec lines expand theirs word by word, once a
+// word is unquoted, as systemd does (parseExecLine).
 var specifierKeys = map[string]bool{
 	"ConditionPathExists": true, "ConditionPathIsDirectory": true,
 	"ConditionPathIsMountPoint": true, "ConditionFileNotEmpty": true,
-	"ExecStart": true, "ExecStop": true, "ExecStartPre": true, "ExecStartPost": true,
 	"WorkingDirectory": true, "RootDirectory": true, "EnvironmentFile": true, "PIDFile": true,
 	"ReadOnlyPaths": true, "ReadWritePaths": true, "InaccessiblePaths": true,
 	"BindReadOnlyPaths": true, "TemporaryFileSystem": true,
@@ -363,7 +363,7 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		val := strings.TrimSpace(m[2])
 		// Strip surrounding double quotes if present (single-quote
 		// isn't standard here but be tolerant). Not on an Exec*= line:
-		// there quotes group words, as in slinit's command parser, and
+		// there quotes group words (parseExecLine), and
 		// "/opt/my app/run" --name "a b" would lose the first and last.
 		if !strings.HasPrefix(key, "Exec") {
 			val = trimQuotes(val)
@@ -622,60 +622,8 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		default:
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Type=%s not recognised", val)})
 		}
-	case "ExecStart":
-		// A oneshot may list several, run in turn; slinit runs one
-		// command. The last is kept, so that an empty ExecStart=
-		// followed by a new one replaces it as in systemd.
-		cmd, argv0, w := stripExecPrefixes(val)
-		if cfg.command != "" && cmd != "" {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
-				"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
-					"run the steps from one script if they all matter", cfg.command)})
-		}
-		cfg.command, cfg.argv0 = cmd, argv0
-		warns = append(warns, w...)
-		warns = append(warns, warnExecVars(key, cmd)...)
-	case "ExecStop":
-		cmd, argv0, w := stripExecPrefixes(val)
-		warns = append(warns, w...)
-		warns = append(warns, warnArgv0(key, argv0)...)
-		// slinit has no $MAINPID: it would expand to nothing. The usual
-		// `kill -s SIG $MAINPID` is what term-signal does; any other use
-		// cannot act on the right process.
-		if strings.Contains(cmd, "$MAINPID") || strings.Contains(cmd, "${MAINPID}") {
-			if sig, ok := killMainPID(cmd); ok {
-				// Decided once KillSignal=, which may follow, is known.
-				cfg.stopSignal, cfg.stopLine = sig, val
-			} else {
-				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
-					"ExecStop=%s uses $MAINPID, which slinit does not provide — dropped; slinit stops the service with its term-signal", val)})
-			}
-			break
-		}
-		cfg.stopCommand = cmd
-		warns = append(warns, warnExecVars(key, cmd)...)
-	case "ExecStartPre":
-		*preN++
-		if *preN > 1 {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("multiple ExecStartPre= — slinit takes one pre-start-command, keeping the first (dropped: %q)", val)})
-		} else {
-			cmd, argv0, w := stripExecPrefixes(val)
-			cfg.preStart = cmd
-			warns = append(warns, w...)
-			warns = append(warns, warnArgv0(key, argv0)...)
-			warns = append(warns, warnExecVars(key, cmd)...)
-		}
-	case "ExecStartPost":
-		*postN++
-		if *postN > 1 {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("multiple ExecStartPost= — slinit takes one post-start-command, keeping the first (dropped: %q)", val)})
-		} else {
-			cmd, argv0, w := stripExecPrefixes(val)
-			cfg.postStart = cmd
-			warns = append(warns, w...)
-			warns = append(warns, warnArgv0(key, argv0)...)
-			warns = append(warns, warnExecVars(key, cmd)...)
-		}
+	case "ExecStart", "ExecStop", "ExecStartPre", "ExecStartPost":
+		warns = append(warns, cfg.applyExec(key, val, preN, postN)...)
 	case "ExecStopPost":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStopPost=%s — slinit has no equivalent; wire via finish-command manually", val)})
 	case "ExecReload":
@@ -993,68 +941,102 @@ func applyInstallKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	return nil
 }
 
-// stripExecPrefixes handles the ExecStart= prefix chars:
-//
-//   - (ignore non-zero exit)
-//   - (no privilege drop)
-//     ! (no permission drop)
-//     : (no environment substitution)
-//     @ (argv[0] alias — value is command; next token is displayed argv[0])
-//
-// Any prefix but @ generates a NOTE so the operator knows a behavioural
-// hint was in the original that isn't captured by slinit directives.
-// With @, the word after the path is argv[0], not an argument: it is
-// cut from the command and returned, as stripping the @ alone made it
-// argv[1] and moved every argument one place.
-func stripExecPrefixes(v string) (cmd, argv0 string, warns []SystemdWarning) {
-	s := v
-	seen := map[byte]bool{}
-	for len(s) > 0 {
-		c := s[0]
-		switch c {
-		case '-', '+', '!', ':', '@':
-			if seen[c] {
-				break
+// applyExec maps one ExecStart=, ExecStop=, ExecStartPre= or
+// ExecStartPost= line, each of whose commands parseExecLine has split
+// as systemd does, to slinit's command settings.
+func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []SystemdWarning {
+	if strings.TrimSpace(val) == "" {
+		// An empty assignment resets the list, as in systemd.
+		switch key {
+		case "ExecStart":
+			cfg.command, cfg.argv0 = "", ""
+		case "ExecStop":
+			cfg.stopCommand, cfg.stopSignal, cfg.stopLine = "", "", ""
+		case "ExecStartPre":
+			cfg.preStart, *preN = "", 0
+		case "ExecStartPost":
+			cfg.postStart, *postN = "", 0
+		}
+		return nil
+	}
+	cmds, warns, err := parseExecLine(cfg, key, val)
+	if err != nil {
+		cfg.errs = append(cfg.errs, err.Error())
+		return warns
+	}
+	for _, c := range cmds {
+		warns = append(warns, execPrefixNotes(key, c.execPrefixes)...)
+		value, ok := slinitCommandValue(c.cmd.argv, false)
+		if !ok {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"%s=%s: an argument holds a newline, which a slinit command setting cannot — command dropped", key, val)})
+			continue
+		}
+		switch key {
+		case "ExecStart":
+			// A oneshot may list several, run in turn; slinit runs one
+			// command. The last is kept, so that an empty ExecStart=
+			// followed by a new one replaces it as in systemd.
+			if cfg.command != "" {
+				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+					"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
+						"run the steps from one script if they all matter", cfg.command)})
 			}
-			seen[c] = true
-			s = s[1:]
-			continue
+			cfg.command, cfg.argv0 = value, c.cmd.argv0
+			warns = append(warns, warnExecVars(key, value)...)
+		case "ExecStop":
+			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
+			// slinit has no $MAINPID: it would expand to nothing. The
+			// usual `kill -s SIG $MAINPID` is what term-signal does; any
+			// other use cannot act on the right process.
+			if strings.Contains(value, "$MAINPID") || strings.Contains(value, "${MAINPID}") {
+				if sig, ok := killMainPID(value); ok {
+					// Decided once KillSignal=, which may follow, is known.
+					cfg.stopSignal, cfg.stopLine = sig, val
+				} else {
+					warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+						"ExecStop=%s uses $MAINPID, which slinit does not provide — dropped; slinit stops the service with its term-signal", val)})
+				}
+				continue
+			}
+			if cfg.stopCommand != "" {
+				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+					"multiple ExecStop= — slinit takes one stop-command, keeping the last (dropped: %q)", cfg.stopCommand)})
+			}
+			cfg.stopCommand = value
+			warns = append(warns, warnExecVars(key, value)...)
+		case "ExecStartPre", "ExecStartPost":
+			n, cur, setting := preN, &cfg.preStart, "pre-start-command"
+			if key == "ExecStartPost" {
+				n, cur, setting = postN, &cfg.postStart, "post-start-command"
+			}
+			*n++
+			if *n > 1 {
+				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+					"multiple %s= — slinit takes one %s, keeping the first (dropped: %q)", key, setting, value)})
+				continue
+			}
+			*cur = value
+			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
+			warns = append(warns, warnExecVars(key, value)...)
 		}
-		break
 	}
-	for c := range seen {
-		if c == '@' {
-			continue
-		}
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStart prefix %q stripped — behaviour not carried into slinit", string(c))})
-	}
-	if seen['@'] {
-		path, rest := cutExecWord(s)
-		var word string
-		word, rest = cutExecWord(rest)
-		s, argv0 = path+rest, trimQuotes(word)
-	}
-	return strings.TrimSpace(s), argv0, warns
+	return warns
 }
 
-// cutExecWord splits s after its first word, a quoted run counting as
-// part of the word as in slinit's command parser.
-func cutExecWord(s string) (word, rest string) {
-	s = strings.TrimLeft(s, " \t")
-	var quote byte
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case quote != 0:
-			if c == quote {
-				quote = 0
-			}
-		case c == '"' || c == '\'':
-			quote = c
-		case c == ' ' || c == '\t':
-			return s[:i], s[i:]
+// execPrefixNotes reports the prefix characters whose meaning the
+// slinit command does not carry.
+func execPrefixNotes(key string, p execPrefixes) []SystemdWarning {
+	var warns []SystemdWarning
+	for _, f := range []struct {
+		set bool
+		c   string
+	}{{p.ignoreFailure, "-"}, {p.fullPriv, "+"}, {p.noSetuid, "!"}, {p.noEnvExpand, ":"}} {
+		if f.set {
+			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s prefix %q stripped — behaviour not carried into slinit", key, f.c)})
 		}
 	}
-	return s, ""
+	return warns
 }
 
 // warnArgv0 warns that the argv[0] an @ gave key's command is dropped:

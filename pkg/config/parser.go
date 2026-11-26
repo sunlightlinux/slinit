@@ -3632,6 +3632,9 @@ func applyOptions(desc *ServiceDescription, value string, append bool) error {
 }
 
 // splitCommand splits a command string into parts, respecting quotes.
+// A quoted run starts a word even when it is empty, so `""` is an empty
+// argument, as in dinit's read_setting_value; it used to vanish, which
+// shifted every later argument of a command such as `prog "" file`.
 func splitCommand(cmd string) []string {
 	// Fast-path: no quotes, escapes, or NUL separators → use strings.Fields
 	if strings.IndexByte(cmd, '"') < 0 &&
@@ -3648,6 +3651,7 @@ func splitCommand(cmd string) []string {
 	inQuote := false
 	quoteChar := byte(0)
 	escaped := false
+	inWord := false // a word has started, perhaps with an empty quote
 
 	for i := 0; i < len(cmd); i++ {
 		ch := cmd[i]
@@ -3655,6 +3659,7 @@ func splitCommand(cmd string) []string {
 		if escaped {
 			current.WriteByte(ch)
 			escaped = false
+			inWord = true
 			continue
 		}
 
@@ -3675,30 +3680,26 @@ func splitCommand(cmd string) []string {
 		if ch == '"' || ch == '\'' {
 			inQuote = true
 			quoteChar = ch
+			inWord = true
 			continue
 		}
 
-		if ch == ' ' || ch == '\t' {
-			if current.Len() > 0 {
+		// A blank, or a NUL: the word-split boundary from $/NAME
+		// expansion.
+		if ch == ' ' || ch == '\t' || ch == wordSplitSep {
+			if inWord {
 				parts = append(parts, current.String())
 				current.Reset()
-			}
-			continue
-		}
-
-		// NUL byte = word-split boundary from $/NAME expansion
-		if ch == wordSplitSep {
-			if current.Len() > 0 {
-				parts = append(parts, current.String())
-				current.Reset()
+				inWord = false
 			}
 			continue
 		}
 
 		current.WriteByte(ch)
+		inWord = true
 	}
 
-	if current.Len() > 0 {
+	if inWord {
 		parts = append(parts, current.String())
 	}
 

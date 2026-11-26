@@ -525,6 +525,11 @@ func TestSplitCommand(t *testing.T) {
 		{`/usr/bin/foo 'hello world'`, []string{"/usr/bin/foo", "hello world"}},
 		{`/usr/bin/foo hello\ world`, []string{"/usr/bin/foo", "hello world"}},
 		{"", nil},
+		// An empty quote is an empty argument, as in dinit.
+		{`/usr/bin/foo "" bar`, []string{"/usr/bin/foo", "", "bar"}},
+		{`/usr/bin/foo '' ""`, []string{"/usr/bin/foo", "", ""}},
+		{`/usr/bin/foo a"" ""b`, []string{"/usr/bin/foo", "a", "b"}},
+		{`/usr/bin/foo  "\\" "\""`, []string{"/usr/bin/foo", `\`, `"`}},
 	}
 
 	for _, tt := range tests {

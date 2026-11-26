@@ -187,7 +187,10 @@ what tells you the oldest slinit your configuration will run on. See
 
 **command**=*program* [*args*...]
 :   Program to execute (for **process**, **scripted**, **bgprocess**).
-    Quoting and escaping follow shell-like rules.
+    Quoting and escaping follow shell-like rules: single or double
+    quotes group words, and a backslash takes the next character
+    literally, inside quotes as outside. An empty pair of quotes is an
+    empty argument (since 4.0.3, as in dinit; before, it was dropped).
 
 **command-argv0**=*string*
 :   Override the argv[0] presented to the exec'd binary. The kernel

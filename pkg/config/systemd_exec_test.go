@@ -134,3 +134,100 @@ func TestSystemdStartTimeout(t *testing.T) {
 		}
 	}
 }
+
+// An Exec*= value used to be copied as written and split by slinit's
+// command parser: "" vanished, \t became t, \x41 became x41, and a lone
+// ";" (systemd's separator between commands) became an argument. It is
+// split as systemd's config_parse_exec splits it now, and written back
+// so that slinit's parser yields the same argv.
+func TestSystemdExecWordsAsSystemd(t *testing.T) {
+	unit := `[Service]
+ExecStart=/usr/bin/foo "" "a\tb" 'x y' \x41 "q\"uote" back\\slash \; end\s1 %n "\x25n"
+ExecStartPre=/usr/bin/a 1 ; /usr/bin/b 2
+ExecStartPost=/usr/bin/post "a\nb"
+ExecStop=/usr/bin/stop it ; /usr/bin/stop2 ""
+`
+	direct, got := loadSystemdDirect(t, unit)
+	for name, d := range map[string]*ServiceDescription{"converted": parseEmitted(t, unit), "direct": direct} {
+		argvIs(t, name+": command", d.Command, []string{"/usr/bin/foo", "", "a\tb", "x y", "A", `q"uote`, `back\slash`,
+			";", "end 1", "probe.service", "probe.service"})
+		argvIs(t, name+": pre-start-command", d.PreStartCommand, []string{"/usr/bin/a", "1"})
+		// A newline cannot be written in a slinit value: dropped, warned.
+		argvIs(t, name+": post-start-command", d.PostStartCommand, nil)
+		// One stop-command: the last, as for ExecStart.
+		argvIs(t, name+": stop-command", d.StopCommand, []string{"/usr/bin/stop2", ""})
+	}
+	for _, want := range []string{"multiple ExecStartPre", "/usr/bin/b", "newline", "multiple ExecStop"} {
+		found := false
+		for _, g := range got {
+			found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, want))
+		}
+		if !found {
+			t.Errorf("no WARN mentioning %q: %v", want, got)
+		}
+	}
+}
+
+func TestExtractSystemdWord(t *testing.T) {
+	cases := []struct {
+		in    string
+		words []string
+		err   bool
+	}{
+		{`a "b c" d`, []string{"a", "b c", "d"}, false},
+		{`a"b c"d`, []string{"ab cd"}, false},
+		{`'a\'b'`, []string{"a'b"}, false},
+		{`"" ''`, []string{"", ""}, false},
+		{`é\U0001F600\101`, []string{"é😀A"}, false},
+		{`\x00`, []string{`\x00`}, false}, // NUL refused, kept as written
+		{`\q`, []string{`\q`}, false},     // unknown escape, kept
+		{`tail\`, []string{`tail\`}, false},
+		{`"open`, nil, true},
+		{`"open\`, nil, true},
+	}
+	for _, c := range cases {
+		var words []string
+		p := c.in
+		var err error
+		for {
+			var w string
+			var found bool
+			w, p, found, _, err = extractSystemdWordAndWarn("ExecStart", p)
+			if err != nil || !found {
+				break
+			}
+			words = append(words, w)
+		}
+		if (err != nil) != c.err || (!c.err && strings.Join(words, "|") != strings.Join(c.words, "|")) || len(words) != len(c.words) {
+			t.Errorf("%q: words %q err %v, want %q err %v", c.in, words, err, c.words, c.err)
+		}
+	}
+}
+
+// A line systemd refuses with ENOEXEC fails the unit; with "-" it is
+// ignored instead. An unreadable first word ignores the line.
+func TestParseExecLineRefusals(t *testing.T) {
+	cfg := &SystemdConfig{svcName: "t"}
+	if _, _, err := parseExecLine(cfg, "ExecStart", `/bin/x "open`); err == nil {
+		t.Error("unbalanced quote after the path: want the unit refused")
+	}
+	if cmds, _, err := parseExecLine(cfg, "ExecStart", `-/bin/x "open`); err != nil || len(cmds) != 0 {
+		t.Errorf("with -: want the line ignored, got %v, %v", cmds, err)
+	}
+	if cmds, w, err := parseExecLine(cfg, "ExecStart", `"/bin/x`); err != nil || len(cmds) != 0 || len(w) == 0 {
+		t.Errorf("bad first word: want the line ignored with a warning, got %v, %v, %v", cmds, w, err)
+	}
+	if _, _, err := parseExecLine(cfg, "ExecStart", `@/bin/x`); err == nil {
+		t.Error("@ with no argv[0]: want the unit refused")
+	}
+	// A leading ";" is skipped; ";;" is a word, not a separator.
+	cmds, _, err := parseExecLine(cfg, "ExecStartPre", `; /bin/a ;; /bin/b`)
+	if err != nil || len(cmds) != 1 || strings.Join(cmds[0].cmd.argv, "|") != "/bin/a|;;|/bin/b" {
+		t.Errorf("separators: %+v, %v", cmds, err)
+	}
+	cmds, _, err = parseExecLine(cfg, "ExecStartPre", `/bin/a ; /bin/b x;`)
+	if err != nil || len(cmds) != 2 || strings.Join(cmds[0].cmd.argv, "|") != "/bin/a" ||
+		strings.Join(cmds[1].cmd.argv, "|") != "/bin/b|x;" {
+		t.Errorf("two commands: %+v, %v", cmds, err)
+	}
+}

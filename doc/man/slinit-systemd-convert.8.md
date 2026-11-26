@@ -74,6 +74,18 @@ command per service, so of several **ExecStart** lines (a oneshot) only
 the last is kept, with a warning naming the ones dropped; likewise only
 the first **ExecStartPre** and **ExecStartPost**.
 
+An **Exec** line is split into words as systemd splits it: single and
+double quotes group, **""** is an empty argument, the C escapes
+(**\\t**, **\\n**, **\\x41**, **\\s** ...) are decoded, specifiers are
+expanded in each word once it is unquoted, and each word is written
+back quoted so that slinit's parser yields the same argument. A lone
+**;** separates commands and **\\;** is a literal **;** argument; each
+command counts as one more line of its kind (only one **ExecStop** is
+kept, the last, with a warning). An argument holding a newline cannot
+be written in a slinit file: that command is dropped with a warning.
+A line systemd refuses (unbalanced quotes after the path, an empty path) makes the
+conversion fail, unless its command has the **-** prefix.
+
 **TimeoutStartSec** becomes **start-timeout** and **TimeoutStopSec**
 **stop-timeout**; **TimeoutSec** sets both. **infinity** and **0** both
 mean no timeout, as in systemd, and are written as **0**. A
