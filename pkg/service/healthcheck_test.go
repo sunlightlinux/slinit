@@ -92,6 +92,10 @@ func TestHealthChecker_RecoveryResetsCounter(t *testing.T) {
 	hc.Start()
 	hcWait(t, "the failing first check", func() bool { return hc.ConsecutiveFailures() > 0 })
 	hcWait(t, "the passing second check", fileExists(ok))
+	// The script creates "ok" before it exits, and Stop kills a check
+	// still in flight rather than waiting for it, so its success would be
+	// lost. Wait for the checker to have recorded that success.
+	hcWait(t, "the recorded recovery", func() bool { return hc.ConsecutiveFailures() == 0 })
 	hc.Stop()
 
 	if hc.ConsecutiveFailures() != 0 {
