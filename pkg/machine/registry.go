@@ -228,6 +228,9 @@ func List() ([]*Machine, error) {
 
 // Alive returns true when the PID is still a running process. Uses
 // kill(pid, 0) — the standard "is this PID reachable" probe on Linux.
+// EPERM means the process exists but belongs to someone the caller may
+// not signal: a container started by root, seen by an unprivileged
+// `slinit-machinectl list`. Only ESRCH means it is gone.
 // Not race-free against a PID that dies mid-check, but good enough
 // for `slinit-machinectl list` and stale-entry pruning.
 func Alive(pid int) bool {
@@ -235,5 +238,5 @@ func Alive(pid int) bool {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	return err == nil
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

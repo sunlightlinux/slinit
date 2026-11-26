@@ -44,8 +44,9 @@ and shell one-liners.
 
 **list**
 :   Print a table with the columns NAME, PID, ALIVE, CLASS, SERVICE and
-    ROOT. ALIVE is **yes** when the PID can still be signalled
-    (*kill(pid, 0)*) and **no** otherwise; dead entries are not
+    ROOT. ALIVE is **yes** when the PID still exists
+    (*kill(pid, 0)* succeeds or fails with **EPERM**, as it does for a
+    root container queried by an unprivileged user) and **no** otherwise; dead entries are not
     removed automatically (garbage-collection is the operator's
     responsibility).
 

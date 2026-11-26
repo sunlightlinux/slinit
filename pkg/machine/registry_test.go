@@ -3,6 +3,8 @@ package machine
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -165,5 +167,48 @@ func TestAliveOnSelfAndBogus(t *testing.T) {
 	// A very-high PID that almost certainly doesn't exist.
 	if Alive(2_000_000_000) {
 		t.Error("Alive(giant) returned true; expected false")
+	}
+}
+
+// rootOwnedPID returns a live process owned by uid 0 other than PID 1,
+// or 0 when there is none to use (or the test runs as root, where
+// kill(pid, 0) never returns EPERM).
+func rootOwnedPID(t *testing.T) int {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		return 0
+	}
+	ents, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+	for _, e := range ents {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid <= 1 {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("/proc", e.Name(), "status"))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			f := strings.Fields(line)
+			if len(f) >= 2 && f[0] == "Uid:" && f[1] == "0" {
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
+// A container started by root is alive to an unprivileged reader too:
+// kill(pid, 0) answers EPERM for it, not ESRCH.
+func TestAliveOtherUsersProcess(t *testing.T) {
+	pid := rootOwnedPID(t)
+	if pid == 0 {
+		t.Skip("no root-owned process to probe, or running as root")
+	}
+	if !Alive(pid) {
+		t.Errorf("Alive(%d) (root-owned, EPERM) = false, want true", pid)
 	}
 }
