@@ -5016,6 +5016,11 @@ func cmdEnable(conn net.Conn, name string, from string, noWait bool) error {
 		info("Service '%s' enabled.\n", name)
 		return awaitEnabled(conn, handle, name, replyPayload[1:], noWait)
 	case control.RplyNAK:
+		if len(replyPayload) > 0 {
+			// The daemon says why: a persist failure, with the
+			// runtime enable in place.
+			return fmt.Errorf("could not enable service '%s': %s", name, replyPayload)
+		}
 		return fmt.Errorf("could not enable service '%s': no boot service configured", name)
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")

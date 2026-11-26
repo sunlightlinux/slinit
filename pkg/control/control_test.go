@@ -1612,6 +1612,59 @@ func TestEnablePersistsViaSymlink(t *testing.T) {
 	}
 }
 
+// A persist that fails must be reported, and a repeated enable must retry
+// it. persistEnable used to run only when the runtime edge was new, so once
+// the edge was in, no enable could ever write the link, and the failure
+// itself reached the client as a plain ACK.
+func TestEnableRetriesFailedPersist(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	bootDir := t.TempDir()
+	boot := service.NewInternalService(server.services, "boot")
+	boot.Record().SetServiceDir(bootDir)
+	server.services.AddService(boot)
+	server.services.SetBootServiceName("boot")
+	server.services.StartService(boot)
+
+	target := service.NewInternalService(server.services, "target-svc")
+	server.services.AddService(target)
+
+	// A file where waits-for.d should be: MkdirAll fails, even as root.
+	waitsDir := filepath.Join(bootDir, "waits-for.d")
+	if err := os.WriteFile(waitsDir, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	handle := findHandle(t, conn, "target-svc")
+
+	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
+	rply, payload := readReply(t, conn)
+	if rply != RplyNAK {
+		t.Errorf("enable with persist failing: rply=%d, want NAK", rply)
+	}
+	if !strings.Contains(string(payload), "persistent enable failed") {
+		t.Errorf("NAK payload %q does not say the persist failed", payload)
+	}
+	if target.State() != service.StateStarted {
+		t.Errorf("runtime enable should still start the target, state %v", target.State())
+	}
+
+	// Fix the cause and enable again: the link must be written now.
+	if err := os.Remove(waitsDir); err != nil {
+		t.Fatal(err)
+	}
+	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
+	if rply, _ := readReply(t, conn); rply != RplyACK {
+		t.Fatalf("second enable: rply=%d, want ACK", rply)
+	}
+	if _, err := os.Readlink(filepath.Join(waitsDir, "target-svc")); err != nil {
+		t.Fatalf("repeated enable did not persist the link: %v", err)
+	}
+}
+
 // TestEnableWithoutServiceDirNoOp verifies that enabling a programmatic
 // (non-disk-backed) service does not error and does not try to write
 // anywhere.

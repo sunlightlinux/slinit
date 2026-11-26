@@ -1925,22 +1925,31 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	if !depExists {
-		// Persist by creating a waits-for.d symlink in the source
-		// service's load directory, so the dependency survives a
-		// daemon restart. A persistence failure is logged but does
-		// not undo the runtime change — operators who re-enable after
-		// the disk is full or read-only should see the error in logs
-		// and re-run once the underlying issue is fixed.
-		if err := persistEnable(fromSvc, svc); err != nil {
-			fmt.Fprintf(os.Stderr, "slinit: enable: persist waits-for.d link: %v\n", err)
-		}
+	// Persist by creating a waits-for.d symlink in the source service's
+	// load directory, so the dependency survives a daemon restart. Done
+	// on every enable, not only when the runtime edge is new: whether
+	// the link is there is decided on disk, as dinitctl decides it, so
+	// an enable re-run after a failed persist (disk full, read-only)
+	// retries it. A failure does not undo the runtime change; as in
+	// dinitctl, the service is enabled for now and the client is told
+	// the persistent enable failed.
+	persistErr := persistEnable(fromSvc, svc)
+	if persistErr != nil {
+		fmt.Fprintf(os.Stderr, "slinit: enable: persist waits-for.d link: %v\n", persistErr)
+	}
 
+	if !depExists {
 		// Start it through the new edge, not explicitly: disable removes
 		// that edge, and must not end a start the operator asked for. An
 		// edge already there starts nothing, so enabling what was stopped
 		// on purpose leaves it stopped, as in dinit.
 		c.server.services.StartWaitsFor(fromSvc, svc)
+	}
+
+	if persistErr != nil {
+		// NAK carrying the reason; slinitctl prints it.
+		return c.writePacket(RplyNAK, []byte(fmt.Sprintf(
+			"service was enabled for now; persistent enable failed: %v", persistErr)))
 	}
 
 	if v7 {
