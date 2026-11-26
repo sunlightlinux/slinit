@@ -147,6 +147,13 @@ func (s *ProcessService) startStateHookLocked(kind hookKind,
 	// completion has run.
 	s.pendingExit = nil
 	s.stateHook.Store(h)
+	// KillActiveServices runs off queueMu: it stores finalKill, then
+	// cancels the hook it loads. Publish first, check after, so a kill
+	// landing between the check above and the Store is seen by one of
+	// the two sides (atomics are sequentially consistent).
+	if s.services.finalKill.Load() {
+		cancel()
+	}
 	go func() {
 		defer close(h.done)
 		err := run()
