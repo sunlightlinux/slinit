@@ -5,16 +5,19 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/internal/reftree"
 )
 
 // The generated files must be what the generator makes from the systemd
-// tree beside this one. Skipped without that tree; where it exists, a
-// stale zgroups.go — systemd changed a group, nobody regenerated — fails
-// here instead of drifting the way the hand-kept groups did.
+// tree (reftree.Systemd: $SLINIT_SYSTEMD_SRC or a sibling checkout).
+// Skipped without that tree; where it exists, a stale zgroups.go —
+// systemd changed a group, nobody regenerated — fails here instead of
+// drifting the way the hand-kept groups did.
 func TestGeneratedFilesAreCurrent(t *testing.T) {
-	sd := filepath.Join("..", "..", "..", "systemd")
-	if _, err := os.Stat(filepath.Join(sd, "src", "shared", "seccomp-util.c")); err != nil {
-		t.Skip("no systemd tree beside slinit")
+	sd, ok := reftree.Systemd()
+	if !ok {
+		t.Skipf("no systemd source tree: set %s or check systemd out beside slinit", reftree.SystemdEnv)
 	}
 	files, _, err := generate(sd)
 	if err != nil {
@@ -26,7 +29,7 @@ func TestGeneratedFilesAreCurrent(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(got, want) {
-			t.Errorf("pkg/seccomp/%s is stale: run go run ./tools/seccompgroups -systemd ../systemd", name)
+			t.Errorf("pkg/seccomp/%s is stale: run go run ./tools/seccompgroups -systemd %s", name, sd)
 		}
 	}
 }

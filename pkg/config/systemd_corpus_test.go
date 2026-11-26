@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/internal/reftree"
 )
 
 // unitPlaceholder matches systemd's build-time substitutions in a
@@ -24,18 +26,17 @@ var knownRefusedUnits = map[string]string{
 }
 
 // unitCorpusRoots are the systemd unit trees the corpus test reads:
-// $SLINIT_UNIT_CORPUS, a colon-separated list, or else the systemd
-// source tree where the checkouts put it, relative to this package —
-// src/systemd beside this repository (src/init), or the sunlight-os
-// checkout's systemd two levels up.
+// $SLINIT_UNIT_CORPUS, a colon-separated list, or else the units of the
+// systemd source tree reftree.Systemd finds ($SLINIT_SYSTEMD_SRC, or
+// where the checkouts put it).
 func unitCorpusRoots() []string {
 	if roots := filepath.SplitList(os.Getenv("SLINIT_UNIT_CORPUS")); len(roots) > 0 {
 		return roots
 	}
-	return []string{
-		filepath.Join("..", "..", "..", "systemd", "units"),
-		filepath.Join("..", "..", "..", "..", "sunlight-os", "systemd", "units"),
+	if sd, ok := reftree.Systemd(); ok {
+		return []string{filepath.Join(sd, "units")}
 	}
+	return nil
 }
 
 // Every unit systemd itself ships must load, but for knownRefusedUnits,
@@ -100,7 +101,7 @@ func TestSystemdShippedUnitsLoad(t *testing.T) {
 		})
 	}
 	if loaded == 0 {
-		t.Skip("no systemd unit tree found (set SLINIT_UNIT_CORPUS)")
+		t.Skip("no systemd unit tree found (set SLINIT_UNIT_CORPUS or " + reftree.SystemdEnv + ")")
 	}
 	t.Logf("%d units read, %d refused as expected", loaded, len(refused))
 }
