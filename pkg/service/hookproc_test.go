@@ -93,3 +93,87 @@ func TestHookTimeoutKillsTheProcessGroup(t *testing.T) {
 		})
 	}
 }
+
+// writeScript writes an executable shell script and returns its path.
+func writeScript(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func envHas(env []string, entry string) bool {
+	for _, e := range env {
+		if e == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// The env-generator ran with no timeout while the start held queueMu: a
+// generator that hung froze every start and stop in PID 1 (measured:
+// queueMu blocked 7s by a `sleep 7.3`). It is now bounded by
+// hook-timeout.
+func TestEnvGeneratorBoundedByHookTimeout(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "eghang")
+	s.SetHookTimeout(300 * time.Millisecond)
+	s.SetEnvGenerator(writeScript(t, t.TempDir(), "gen", "echo EARLY=1\nexec sleep 7.3\n"))
+
+	t0 := time.Now()
+	env := s.buildEnv()
+	if el := time.Since(t0); el > 3*time.Second {
+		t.Fatalf("buildEnv took %v with a hanging env-generator; want about the 300ms hook-timeout", el)
+	}
+	if envHas(env, "EARLY=1") {
+		t.Errorf("output of a timed-out env-generator was merged: %v", env)
+	}
+}
+
+// Its stdout was read into an unbounded buffer inside PID 1. Output past
+// envGeneratorMaxOutput now fails the generator.
+func TestEnvGeneratorOutputCapped(t *testing.T) {
+	set, logger := newTestSet()
+	s := NewProcessService(set, "egbig")
+	// 70000 bytes of comment lines, then a variable.
+	s.SetEnvGenerator(writeScript(t, t.TempDir(), "gen",
+		"i=0; while [ $i -lt 1000 ]; do echo '#"+strings.Repeat("x", 68)+"'; i=$((i+1)); done\necho CAPPED=1\n"))
+
+	env := s.buildEnv()
+	if envHas(env, "CAPPED=1") {
+		t.Errorf("env-generator output past %d bytes was merged", envGeneratorMaxOutput)
+	}
+	logger.mu.Lock()
+	logged := strings.Contains(strings.Join(logger.errors, "\n"), "env-generator")
+	logger.mu.Unlock()
+	if !logged {
+		t.Errorf("the oversized env-generator output was not logged as a failure")
+	}
+
+	// Output under the cap still works.
+	s.SetEnvGenerator(writeScript(t, t.TempDir(), "gen", "echo SMALL=1\n"))
+	if env := s.buildEnv(); !envHas(env, "SMALL=1") {
+		t.Errorf("small env-generator output not merged: %v", env)
+	}
+}
+
+// The env-generator ran as root whatever run-as said; every other
+// command slinit runs for the service runs as its user.
+func TestEnvGeneratorRunsAsRunAs(t *testing.T) {
+	if !inRootUserNS(t) {
+		return
+	}
+	dir := worldWritableDir(t)
+	set, _ := newTestSet()
+	s := NewProcessService(set, "egrunas")
+	s.SetRunAs(65534, 65534)
+	out := filepath.Join(dir, "uid")
+	s.SetEnvGenerator(writeScript(t, dir, "gen", "id -u > "+out+"\n"))
+	s.buildEnv()
+	if u := waitForFile(out); u != "65534" {
+		t.Errorf("env-generator ran as uid %q, want the run-as 65534", u)
+	}
+}

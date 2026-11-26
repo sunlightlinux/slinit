@@ -407,6 +407,14 @@ what tells you the oldest slinit your configuration will run on. See
     conflicts. A failing generator is logged and its output ignored;
     the start proceeds. **process** services only.
 
+    The generator runs as the service's **run-as** user (it ran as root
+    before), so that user must be able to execute it. It is bounded like
+    the synchronous hooks: past **hook-timeout** its process group is
+    killed and the start goes on without its output, and output larger
+    than 64 KiB counts as a failure. It runs while the start holds
+    slinit's scheduling lock; before these bounds a generator that hung
+    held up every other service's start and stop for as long as it hung.
+
 **pass-environment**=*NAME*...
 :   Allow-list filter applied to the inherited environment, the
     **env-file** variables and **slinitctl setenv** variables (not to
@@ -707,8 +715,8 @@ error. Repeat the line for several targets.
 **hook-timeout**=*duration*
 :   (since 3.0.5) How long each synchronous hook of a `type = process`
     service may run: **pre-start-command**, **post-start-command**,
-    **finish-command**, **pre-stop-hook** and **control-command-**\*.
-    Default five seconds.
+    **finish-command**, **pre-stop-hook** and **control-command-**\*,
+    and the **env-generator**. Default five seconds.
 
     Raise it for a hook that legitimately waits on something — a mount
     appearing, a socket starting to accept. At the default, such a hook

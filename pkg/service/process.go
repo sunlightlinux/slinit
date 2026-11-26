@@ -2203,7 +2203,7 @@ func (s *ProcessService) buildEnv() []string {
 	// keeping this a soft failure prevents a misconfigured generator
 	// from turning into a system-wide boot outage.
 	if s.envGenerator != "" {
-		genEnv, err := runEnvGenerator(s.envGenerator)
+		genEnv, err := s.runEnvGenerator()
 		if err != nil {
 			s.services.logger.Error("Service '%s': env-generator '%s' failed: %v",
 				s.serviceName, s.envGenerator, err)
@@ -2227,16 +2227,42 @@ func (s *ProcessService) buildEnv() []string {
 	return env
 }
 
-// runEnvGenerator invokes the executable and parses its stdout as
-// KEY=VALUE lines. Blank lines and lines beginning with '#' are
-// skipped so the generator can be a hand-written shell script with
+// envGeneratorMaxOutput caps what PID 1 keeps of an env-generator's
+// stdout. Output beyond it fails the generator rather than being cut at
+// an arbitrary byte, which could leave half a value in the environment.
+const envGeneratorMaxOutput = 64 << 10
+
+// runEnvGenerator invokes the service's env-generator and parses its
+// stdout as KEY=VALUE lines. Blank lines and lines beginning with '#'
+// are skipped so the generator can be a hand-written shell script with
 // comments. Non-zero exit yields an error.
-func runEnvGenerator(path string) (map[string]string, error) {
-	cmd := exec.Command(path)
-	out, err := process.OutputAdhoc(cmd)
-	if err != nil {
+//
+// It runs while the start holds the scheduling lock, so it is bounded
+// like the other synchronous hooks: hook-timeout, then SIGKILL to its
+// process group. Before, a generator that hung froze every start and
+// stop in the system for as long as it hung, and its output was read
+// into an unbounded buffer inside PID 1. It runs as the service's
+// run-as user, as the service's other commands do.
+func (s *ProcessService) runEnvGenerator() (map[string]string, error) {
+	timeout := s.effectiveHookTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := newHookCmd(ctx, []string{s.envGenerator})
+	s.applyRunAs(cmd)
+	out := &cappedBuffer{max: envGeneratorMaxOutput}
+	cmd.Stdout = out
+	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
 		return nil, err
 	}
+	if out.overflow {
+		return nil, fmt.Errorf("output exceeds %d bytes", envGeneratorMaxOutput)
+	}
+	return parseEnvGeneratorOutput(out.buf.Bytes()), nil
+}
+
+// parseEnvGeneratorOutput turns KEY=VALUE lines into a map, skipping
+// blank lines, comments and lines without a name before the '='.
+func parseEnvGeneratorOutput(out []byte) map[string]string {
 	kv := make(map[string]string)
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
@@ -2249,7 +2275,27 @@ func runEnvGenerator(path string) (map[string]string, error) {
 		}
 		kv[line[:i]] = line[i+1:]
 	}
-	return kv, nil
+	return kv
+}
+
+// cappedBuffer keeps the first max bytes written to it and notes that
+// more arrived. It goes on accepting (and dropping) the rest, so the
+// writer is never blocked on a full pipe.
+type cappedBuffer struct {
+	buf      bytes.Buffer
+	max      int
+	overflow bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); room < len(p) {
+		c.overflow = true
+		if room > 0 {
+			c.buf.Write(p[:room])
+		}
+		return len(p), nil
+	}
+	return c.buf.Write(p)
 }
 
 // startProcess forks and execs the service process.
