@@ -22,6 +22,12 @@ through the **LISTEN_FDS** protocol, accepts each connection, and runs
 one instance of *PROGRAM* per connection with the **connected** socket
 on standard input, standard output and standard error.
 
+Once *PROGRAM* has started, **slinit-inetd** closes its own copy of the
+connection, as classic **inetd** does after fork: the peer sees end of
+file as soon as *PROGRAM* closes its standard descriptors, even if it
+keeps running. A handler still counts against **\--max-concurrent** and
+**\--max-per-source** until it exits.
+
 It is not normally invoked by hand. Setting **socket-accept** = *yes* in
 a service description makes **slinit** prepend it to the service's
 command — see **slinit-service**(5).
@@ -63,9 +69,12 @@ path.
     closed as soon as it is accepted. Default 0, meaning no limit, as
     **xinetd**'s *per_source* defaults to unlimited.
 
-    **\--max-concurrent** alone lets a single host hold every slot
-    with idle connections and lock every other client out; set this
-    below it for a service reachable from untrusted hosts. Clients
+    The default is deliberately not restrictive, as neither is
+    systemd's *MaxConnectionsPerSource*, but it means one host can
+    occupy every **\--max-concurrent** slot with idle connections and
+    lock every other client out. Set it, below **\--max-concurrent**,
+    on every network-facing listener, in particular one reachable from
+    untrusted hosts. Clients
     without an IP address, such as those of a **unix:** listener, are
     not counted.
 

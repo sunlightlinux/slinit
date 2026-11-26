@@ -273,10 +273,10 @@ func isResourceExhaustion(err error) bool {
 
 // handle runs one instance of argv with conn on stdin, stdout and
 // stderr, and waits for it so the child is reaped here rather than
-// becoming slinit's problem.
+// becoming slinit's problem. It returns only once the child has exited,
+// so the caller's concurrency and per-source slots stay held for the
+// handler's whole lifetime.
 func handle(conn net.Conn, argv []string, quiet bool) error {
-	defer conn.Close()
-
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "slinit-inetd: connection from %s on %s\n",
 			conn.RemoteAddr(), conn.LocalAddr())
@@ -284,21 +284,25 @@ func handle(conn net.Conn, argv []string, quiet bool) error {
 
 	f, err := connFile(conn)
 	if err != nil {
+		conn.Close()
 		return err
 	}
-	// The child gets the socket on all three descriptors; this copy is
-	// ours and must be closed once the child holds its own, or the
-	// server never sees EOF when the peer hangs up and every connection
-	// leaks an fd until the process runs out. launchproxy's close(r)
-	// after fork is the same line.
-	defer f.Close()
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = childEnv(os.Environ())
 	cmd.Stdin = f
 	cmd.Stdout = f
 	cmd.Stderr = f
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	// The child gets the socket on all three descriptors; both copies
+	// here are ours and go as soon as the child holds its own (classic
+	// inetd and launchproxy close right after fork). Held until Wait,
+	// a handler that closes its stdio but keeps running would leave
+	// the peer without EOF until it exits, and the server would never
+	// see the peer hang up.
+	f.Close()
+	conn.Close()
+	if err != nil {
 		return fmt.Errorf("starting %s: %w", argv[0], err)
 	}
 	return cmd.Wait()

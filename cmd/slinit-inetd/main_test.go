@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -409,5 +410,84 @@ func TestEndToEndChildHasNoListenEnv(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(buf[:n])); got != "unset unset unset" {
 		t.Errorf("child saw LISTEN_FDS LISTEN_PID LISTEN_FDNAMES = %q, want all unset", got)
+	}
+}
+
+// TestEndToEndPeerSeesEOFWhenHandlerClosesStdio: the parent's copies of
+// the accepted socket were held until the handler exited, so a handler
+// that closes its stdio and keeps running left the peer without EOF.
+// Classic inetd closes its copy right after fork.
+func TestEndToEndPeerSeesEOFWhenHandlerClosesStdio(t *testing.T) {
+	bin := buildHelper(t)
+	addr, _ := startHelper(t, bin, "--quiet", "--",
+		"/bin/sh", "-c", "echo hi; exec 0<&- 1>&- 2>&-; sleep 3")
+
+	var conn net.Conn
+	var err error
+	for i := 0; i < 50; i++ {
+		conn, err = net.Dial("tcp", addr)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	start := time.Now()
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	got, err := io.ReadAll(conn)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("read: %v (after %v)", err, elapsed)
+	}
+	if string(got) != "hi\n" {
+		t.Errorf("read %q, want %q", got, "hi\n")
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Errorf("EOF after %v; want it as soon as the handler closed its stdio, not when it exited (3s)", elapsed)
+	}
+}
+
+// TestEndToEndSlotHeldUntilHandlerExits: closing the parent's socket copy
+// early must not release the per-source slot early; it belongs to the
+// handler process until it is reaped.
+func TestEndToEndSlotHeldUntilHandlerExits(t *testing.T) {
+	bin := buildHelper(t)
+	addr, _ := startHelper(t, bin, "--quiet", "--max-per-source", "1", "--",
+		"/bin/sh", "-c", "echo hi; exec 0<&- 1>&- 2>&-; sleep 2")
+
+	readAll := func() string {
+		t.Helper()
+		var conn net.Conn
+		var err error
+		for i := 0; i < 50; i++ {
+			conn, err = net.Dial("tcp", addr)
+			if err == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		defer conn.Close()
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		got, _ := io.ReadAll(conn)
+		return string(got)
+	}
+
+	if got := readAll(); got != "hi\n" {
+		t.Fatalf("first connection read %q, want %q", got, "hi\n")
+	}
+	// The first handler is still sleeping: its source slot is taken.
+	if got := readAll(); got != "" {
+		t.Errorf("second connection served (%q) while the first handler still runs under --max-per-source 1", got)
+	}
+	time.Sleep(2500 * time.Millisecond)
+	if got := readAll(); got != "hi\n" {
+		t.Errorf("after the first handler exited, read %q, want %q", got, "hi\n")
 	}
 }
