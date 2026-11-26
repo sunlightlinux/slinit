@@ -1747,7 +1747,8 @@ func (s *ProcessService) BringUp() bool {
 		// startProcess uses it rather than running the env-generator
 		// a second time. An exec-condition may have computed it already.
 		s.ensureStartEnv()
-		if err := s.runHookCommand(s.preStartCommand, "pre-start-command"); err != nil {
+		if err := s.runHookCommand(s.preStartCommand, "pre-start-command",
+			s.hookCredential(s.privHooks.PreStart)); err != nil {
 			s.services.logger.Error("Service '%s': pre-start-command failed: %v",
 				s.serviceName, err)
 			s.discardStartEnv()
@@ -1813,6 +1814,7 @@ func (s *ProcessService) launchPostStartCommand() {
 	// Read here, under the caller's lock, not in the goroutine: a
 	// reload may replace the command while this run is under way.
 	argv := s.postStartCommand
+	cred := s.hookCredential(s.privHooks.PostStart)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	s.postStartMu.Lock()
@@ -1821,7 +1823,7 @@ func (s *ProcessService) launchPostStartCommand() {
 	go func() {
 		defer close(done)
 		defer cancel()
-		err := s.runHookCommandCtx(ctx, argv, "post-start-command")
+		err := s.runHookCommandCtx(ctx, argv, "post-start-command", cred)
 		switch {
 		case err == nil:
 		case ctx.Err() != nil:
@@ -1852,12 +1854,17 @@ func (s *ProcessService) cancelPostStart(wait bool) {
 // runHookCommand executes a one-shot hook (pre-start-command,
 // post-start-command) using the same working-dir / env / timeout as
 // finish-command. Synchronous; returns the exec.Cmd error.
-func (s *ProcessService) runHookCommand(cmd []string, label string) error {
-	return s.runHookCommandCtx(context.Background(), cmd, label)
+//
+// cred is hookCredential's: the service's run-as user and groups, as
+// systemd runs ExecStartPre= and ExecStartPost= as User=, or nil for
+// root (a "+" command, or no run-as). Until 4.0.3 both hooks always ran
+// as root.
+func (s *ProcessService) runHookCommand(cmd []string, label string, cred *syscall.Credential) error {
+	return s.runHookCommandCtx(context.Background(), cmd, label, cred)
 }
 
 // runHookCommandCtx is runHookCommand ended early by parent.
-func (s *ProcessService) runHookCommandCtx(parent context.Context, cmd []string, label string) error {
+func (s *ProcessService) runHookCommandCtx(parent context.Context, cmd []string, label string, cred *syscall.Credential) error {
 	if len(cmd) == 0 {
 		return nil
 	}
@@ -1865,6 +1872,7 @@ func (s *ProcessService) runHookCommandCtx(parent context.Context, cmd []string,
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	c := newHookCmd(ctx, cmd)
+	c.SysProcAttr.Credential = cred // newHookCmd made SysProcAttr
 	c.Dir = s.workingDir
 	c.Env = s.hookCmdEnv()
 	s.services.logger.Info("Service '%s': running %s", s.serviceName, label)
@@ -2051,6 +2059,9 @@ func (s *ProcessService) execStopCommand() bool {
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
+	if s.privHooks.Stop {
+		params.FullyPrivileged()
+	}
 	// Use the credentials the main command was started with; the
 	// service's stop removes them.
 	params.ReuseCredentials = true
@@ -3735,7 +3746,9 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	cmd := newHookCmd(ctx, append([]string{s.finishCommand[0]}, args...))
 	cmd.Dir = s.workingDir
 	cmd.Env = s.hookCmdEnv()
-	s.applyRunAs(cmd)
+	if !s.privHooks.Finish {
+		s.applyRunAs(cmd)
+	}
 
 	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
 	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil && !isECHILDErr(err) {
@@ -3864,7 +3877,9 @@ func (s *ProcessService) execPreStopHook() {
 	cmd := newHookCmd(ctx, append([]string{s.preStopHook[0]}, args...))
 	cmd.Dir = s.workingDir
 	cmd.Env = s.hookCmdEnv()
-	s.applyRunAs(cmd)
+	if !s.privHooks.PreStop {
+		s.applyRunAs(cmd)
+	}
 
 	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
 	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
@@ -3896,7 +3911,9 @@ func (s *ProcessService) prepareControlCommand(sigName string, command []string)
 	cmd := newHookCmd(ctx, append([]string{command[0]}, args...))
 	cmd.Dir = s.workingDir
 	cmd.Env = s.hookCmdEnv()
-	s.applyRunAs(cmd)
+	if !s.privHooks.Control[sigName] {
+		s.applyRunAs(cmd)
+	}
 
 	return func() {
 		defer cancel()

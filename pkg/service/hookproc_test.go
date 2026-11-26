@@ -60,7 +60,7 @@ func TestHookTimeoutKillsTheProcessGroup(t *testing.T) {
 		run  func(s *ProcessService, argv []string)
 	}{
 		{"pre-start-command", func(s *ProcessService, argv []string) {
-			s.runHookCommand(argv, "pre-start-command")
+			s.runHookCommand(argv, "pre-start-command", nil)
 		}},
 		{"finish-command", func(s *ProcessService, argv []string) {
 			s.SetFinishCommand(argv)

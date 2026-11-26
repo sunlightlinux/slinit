@@ -88,6 +88,7 @@ type ServiceDescription struct {
 	ControlCommands      map[string][]string // signal→custom command (runit control/)
 	ExtraCommands        map[string][]string // custom actions (available in any state)
 	ExtraStartedCommands map[string][]string // custom actions (only when STARTED)
+	Privileged           service.PrivilegedHooks
 	WorkingDir           string
 	EnvFile              string
 	EnvDir               string // runit-style: directory with one file per env var
@@ -1364,10 +1365,16 @@ func parsePredicate(setting, value string, serviceArg *string) (service.Predicat
 	// full command line, no leading-! negation), so short-circuit here
 	// and synthesise the predicate directly.
 	if setting == "exec-condition" || setting == "assert-exec-condition" {
+		// systemd's "+": run as root, not as the run-as user.
+		v, priv, err := cutPrivilegedPrefix(setting, value)
+		if err != nil {
+			return service.Predicate{}, true, err
+		}
 		return service.Predicate{
-			Kind:     service.PredExecCondition,
-			Param:    expandEnvVars(value, serviceArg),
-			IsAssert: setting == "assert-exec-condition",
+			Kind:       service.PredExecCondition,
+			Param:      expandEnvVars(v, serviceArg),
+			IsAssert:   setting == "assert-exec-condition",
+			Privileged: priv,
 		}, true, nil
 	}
 	var (
@@ -1494,29 +1501,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "command-argv0":
 		desc.Argv0 = expandEnvVars(value, serviceArg)
 	case "stop-command":
-		if op == OpPlusEqual {
-			desc.StopCommand = append(desc.StopCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.StopCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.StopCommand, &desc.Privileged.Stop, setting, value, op, serviceArg)
 	case "finish-command":
-		if op == OpPlusEqual {
-			desc.FinishCommand = append(desc.FinishCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.FinishCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.FinishCommand, &desc.Privileged.Finish, setting, value, op, serviceArg)
 	case "pre-start-command":
-		if op == OpPlusEqual {
-			desc.PreStartCommand = append(desc.PreStartCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.PreStartCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.PreStartCommand, &desc.Privileged.PreStart, setting, value, op, serviceArg)
 	case "post-start-command":
-		if op == OpPlusEqual {
-			desc.PostStartCommand = append(desc.PostStartCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.PostStartCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.PostStartCommand, &desc.Privileged.PostStart, setting, value, op, serviceArg)
 	case "ready-check-command":
 		if op == OpPlusEqual {
 			desc.ReadyCheckCommand = append(desc.ReadyCheckCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
@@ -1538,11 +1529,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "env-generator":
 		desc.EnvGenerator = expandEnvVars(value, serviceArg)
 	case "pre-stop-hook":
-		if op == OpPlusEqual {
-			desc.PreStopHook = append(desc.PreStopHook, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
-		} else {
-			desc.PreStopHook = splitCommand(expandEnvVarsForCommand(value, serviceArg))
-		}
+		return setPrivilegedCommand(&desc.PreStopHook, &desc.Privileged.PreStop, setting, value, op, serviceArg)
 	case "chroot":
 		desc.Chroot = expandEnvVars(value, serviceArg)
 	case "lock-file":
@@ -3510,16 +3497,20 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	default:
 		if strings.HasPrefix(setting, "control-command-") {
 			sigName := strings.ToUpper(setting[len("control-command-"):])
-			cmd := splitCommand(expandEnvVarsForCommand(value, serviceArg))
-			if len(cmd) > 0 {
+			cur := desc.ControlCommands[sigName]
+			priv := desc.Privileged.Control[sigName]
+			if err := setPrivilegedCommand(&cur, &priv, setting, value, op, serviceArg); err != nil {
+				return err
+			}
+			if len(cur) > 0 {
 				if desc.ControlCommands == nil {
 					desc.ControlCommands = make(map[string][]string)
 				}
-				if op == OpPlusEqual {
-					desc.ControlCommands[sigName] = append(desc.ControlCommands[sigName], cmd...)
-				} else {
-					desc.ControlCommands[sigName] = cmd
+				desc.ControlCommands[sigName] = cur
+				if desc.Privileged.Control == nil {
+					desc.Privileged.Control = make(map[string]bool)
 				}
+				desc.Privileged.Control[sigName] = priv
 			}
 			return nil
 		}

@@ -528,16 +528,16 @@ func RenderShow(s Service) string {
 			p("ExecStart", strings.Join(ss.command, " "))
 		}
 		if len(ss.stopCommand) > 0 {
-			p("ExecStop", strings.Join(ss.stopCommand, " "))
+			p("ExecStop", showCommand(ss.stopCommand, ss.privHooks.Stop))
 		}
 		if len(ss.preStartCommand) > 0 {
-			p("ExecStartPre", strings.Join(ss.preStartCommand, " "))
+			p("ExecStartPre", showCommand(ss.preStartCommand, ss.privHooks.PreStart))
 		}
 		if len(ss.postStartCommand) > 0 {
-			p("ExecStartPost", strings.Join(ss.postStartCommand, " "))
+			p("ExecStartPost", showCommand(ss.postStartCommand, ss.privHooks.PostStart))
 		}
 		if len(ss.finishCommand) > 0 {
-			p("ExecStopPost", strings.Join(ss.finishCommand, " "))
+			p("ExecStopPost", showCommand(ss.finishCommand, ss.privHooks.Finish))
 		}
 		if len(ss.readyCheckCommand) > 0 {
 			p("ExecReadyCheck", strings.Join(ss.readyCheckCommand, " "))
@@ -562,7 +562,7 @@ func RenderShow(s Service) string {
 			p("ExecStart", strings.Join(ss.startCommand, " "))
 		}
 		if len(ss.stopCommand) > 0 {
-			p("ExecStop", strings.Join(ss.stopCommand, " "))
+			p("ExecStop", showCommand(ss.stopCommand, ss.privHooks.Stop))
 		}
 		if ss.runAsUID != 0 {
 			p("User", strconv.FormatUint(uint64(ss.runAsUID), 10))
@@ -575,7 +575,7 @@ func RenderShow(s Service) string {
 			p("ExecStart", strings.Join(ss.command, " "))
 		}
 		if len(ss.stopCommand) > 0 {
-			p("ExecStop", strings.Join(ss.stopCommand, " "))
+			p("ExecStop", showCommand(ss.stopCommand, ss.privHooks.Stop))
 		}
 		if ss.pidFile != "" {
 			p("PIDFile", ss.pidFile)
@@ -750,4 +750,13 @@ func rlimitVal(v uint64) string {
 		return "infinity"
 	}
 	return strconv.FormatUint(v, 10)
+}
+
+// showCommand is a command line as show prints it, with systemd's "+"
+// in front of one that runs with full privileges.
+func showCommand(argv []string, privileged bool) string {
+	if privileged {
+		return "+" + strings.Join(argv, " ")
+	}
+	return strings.Join(argv, " ")
 }

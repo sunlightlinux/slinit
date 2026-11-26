@@ -489,6 +489,8 @@ type ServiceRecord struct {
 	requiredDirs  []string
 
 	predicates []Predicate
+	// privHooks: the commands with systemd's "+" prefix (PrivilegedHooks).
+	privHooks PrivilegedHooks
 
 	failureAction SystemAction
 	successAction SystemAction

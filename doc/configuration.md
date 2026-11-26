@@ -273,7 +273,7 @@ accepted. List-valued settings accept `+=` to append.
 |---|---|---|
 | `type` | `process` \| `bgprocess` \| `scripted` \| `internal` \| `triggered` | Service type — see [Service types](#service-types) |
 | `command` | program [args…] | Command to run; supports `+=` |
-| `stop-command` | program [args…] | The stop script (`scripted`); for `process` / `bgprocess`, run instead of sending the stop signal; supports `+=` |
+| `stop-command` | [+]program [args…] | The stop script (`scripted`); for `process` / `bgprocess`, run instead of sending the stop signal; supports `+=`. Runs as `run-as` inside the sandbox; a leading `+` runs it as root without the sandbox (systemd `ExecStop=+`) |
 | `working-dir` | path | Working directory for the process |
 | `run-as` | user[:group] | Run the command as this user and group; if either is still unknown at start, the start fails |
 | `provides` | name | Alias under which the service can also be looked up |
@@ -310,11 +310,11 @@ accepted. List-valued settings accept `+=` to append.
 | `stop-timeout` | seconds | Time between `term-signal` and SIGKILL (default 10; 0 waits forever) |
 | `term-signal` | signal | Signal used for a graceful stop |
 | `runtime-max-sec` | Go duration | Hard cap on time spent *started*; the service is stopped when it is reached |
-| `pre-start-command` | program [args…] | Runs before `command`; synchronous, a non-zero exit fails the start |
-| `post-start-command` | program [args…] | Runs right after the fork, before readiness is confirmed; asynchronous, result only logged |
-| `finish-command` | program [args…] | Runs after the process exits, before any restart |
-| `pre-stop-hook` | program [args…] | Runs before SIGTERM; receives the PID as an argument |
-| `control-command-SIG` | program [args…] | Run in place of sending SIG — by `slinitctl signal`, a stop (`TERM`) or pause/continue (`STOP`/`CONT`), e.g. `control-command-HUP` |
+| `pre-start-command` | [+]program [args…] | Runs before `command`; synchronous, a non-zero exit fails the start. Runs as `run-as`; a leading `+` runs it as root (systemd `ExecStartPre=+`) |
+| `post-start-command` | [+]program [args…] | Runs right after the fork, before readiness is confirmed; asynchronous, result only logged. Runs as `run-as`, or as root with `+` |
+| `finish-command` | [+]program [args…] | Runs after the process exits, before any restart. Runs as `run-as`, or as root with `+` |
+| `pre-stop-hook` | [+]program [args…] | Runs before SIGTERM; receives the PID as an argument. Runs as `run-as`, or as root with `+` |
+| `control-command-SIG` | [+]program [args…] | Run in place of sending SIG — by `slinitctl signal`, a stop (`TERM`) or pause/continue (`STOP`/`CONT`), e.g. `control-command-HUP` |
 | `oom-policy` | `continue` \| `stop` \| `kill` | Reaction to a cgroup v2 OOM kill |
 | `failure-action` | `none` \| `reboot` \| `poweroff` \| `halt` \| `exit` | System action when the service fails permanently |
 | `success-action` | `none` \| `reboot` \| `poweroff` \| `halt` \| `exit` | System action when the service finishes cleanly |

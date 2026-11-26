@@ -648,6 +648,9 @@ func (s *BGProcessService) execStopCommand() bool {
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
+	if s.privHooks.Stop {
+		params.FullyPrivileged()
+	}
 	// Use the credentials the main command was started with; the
 	// service's stop removes them.
 	params.ReuseCredentials = true

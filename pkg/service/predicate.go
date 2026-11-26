@@ -136,6 +136,9 @@ type Predicate struct {
 	Param    string
 	Negate   bool
 	IsAssert bool
+	// Privileged: an exec-condition with systemd's "+" prefix, run as
+	// root rather than as the service's run-as user.
+	Privileged bool
 }
 
 // String returns the user-facing config name for diagnostics. The
@@ -232,10 +235,14 @@ func (p Predicate) String() string {
 		// systemd exposes this as its own directive, not as a member
 		// of the Condition* family. The parser accepts it as such and
 		// synthesises a Predicate at parse time.
-		if p.IsAssert {
-			return "assert-exec-condition=" + p.Param
+		param := p.Param
+		if p.Privileged {
+			param = "+" + param
 		}
-		return "exec-condition=" + p.Param
+		if p.IsAssert {
+			return "assert-exec-condition=" + param
+		}
+		return "exec-condition=" + param
 	default:
 		name = fmt.Sprintf("kind-%d", p.Kind)
 	}
@@ -378,6 +385,11 @@ func evalRaw(p Predicate, prep func(*exec.Cmd)) (bool, string) {
 	case PredIOPressure:
 		return checkPSIPressure("/proc/pressure/io", p.Param)
 	case PredExecCondition:
+		if p.Privileged && prep != nil {
+			// The service's working directory and environment, but
+			// not its run-as user.
+			prep = withoutCredential(prep)
+		}
 		return checkExecConditionWith(p.Param, prep)
 	case PredBootCond:
 		return checkBootCond(p.Param)
@@ -442,6 +454,16 @@ func checkExecCondition(cmdline string) (bool, string) {
 // set, gives the command the service's run-as user and groups, working
 // directory and environment: systemd runs ExecCondition= as User=, and
 // this ran as root. A service without run-as still runs it as root.
+// withoutCredential is prep with the credential it sets taken off again.
+func withoutCredential(prep func(*exec.Cmd)) func(*exec.Cmd) {
+	return func(cmd *exec.Cmd) {
+		prep(cmd)
+		if cmd.SysProcAttr != nil {
+			cmd.SysProcAttr.Credential = nil
+		}
+	}
+}
+
 func checkExecConditionWith(cmdline string, prep func(*exec.Cmd)) (bool, string) {
 	if strings.TrimSpace(cmdline) == "" {
 		return false, "exec-condition: empty command"

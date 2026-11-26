@@ -213,29 +213,49 @@ what tells you the oldest slinit your configuration will run on. See
     variable must be written `$$VAR`). A missing `end script` is a
     fatal parse error.
 
-**stop-command**=*program* [*args*...]
+**stop-command**=[**+**]*program* [*args*...]
 :   Program run to stop the service. For **scripted** it is the stop
     script; for **process** and **bgprocess** it is run instead of
-    sending **term-signal** (the stop timeout still applies).
+    sending **term-signal** (the stop timeout still applies). It runs
+    with the service's **run-as** user and its sandbox and hardening
+    settings; with the **+** prefix (since 4.0.3; see **The + prefix** below)
+    it runs as root without them.
 
-**finish-command**=*program* [*args*...]
+**finish-command**=[**+**]*program* [*args*...]
 :   Runit-style: a program executed *after* **command** exits, before
-    a possible restart.
+    a possible restart. It runs as the service's **run-as** user, or as
+    root with the **+** prefix (since 4.0.3).
 
-**pre-start-command**=*program* [*args*...]
+**pre-start-command**=[**+**]*program* [*args*...]
 :   systemd-style *ExecStartPre=*: a program executed synchronously
     before the main **command** is forked. A non-zero exit fails the
     start. Runs after sandbox / required-paths checks but before
     fork+exec, so a failed pre-hook never leaves a half-started
     process behind. **+=** appends arguments. Process services only.
 
-**post-start-command**=*program* [*args*...]
+    Like systemd's, it runs with the service's credentials: the
+    **run-as** user and group and the **supplementary-groups**, the
+    **working-dir** and the service environment (since 4.0.3; until
+    4.0.3 it ran as root). A hook that needs root, such as one creating
+    or chowning a directory under */run*, takes the **+** prefix, as
+    systemd's *ExecStartPre=+* does:
+
+        run-as = foo
+        pre-start-command = +/bin/mkdir -p /run/foo
+
+    The service's sandbox and hardening settings do not apply to it,
+    with or without **+**.
+
+**post-start-command**=[**+**]*program* [*args*...]
 :   systemd-style *ExecStartPost=*: a program executed asynchronously
     right after the main process is forked — before readiness is
     confirmed, when a readiness protocol is configured. With
     **start-delay**, it runs once the delayed fork has happened. A
     non-zero exit is logged but does not fail the service. Useful for "service is up, notify
     something" hooks. **+=** appends arguments. Process services only.
+    It runs with the service's credentials, or as root with the **+**
+    prefix, as **pre-start-command** does (since 4.0.3; until 4.0.3 it
+    ran as root).
 
     A run still going when the service is stopped, or when the next
     start launches its own, is ended then (its process group killed);
@@ -262,8 +282,10 @@ what tells you the oldest slinit your configuration will run on. See
     once immediately, before the first interval elapses, so a service
     that is already ready does not wait for a tick.
 
-**pre-stop-hook**=*program* [*args*...]
-:   Hook run before the stop signal is delivered.
+**pre-stop-hook**=[**+**]*program* [*args*...]
+:   Hook run before the stop signal is delivered. It runs as the
+    service's **run-as** user, or as root with the **+** prefix (since
+    4.0.3).
 
 **working-dir**=*path*
 :   Working directory for the service.
@@ -404,6 +426,35 @@ what tells you the oldest slinit your configuration will run on. See
     legitimately appear in the same operator workflow.
 
     Inspired by upstart's **reload signal** stanza.
+
+### The + prefix (privileged commands)
+
+The command settings that stand for a systemd *Exec\*=* line take
+systemd's **+** prefix, "run with full privileges" (since 4.0.3):
+**pre-start-command** (*ExecStartPre=*), **post-start-command**
+(*ExecStartPost=*), **stop-command** (*ExecStop=*),
+**finish-command** (*ExecStopPost=*), **pre-stop-hook**,
+**control-command-**\* and **exec-condition** (*ExecCondition=*).
+The **+** goes directly before the program, `+/bin/mkdir`; a **+**
+followed by a space, or alone, is an error. Such a command runs as
+root, without the service's **run-as** user, group and
+**supplementary-groups**, whatever **run-as** says; it keeps the
+working directory and environment. A **stop-command**, the only one
+of these started inside the service's sandbox, also goes without
+the sandbox, the capability, securebits and no-new-privs limits,
+the LSM contexts, the namespaces, the kernel-protection and
+**restrict-**\* hardening, the personality and the seccomp filters;
+its cgroup and resource settings stay, as in systemd.
+
+**=** sets the command and whether it has **+**; **+=** appends
+arguments and keeps it, so a **+** there is an ordinary argument
+(a **+=** to a command not yet set starts it, **+** included).
+systemd's other prefixes (**-**, **@**, **:**, **!**, **|**) are not
+slinit syntax; **slinit-systemd-convert**(8) translates them. The
+other commands (**command**, **ready-check-command**,
+**cron-command**, **health-check-command**, **unhealthy-command**,
+**env-generator**, **log-processor**) take no prefix and run as the
+service's **run-as** user.
 
 ## ENVIRONMENT
 
@@ -2537,11 +2588,12 @@ watch; the service remains startable via `slinitctl start`.
 :   Like **extra-command**, but only callable when the service is
     *started*.
 
-**control-command-***SIG*=*program* [*args*...]
+**control-command-***SIG*=[**+**]*program* [*args*...]
 :   Run *program* instead of sending signal *SIG* to the service,
     whether the signal comes from **slinitctl signal**, from a stop
     (**control-command-TERM**), or from **slinitctl pause** /
-    **continue** (*STOP* / *CONT*).
+    **continue** (*STOP* / *CONT*). It runs as the service's **run-as**
+    user, or as root with the **+** prefix (since 4.0.3).
 
 ## VTTY (sunlight-os)
 
@@ -2797,7 +2849,7 @@ form):
     *VALUE* (split on the last `:`). Meant for sysfs enum and boolean
     files.
 
-**exec-condition**=*shell command*, **assert-exec-condition**=*shell command*
+**exec-condition**=[**+**]*shell command*, **assert-exec-condition**=[**+**]*shell command*
 :   Pre-flight command run through `/bin/sh -c`, 10-second timeout.
     Exit 0 = proceed with start; non-zero, timeout, or empty
     command = fail. **condition-** form skips silently on non-zero
@@ -2807,7 +2859,9 @@ form):
     **supplementary-groups** (until 4.0.3 it ran as root), its
     environment, and its **working-dir** when that exists already (a
     directory slinit creates for the service, such as a
-    **state-directory**, is not made until the process starts).
+    **state-directory**, is not made until the process starts). With
+    the **+** prefix, `exec-condition = +test -w /dev/foo`, it runs as
+    root (since 4.0.3), as systemd's *ExecCondition=+* does.
 
 **condition-boot-cond**=*name*, **assert-boot-cond**=*name*
 :   Match a value from the comma-separated **slinit.cond=** kernel-

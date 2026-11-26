@@ -142,3 +142,42 @@ func prepareHookCmdFor(ctx context.Context, svc Service, cmd *exec.Cmd) bool {
 	}
 	return true
 }
+
+// PrivilegedHooks says which of a service's commands carry systemd's
+// "+" prefix ("run with full privileges"): they run as root, without
+// the service's run-as user and groups, whatever run-as says. The
+// parser strips the "+" from the command and sets the flag here.
+//
+// pre-start-command, post-start-command, finish-command, pre-stop-hook
+// and control-command-* never had the service's sandbox, so for them
+// "+" means exactly that: no run-as. A stop-command is started like the
+// main process, sandbox included; with "+" it also goes without the
+// sandbox, the capability and securebits limits and the seccomp filter,
+// as systemd's ExecStop=+ does (see process.ExecParams.FullyPrivileged).
+// An exec-condition carries its own flag (Predicate.Privileged).
+type PrivilegedHooks struct {
+	PreStart, PostStart, Stop, Finish, PreStop bool
+	// Control is keyed by the upper-case signal name, as the
+	// control-command-* map is.
+	Control map[string]bool
+}
+
+// SetPrivilegedHooks records which commands carry the "+" prefix.
+func (sr *ServiceRecord) SetPrivilegedHooks(h PrivilegedHooks) { sr.privHooks = h }
+
+// PrivilegedHooks returns what SetPrivilegedHooks recorded.
+func (sr *ServiceRecord) PrivilegedHooks() PrivilegedHooks { return sr.privHooks }
+
+// hookCredential is the credential a hook runs with: none (slinit's
+// own, root under PID 1) when privileged or when the service has no
+// run-as, otherwise the run-as user and groups. Read it under queueMu.
+func (s *ProcessService) hookCredential(privileged bool) *syscall.Credential {
+	if privileged {
+		return nil
+	}
+	uid, gid := s.effectiveRunAsUID(), s.effectiveRunAsGID()
+	if uid == 0 && gid == 0 {
+		return nil
+	}
+	return &syscall.Credential{Uid: uid, Gid: gid, Groups: s.supplementaryGIDs}
+}

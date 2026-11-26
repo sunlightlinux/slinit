@@ -518,6 +518,35 @@ type ExecParams struct {
 	GidMappings []syscall.SysProcIDMap
 }
 
+// FullyPrivileged drops from p what systemd's "+" prefix ("run with full
+// privileges") leaves out of a command: the run-as user and groups, the
+// capability, securebits and no-new-privs limits, the LSM contexts, the
+// namespaces and filesystem sandbox, the kernel-protection and restrict-*
+// hardening, the personality and the seccomp filters. What applies to the
+// service's cgroup (cgroup, resource settings) stays, as in systemd, and
+// so do the scheduling, rlimit, environment and credential settings,
+// which systemd applies to a "+" command too.
+func (p *ExecParams) FullyPrivileged() {
+	p.RunAsUID, p.RunAsGID, p.SupplementaryGIDs = 0, 0, nil
+	p.NoNewPrivs = false
+	p.AmbientCaps, p.BoundingCaps, p.Securebits = nil, nil, 0
+	p.AppArmorProfile, p.SELinuxContext, p.SMACKProcessLabel = "", "", ""
+	p.Cloneflags, p.UidMappings, p.GidMappings = 0, nil, nil
+	p.PrivateTmp, p.ProtectSystem, p.ProtectHome = false, "", ""
+	p.ReadOnlyPaths, p.ReadWritePaths, p.InaccessiblePaths = nil, nil, nil
+	p.ProtectProc, p.ProcSubset = "", ""
+	p.BindPaths, p.BindReadOnlyPaths, p.TemporaryFileSystem = nil, nil, nil
+	p.SeccompFilter, p.SeccompArchitectures, p.SeccompErrorAction = nil, nil, ""
+	p.SeccompLogFilter, p.IOUringFilter = nil, nil
+	p.ProtectKernelTunables, p.ProtectKernelModules, p.ProtectKernelLogs = false, false, false
+	p.ProtectClock, p.ProtectControlGroups, p.ProtectHostname = false, false, false
+	p.LockPersonality, p.RestrictRealtime, p.RestrictNamespaces = false, false, false
+	p.RestrictSUIDSGID, p.RestrictFileSystems = false, false
+	p.RestrictAddressFamilies, p.RestrictAFEnabled = nil, false
+	p.MemoryDenyWriteExecute = false
+	p.Personality = ""
+}
+
 // CgroupSetting is a key-value pair for a cgroup v2 controller knob.
 // File is the filename within the cgroup directory (e.g., "memory.max").
 // Value is the string to write (e.g., "536870912", "max", "100").

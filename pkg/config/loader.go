@@ -515,6 +515,7 @@ func recordModTime(svc service.Service, filePath string) {
 func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *ServiceDescription) {
 	dl.applyRunAs(svc, desc)
 	dl.applySupplementaryGroups(svc, desc)
+	svc.Record().SetPrivilegedHooks(desc.Privileged)
 	switch s := svc.(type) {
 	case *service.InternalService:
 		applyCron(s, desc)

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -281,21 +283,19 @@ ExecStop=:/bin/echo $HOME ${X} $$
 			[]string{"/bin/sh", "-c", `"$@" || :`, "sh", "/nonexistent/prog", "a b"})
 		// ":": no variable is expanded, $$ stays $$.
 		argvIs(t, name+": stop-command", d.StopCommand, []string{"/bin/echo", "$HOME", "${X}", "$$"})
+		// slinit runs the start hooks as run-as, as systemd runs them
+		// as User=; the "+" of ExecStartPost= becomes slinit's "+".
+		argvIs(t, name+": post-start-command", d.PostStartCommand, []string{"/bin/true"})
+		if p := d.Privileged; p.PreStart || !p.PostStart || p.Stop {
+			t.Errorf("%s: privileged = %+v; want post-start only", name, p)
+		}
 	}
-	var preWarned, postWarned bool
 	for _, g := range got {
-		if strings.HasPrefix(g, "WARN") && strings.Contains(g, "ExecStartPre= runs as nobody") {
-			preWarned = true
+		// The WARN that slinit ran the hooks as root, not User=, is
+		// gone with the reason for it.
+		if strings.Contains(g, "runs as nobody under systemd") {
+			t.Errorf("stale WARN: %s", g)
 		}
-		if strings.Contains(g, "ExecStartPost= runs as") {
-			postWarned = true
-		}
-	}
-	if !preWarned {
-		t.Errorf("no WARN that ExecStartPre= runs as root, not User=: %v", got)
-	}
-	if postWarned {
-		t.Errorf("ExecStartPost= has \"+\": systemd runs it privileged too, nothing to warn about: %v", got)
 	}
 
 	// "|": the rest runs as one /bin/sh -c script; "@|" a login shell.
@@ -311,7 +311,6 @@ ExecStop=:/bin/echo $HOME ${X} $$
 		{"[Service]\nExecStart=-/usr/bin/daemon\n", `"-" (exit failure counts as success) not carried`},
 		{"[Service]\nExecStart=+/usr/bin/daemon\nUser=x\n", `"+" (full privileges, no sandbox) not carried`},
 		{"[Service]\nExecStart=!/usr/bin/daemon\nUser=x\n", `"!" (sandbox, but no User=/Group=) not carried`},
-		{"[Service]\nExecStart=/usr/bin/daemon\nExecStartPre=!/usr/bin/pre\n", `"!" (sandbox, but no User=/Group=) not carried`},
 	} {
 		d, got := loadSystemdDirect(t, c.unit)
 		found := false
@@ -324,5 +323,71 @@ ExecStop=:/bin/echo $HOME ${X} $$
 		if d.Command[0] != "/usr/bin/daemon" {
 			t.Errorf("%q: command = %q", c.unit, d.Command)
 		}
+	}
+}
+
+// systemd's "+" on ExecStartPre=, ExecStartPost= and ExecStop= becomes
+// slinit's "+": the command runs as root while the rest of the service
+// runs as User=. "!" on a start hook, which systemd runs as root, gets
+// it too; "!" on ExecStop= stays a WARN (slinit would drop the sandbox).
+func TestSystemdExecPrivilegedPrefix(t *testing.T) {
+	unit := `[Service]
+User=nobody
+ExecStartPre=+/bin/mkdir -p /run/foo
+ExecStartPost=/bin/true post
+ExecStart=/usr/bin/daemon
+ExecStop=+/bin/stopper now
+`
+	direct, got := loadSystemdDirect(t, unit)
+	for name, d := range map[string]*ServiceDescription{"converted": parseEmitted(t, unit), "direct": direct} {
+		argvIs(t, name+": pre-start-command", d.PreStartCommand, []string{"/bin/mkdir", "-p", "/run/foo"})
+		argvIs(t, name+": stop-command", d.StopCommand, []string{"/bin/stopper", "now"})
+		if p := d.Privileged; !p.PreStart || p.PostStart || !p.Stop {
+			t.Errorf("%s: privileged = %+v; want pre-start and stop", name, p)
+		}
+	}
+	for _, g := range got {
+		if strings.HasPrefix(g, "WARN") {
+			t.Errorf("unexpected WARN: %s", g)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "u.service")
+	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := ConvertSystemdUnit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conv bytes.Buffer
+	EmitSlinitFile(&conv, cfg)
+	for _, want := range []string{"pre-start-command = +/bin/mkdir -p /run/foo\n", "stop-command = +/bin/stopper now\n", "post-start-command = /bin/true post\n"} {
+		if !strings.Contains(conv.String(), want) {
+			t.Errorf("converted output lacks %q:\n%s", want, conv.String())
+		}
+	}
+
+	d, _ := loadSystemdDirect(t, "[Service]\nUser=x\nExecStart=/usr/bin/daemon\nExecStartPre=!/usr/bin/pre\n")
+	if !d.Privileged.PreStart {
+		t.Errorf("ExecStartPre=! is not run as root: %+v", d.Privileged)
+	}
+	d, got = loadSystemdDirect(t, "[Service]\nUser=x\nExecStart=/usr/bin/daemon\nExecStop=!/usr/bin/stop\n")
+	warned := false
+	for _, g := range got {
+		warned = warned || strings.HasPrefix(g, "WARN") && strings.Contains(g, `"!" (sandbox, but no User=/Group=) not carried`)
+	}
+	if d.Privileged.Stop || !warned {
+		t.Errorf("ExecStop=!: privileged %v, warned %v: %v", d.Privileged.Stop, warned, got)
+	}
+
+	// A path that starts with "+" after systemd's own "!" cannot be
+	// written for slinit without becoming its "+".
+	d, got = loadSystemdDirect(t, "[Service]\nUser=x\nExecStart=/usr/bin/daemon\nExecStop=!+odd\n")
+	warned = false
+	for _, g := range got {
+		warned = warned || strings.HasPrefix(g, "WARN") && strings.Contains(g, "command dropped")
+	}
+	if len(d.StopCommand) != 0 || !warned {
+		t.Errorf("ExecStop=!+odd: stop-command %q, warned %v", d.StopCommand, warned)
 	}
 }

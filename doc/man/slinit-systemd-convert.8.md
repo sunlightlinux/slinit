@@ -103,11 +103,22 @@ and **ExecStop** a failure already fails nothing in slinit. **-** on the
 **ExecStart** of a long-running service, and **+** and **!** wherever
 their meaning is lost, are reported as warnings.
 
-slinit runs **pre-start-command** and **post-start-command** as root,
-outside the service's sandbox, where systemd runs **ExecStartPre** and
-**ExecStartPost** with the unit's **User=** and **Group=** unless they
-have **+**. A unit with **User=** or **Group=** and such a hook gets a
-warning: the hook runs with more privilege than the unit asks for.
+slinit runs **pre-start-command**, **post-start-command** and
+**stop-command** with the service's **run-as** user, group and
+**supplementary-groups**, as systemd runs **ExecStartPre**,
+**ExecStartPost** and **ExecStop** with **User=** and **Group=**
+(since 4.0.3; until 4.0.3 the two start hooks ran as root, and a unit
+with **User=** and such a hook got a warning). **+** on those three
+lines becomes slinit's own **+** prefix (see **slinit-service**(5)), so
+the command runs as root: **ExecStartPre=+/bin/mkdir -p /run/foo**
+becomes **pre-start-command = +/bin/mkdir -p /run/foo**. **!** (run as
+root, inside the sandbox) on **ExecStartPre** and **ExecStartPost**
+becomes **+** too: slinit gives a start hook no sandbox either way, so
+root is what is kept. **!** on **ExecStop**, and **+** and **!** on
+**ExecStart**, stay warnings: slinit would drop the stop command's
+sandbox, and its main **command** takes no prefix. A program whose own
+path starts with **+** (systemd's **!+path**) cannot be written without
+slinit reading that **+** as its prefix, and is dropped with a warning.
 
 **TimeoutStartSec** becomes **start-timeout** and **TimeoutStopSec**
 **stop-timeout**; **TimeoutSec** sets both. **infinity** and **0** both
