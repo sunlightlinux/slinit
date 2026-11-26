@@ -1005,7 +1005,8 @@ requires.
   registry entry stayed. SIGHUP is now forwarded to the init as SIGTERM
   and the launcher waits for it as for SIGTERM, and the init gets
   SIGKILL as its parent death signal, as under systemd-nspawn, so a
-  launcher killed outright takes the container with it.
+  launcher killed outright takes the container with it. A launcher
+  started under `nohup` keeps ignoring SIGHUP.
 - **`slinit-nspawn` passed its whole environment to the container.**
   The init inherited the launcher's credentials, SSH agent socket and
   the internal `_SLINIT_NSPAWN_*` launch parameters, so an
@@ -1021,6 +1022,8 @@ requires.
   duplicate each time and `--stop` left the daemon running and returned
   0. The executable is now compared by device and inode, as Debian's
   does, with the path compare kept for a binary an upgrade replaced.
+  An `--exec` that is itself a symlink (a busybox applet) is compared
+  by name with its directory resolved, as OpenRC does.
 - **slinit-start-stop-daemon `--chuid` dropped the user's supplementary
   groups** (Go's setgroups(0)) and a numeric `--chuid` kept the caller's
   gid. The child now gets the user's groups, as initgroups gives them.
