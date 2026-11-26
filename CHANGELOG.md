@@ -1006,7 +1006,14 @@ requires.
     were dropped with a hidden note; `-` and `:` are honoured where slinit
     can express them, `|` runs through `/bin/sh -c`, and the rest warn;
   - a unit with `User=` and `ExecStartPre=`/`ExecStartPost=` now warns
-    that slinit runs those hooks as root.
+    that slinit runs those hooks as root;
+  - `$` is expanded only where systemd expands it (a whole-word `$NAME`,
+    `${NAME}`); `sh -c 'echo $HOME $1'` keeps its `$` for the shell
+    instead of losing them at load time;
+  - an `@argv0` with a newline could inject settings into the generated
+    file; such an argv0 is dropped with a WARN;
+  - an unparseable `TimeoutStartSec=`/`TimeoutSec=`/`TimeoutStopSec=` is
+    ignored with a WARN, as in systemd, instead of failing the unit.
 - **`pre-start-command`/`post-start-command` on a non-process service
   were ignored silently**; loading one now warns.
 - **slinit-openrc-convert produced services that lost arguments or did
