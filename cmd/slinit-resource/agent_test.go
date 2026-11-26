@@ -37,6 +37,8 @@ func agentPath(t *testing.T) string {
 //     monitor probe agrees with reality.
 //   - on `start <svc>`, transitions <dir>/state to STARTED.
 //   - on any other command, exits 0 silently.
+//   - if <dir>/sticky exists, start and stop leave the state untouched
+//     (a service stuck mid-transition).
 //
 // The initial state in <dir>/state is `defaultState`. The stub also
 // appends its argv to <dir>/calls so tests can assert on it.
@@ -63,15 +65,17 @@ case "$1" in
         echo "  Target:  STARTED"
         echo "  Type:    process"
         ;;
-    start) echo STARTED > %q ;;
-    stop)  echo STOPPED > %q ;;
+    start) [ -e %q ] || echo STARTED > %q ;;
+    stop)  [ -e %q ] || echo STOPPED > %q ;;
     *) ;;
 esac
 exit 0
 `,
 		filepath.Join(dir, "calls"),
 		filepath.Join(dir, "state"),
+		filepath.Join(dir, "sticky"),
 		filepath.Join(dir, "state"),
+		filepath.Join(dir, "sticky"),
 		filepath.Join(dir, "state"),
 	)
 	path := filepath.Join(dir, "slinitctl")
@@ -90,7 +94,7 @@ func setState(t *testing.T, dir, state string) {
 
 // runAgent invokes the agent with the given OCF action, using the stub
 // slinitctl in <stubDir>. Returns stdout, stderr, exit code.
-func runAgent(t *testing.T, agent, stubDir, action, service string) (string, string, int) {
+func runAgent(t *testing.T, agent, stubDir, action, service string, extraEnv ...string) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command(agent, action)
 	cmd.Env = append(os.Environ(),
@@ -99,6 +103,7 @@ func runAgent(t *testing.T, agent, stubDir, action, service string) (string, str
 		"OCF_RESKEY_socket=/tmp/slinit-resource-test.socket",
 		"OCF_RESKEY_slinitctl=slinitctl",
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -190,14 +195,88 @@ func TestMonitorReportsNotRunning(t *testing.T) {
 	}
 }
 
-func TestMonitorTransitionalIsNotRunning(t *testing.T) {
+// OCF_NOT_RUNNING promises a clean stop; a mid-transition service is
+// not one. STARTING is reported active, STOPPING as an error so
+// Pacemaker recovers it with a stop.
+func TestMonitorTransitionalIsNotCleanlyStopped(t *testing.T) {
+	agent := agentPath(t)
+	for _, tc := range []struct {
+		state string
+		want  int
+	}{
+		{"STARTING", 0},
+		{"STOPPING", 1},
+	} {
+		dir := t.TempDir()
+		installStubSlinitctl(t, dir, tc.state)
+		_, _, rc := runAgent(t, agent, dir, "monitor", "nginx")
+		if rc != tc.want {
+			t.Errorf("monitor during %s: rc=%d, want %d", tc.state, rc, tc.want)
+		}
+	}
+}
+
+// The split-brain bug: stop of a STARTING (or STOPPING) service
+// returned OCF_SUCCESS without ever calling `slinitctl stop`, so the
+// service kept coming up here while Pacemaker started it elsewhere.
+func TestStopOfTransitionalServiceStopsIt(t *testing.T) {
+	agent := agentPath(t)
+	for _, state := range []string{"STARTING", "STOPPING"} {
+		dir := t.TempDir()
+		installStubSlinitctl(t, dir, state)
+		_, stderr, rc := runAgent(t, agent, dir, "stop", "nginx")
+		if rc != 0 {
+			t.Errorf("stop on %s: rc=%d, want 0; stderr:\n%s", state, rc, stderr)
+		}
+		calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+		if !strings.Contains(string(calls), "stop --ignore-unstarted nginx") {
+			t.Errorf("stop on %s did not invoke 'slinitctl stop'; calls:\n%s", state, calls)
+		}
+		got, _ := os.ReadFile(filepath.Join(dir, "state"))
+		if strings.TrimSpace(string(got)) != "STOPPED" {
+			t.Errorf("stop on %s: state after = %q, want STOPPED", state, got)
+		}
+	}
+}
+
+// A stop that does not reach STOPPED within stop_timeout fails.
+func TestStopTimesOutWhenServiceDoesNotStop(t *testing.T) {
+	agent := agentPath(t)
+	dir := t.TempDir()
+	installStubSlinitctl(t, dir, "STARTED")
+	if err := os.WriteFile(filepath.Join(dir, "sticky"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, rc := runAgent(t, agent, dir, "stop", "nginx", "OCF_RESKEY_stop_timeout=1")
+	if rc != 1 {
+		t.Errorf("stop stuck on STARTED: rc=%d, want 1 (OCF_ERR_GENERIC)", rc)
+	}
+}
+
+// start of a STARTING service must not trust monitor's "active": it
+// waits for the in-flight start via slinitctl and checks for STARTED.
+func TestStartOfStartingServiceWaitsForStarted(t *testing.T) {
 	agent := agentPath(t)
 	dir := t.TempDir()
 	installStubSlinitctl(t, dir, "STARTING")
+	_, _, rc := runAgent(t, agent, dir, "start", "nginx")
+	if rc != 0 {
+		t.Errorf("start on STARTING: rc=%d, want 0", rc)
+	}
+	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+	if !strings.Contains(string(calls), "start nginx") {
+		t.Errorf("start on STARTING did not invoke 'slinitctl start'; calls:\n%s", calls)
+	}
 
-	_, _, rc := runAgent(t, agent, dir, "monitor", "nginx")
-	if rc != 7 {
-		t.Errorf("monitor during STARTING: rc=%d, want 7 (OCF_NOT_RUNNING)", rc)
+	// Stuck in STARTING past start_timeout: the start failed.
+	dir = t.TempDir()
+	installStubSlinitctl(t, dir, "STARTING")
+	if err := os.WriteFile(filepath.Join(dir, "sticky"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, rc = runAgent(t, agent, dir, "start", "nginx", "OCF_RESKEY_start_timeout=1")
+	if rc != 1 {
+		t.Errorf("start stuck in STARTING: rc=%d, want 1 (OCF_ERR_GENERIC)", rc)
 	}
 }
 
