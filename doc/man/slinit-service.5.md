@@ -729,6 +729,12 @@ error. Repeat the line for several targets.
     previously the log read only `signal: killed`, which named the
     mechanism and hid the cause.
 
+    Each hook runs in a process group of its own, and the kill at the
+    deadline is SIGKILL to that whole group. Before, only the hook's
+    direct child was killed: in `sh -c "sleep 60; :"` the shell died and
+    the sleep ran on, reparented to PID 1. A hook that exits by itself
+    may still leave a background process behind.
+
 **restart-delay**=*duration*
 :   Delay before a restart attempt. Default *0.2* seconds; *0*
     restarts at once (since 3.20.0; before, an explicit *0* was ignored).

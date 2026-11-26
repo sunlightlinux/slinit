@@ -1779,7 +1779,7 @@ func (s *ProcessService) runHookCommand(cmd []string, label string) error {
 	timeout := s.effectiveHookTimeout()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+	c := newHookCmd(ctx, cmd)
 	c.Dir = s.workingDir
 	c.Env = s.buildEnv()
 	s.services.logger.Info("Service '%s': running %s", s.serviceName, label)
@@ -3497,7 +3497,7 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, s.finishCommand[0], args...)
+	cmd := newHookCmd(ctx, append([]string{s.finishCommand[0]}, args...))
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
 	s.applyRunAs(cmd)
@@ -3580,7 +3580,7 @@ func (s *ProcessService) execPreStopHook() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, s.preStopHook[0], args...)
+	cmd := newHookCmd(ctx, append([]string{s.preStopHook[0]}, args...))
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
 	s.applyRunAs(cmd)
@@ -3612,7 +3612,7 @@ func (s *ProcessService) prepareControlCommand(sigName string, command []string)
 	timeout := s.effectiveHookTimeout()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
-	cmd := exec.CommandContext(ctx, command[0], args...)
+	cmd := newHookCmd(ctx, append([]string{command[0]}, args...))
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
 	s.applyRunAs(cmd)
