@@ -33,6 +33,13 @@ requires.
 
 ### Security
 
+- **Auxiliary commands ignored `run-as`**: `cron-command`,
+  `healthcheck-command`, `unhealthy-command`, `exec-condition`,
+  `log-processor` and `env-generator` ran as root under PID 1 whatever
+  the service's `run-as` said. They now run with its run-as user,
+  supplementary groups, working directory and environment, as systemd
+  runs `ExecCondition=` and the rest. (`pre-start-command` and
+  `post-start-command` still run as root; see slinit-service(5).)
 - **systemd units: a commented-out line inside a `\` continuation was
   executed as arguments** (`ExecStart=/usr/bin/foo \` /
   `#  --insecure \` / `--bar` ran foo with `#` and `--insecure`). Comment
@@ -994,6 +1001,18 @@ requires.
 
 ### Fixed
 
+- **Hooks could freeze PID 1 or outlive their service**:
+  - a hung `env-generator` blocked every start, stop and `slinitctl`
+    command (it ran with no timeout under the global lock); it is now
+    bounded by `hook-timeout`, its output capped at 64 KiB, and it runs
+    once per start instead of for every hook and ready-check poll;
+  - a timed-out hook was killed but its children were not; the whole
+    process group is killed now;
+  - `ready-check-command` had no timeout and kept running after a failed
+    start or a stop; each attempt is bounded and the check ends with the
+    start;
+  - `post-start-command` was never cancelled: it outlived the stop and
+    overlapped itself across restarts.
 - **systemd units translated Exec lines and timeouts wrongly**:
   - `TimeoutStartSec=`/`TimeoutSec=` were ignored, so every unit got a
     60 s start timeout and a long `Type=oneshot` was interrupted;
