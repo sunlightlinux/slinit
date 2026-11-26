@@ -63,12 +63,15 @@ func TestRegisterAtomicOverwrite(t *testing.T) {
 	if got.PID != 200 || got.Class != "vm" {
 		t.Errorf("overwrite lost: got %+v", got)
 	}
-	// No .tmp leaked
+	// No temp file leaked, and the entry is world-readable.
 	files, _ := os.ReadDir(Dir())
 	for _, f := range files {
-		if filepath.Ext(f.Name()) == ".tmp" {
+		if f.Name() != "beta" {
 			t.Errorf("leaked temp file: %s", f.Name())
 		}
+	}
+	if st, err := os.Stat(filepath.Join(Dir(), "beta")); err != nil || st.Mode().Perm() != 0o644 {
+		t.Errorf("entry mode = %v (%v), want 0644", st.Mode().Perm(), err)
 	}
 }
 
@@ -113,14 +116,37 @@ func TestListSkipsTempFiles(t *testing.T) {
 	defer withTempDir(t)()
 
 	Register(Machine{Name: "real", PID: 42})
-	// Simulate a mid-write tmp file
-	os.WriteFile(filepath.Join(Dir(), "leaked.tmp"), []byte("999\n"), 0o644)
+	// Simulate a mid-write temp file
+	os.WriteFile(filepath.Join(Dir(), ".real.12345"), []byte("999\n"), 0o644)
 
 	got, _ := List()
+	if len(got) != 1 || got[0].Name != "real" {
+		t.Errorf("List = %+v, want only \"real\"", got)
+	}
+}
+
+// "a.tmp" is a valid machine name: it must be listed, and registering
+// "a" must not destroy it (the temp file used to be "a.tmp").
+func TestTmpSuffixedNameIsAMachine(t *testing.T) {
+	defer withTempDir(t)()
+
+	if err := Register(Machine{Name: "a.tmp", PID: 4242}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Register(Machine{Name: "a", PID: 4343}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Lookup("a.tmp")
+	if err != nil || m == nil || m.PID != 4242 {
+		t.Fatalf("Lookup(a.tmp) after Register(a) = %+v, %v; want PID 4242", m, err)
+	}
+	got, _ := List()
+	names := map[string]bool{}
 	for _, m := range got {
-		if m.Name == "leaked.tmp" {
-			t.Errorf(".tmp file surfaced in List: %+v", m)
-		}
+		names[m.Name] = true
+	}
+	if !names["a"] || !names["a.tmp"] || len(got) != 2 {
+		t.Errorf("List names = %v, want a and a.tmp", names)
 	}
 }
 

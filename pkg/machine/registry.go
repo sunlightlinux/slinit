@@ -129,8 +129,24 @@ func Register(m Machine) error {
 	if m.Root != "" {
 		fmt.Fprintf(&b, "ROOT=%s\n", m.Root)
 	}
-	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	// The temp file's name starts with '.', which no machine name may,
+	// so it can neither collide with an entry nor be listed as one: a
+	// fixed final+".tmp" was itself a valid name, and registering "a"
+	// replaced machine "a.tmp" while List hid it.
+	f, err := os.CreateTemp(currentDir, "."+m.Name+".*")
+	if err != nil {
+		return fmt.Errorf("machine: create temp in %s: %w", currentDir, err)
+	}
+	tmp := f.Name()
+	_, err = f.WriteString(b.String())
+	if err == nil {
+		err = f.Chmod(0o644)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("machine: write %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, final); err != nil {
@@ -210,7 +226,9 @@ func List() ([]*Machine, error) {
 	}
 	var out []*Machine
 	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".tmp") {
+		// Dotfiles are Register's in-flight temp files; no machine
+		// name starts with '.'.
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		m, err := Lookup(e.Name())
