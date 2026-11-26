@@ -38,8 +38,10 @@ daemon.
 **-S**, **--start**  *(default)*
 :   Fork off a detached supervisor that owns the daemon's lifecycle,
     then wait until the supervisor writes **--pidfile** before
-    returning. The daemon PID is recorded alongside the supervisor
-    pidfile as *PIDFILE***.daemon**. The supervisor is this same
+    returning. If *PIDFILE* names a running supervisor, **--start**
+    exits 1; a pid that now runs anything else is a stale pidfile and
+    does not block the start. The daemon PID is recorded alongside the
+    supervisor pidfile as *PIDFILE***.daemon**. The supervisor is this same
     program re-executed with a private first argument; no environment
     variable marks it, so nothing the daemon starts inherits the
     switch, and a **--stop** or **--signal** run from under a
@@ -63,7 +65,11 @@ daemon.
 
 **-s**, **--signal** *SIG*
 :   Deliver *SIG* directly to the supervised daemon (via
-    *PIDFILE***.daemon**). Bypasses the supervisor so a **SIGHUP**
+    *PIDFILE***.daemon**), but only while *PIDFILE* names a running
+    supervisor and the daemon pid is that supervisor's child; a
+    daemon pidfile left behind names nothing that may be signalled
+    once its pid is reused, and is reported as stale. Bypasses the
+    supervisor so a **SIGHUP**
     reload does not race with the respawn logic. Caveat: sending
     **SIGTERM** or **SIGKILL** this way will be treated as a crash by
     the supervisor and trigger a respawn — use **--stop** for
@@ -221,14 +227,15 @@ skipped:
 
 - **0**: success. **--stop** also returns 0 when there is no
   supervisor pidfile.
-- **1**: already running (**--start**), or no daemon pidfile
-  (**--signal**)
+- **1**: already running (**--start**), or no supervisor or daemon
+  pidfile (**--signal**)
 - **2**: syntax / bad usage
 - **4**: the supervisor could not be started or did not write its
   pidfile in time, a signal could not be delivered, the supervisor or
   its daemon survived **--stop**, or a pidfile was refused as insecure
-- **5**: stale pidfile: the supervisor (**--stop**) or daemon
-  (**--signal**) it names is gone. **--stop** removes the stale
+- **5**: stale pidfile: the supervisor (**--stop**, **--signal**) it
+  names is gone or is not a supervisor, or the daemon (**--signal**)
+  is not the supervisor's child. **--stop** removes the stale
   pidfiles.
 
 # EXAMPLES

@@ -76,48 +76,6 @@ func TestStopDaemonSendsRetrySchedule(t *testing.T) {
 	}
 }
 
-// TestCmdSignalHitsDaemon writes a daemon pidfile pointing at a live
-// process and verifies cmdSignal delivers the requested signal to it
-// (via the process actually dying when we send SIGKILL).
-func TestCmdSignalHitsDaemon(t *testing.T) {
-	sleep, err := exec.LookPath("sleep")
-	if err != nil {
-		t.Skipf("no sleep: %v", err)
-	}
-	cmd := exec.Command(sleep, "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	pid := cmd.Process.Pid
-	t.Cleanup(func() {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		_ = cmd.Wait()
-	})
-
-	dir := t.TempDir()
-	pidfile := filepath.Join(dir, "svc.pid")
-	if err := os.WriteFile(pidfile+".daemon", []byte(strconv.Itoa(pid)+"\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	opts := Options{PidFile: pidfile, Signal: syscall.SIGKILL}
-	if code := cmdSignal(opts); code != exitOK {
-		t.Errorf("cmdSignal: got %d, want %d", code, exitOK)
-	}
-	// cmd.Wait reaps the (post-SIGKILL) zombie so the assertion below
-	// really tests dead-vs-alive rather than the zombie corner case.
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("cmd.Wait timed out after SIGKILL")
-	}
-	if processAlive(pid) {
-		t.Errorf("pid %d still alive after cmdSignal SIGKILL + reap", pid)
-	}
-}
-
 // TestCmdStopStalePidfile: reports code 5 per LSB.
 func TestCmdStopStalePidfile(t *testing.T) {
 	dir := t.TempDir()

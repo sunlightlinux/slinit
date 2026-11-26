@@ -31,12 +31,21 @@ func cmdStart(opts Options) int {
 	}
 
 	// Already-running check: if the supervisor's pidfile is fresh and
-	// points at a live PID, refuse rather than start a second copy.
+	// points at a live supervise-daemon, refuse rather than start a
+	// second copy. A live pid running anything else is the pidfile's
+	// pid reused after a crash or reboot: stale, and it used to block
+	// --start for as long as that unrelated process lived. One we may
+	// not inspect is taken as running.
 	if pid, ok := readPIDFile(opts.PidFile); ok && processAlive(pid) {
-		if opts.Verbose {
-			fmt.Fprintf(os.Stderr, "already running (supervisor pid %d)\n", pid)
+		if super, err := isSupervisor(pid); err != nil || super {
+			if opts.Verbose {
+				fmt.Fprintf(os.Stderr, "already running (supervisor pid %d)\n", pid)
+			}
+			return exitAlready
 		}
-		return exitAlready
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "stale pidfile: pid %d is not a supervisor\n", pid)
+		}
 	}
 
 	self, err := os.Executable()

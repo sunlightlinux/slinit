@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // stopGrace is how long --stop allows the supervisor beyond the stop
@@ -184,6 +186,11 @@ func supervisedDaemon(opts Options, super int) (procIdentity, bool) {
 // scripts do SIGHUP-reload style operations without going through the
 // supervisor.
 //
+// The daemon pid is signalled only while the supervisor pidfile names
+// a live supervise-daemon and the daemon is that supervisor's child:
+// PIDFILE.daemon alone outlives both, and after a crash or reboot its
+// pid can belong to anything.
+//
 // Caveat documented in the man page: SIGTERM/SIGKILL sent this way
 // will just be treated as a crash by the supervisor and trigger a
 // respawn.
@@ -192,24 +199,66 @@ func cmdSignal(opts Options) int {
 		fmt.Fprintln(os.Stderr, "--pidfile is required for --signal")
 		return exitBadUsage
 	}
+	super, err := readTrustedPIDFile(opts.PidFile)
+	if errors.Is(err, errInsecurePIDFile) {
+		fmt.Fprintf(os.Stderr, "refusing to signal: %v\n", err)
+		return exitInsufficientPri
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "not running: no supervisor pidfile at %q\n", opts.PidFile)
+		return exitAlready
+	}
+	ok, err := isSupervisor(super)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot verify supervisor pid=%d: %v\n", super, err)
+		return exitInsufficientPri
+	}
+	if !ok || !processAlive(super) {
+		fmt.Fprintf(os.Stderr, "stale pidfile: pid %d is not a running supervisor\n", super)
+		return exitStalePidfile
+	}
 	daemonPid, err := readTrustedPIDFile(opts.PidFile + ".daemon")
 	if errors.Is(err, errInsecurePIDFile) {
 		fmt.Fprintf(os.Stderr, "refusing to signal: %v\n", err)
 		return exitInsufficientPri
 	}
 	if err != nil {
-		// Fall back to supervisor pidfile: if there's no .daemon
-		// file the daemon hasn't launched yet or the supervisor is
-		// external; not much we can do.
+		// The supervisor is waiting out a respawn delay, or has not
+		// written the file yet: no daemon to signal.
 		fmt.Fprintf(os.Stderr, "no daemon pidfile at %q.daemon\n", opts.PidFile)
 		return exitAlready
 	}
-	if !processAlive(daemonPid) {
+	daemon, ok := supervisedDaemon(opts, super)
+	if !ok || daemon.pid != daemonPid {
+		fmt.Fprintf(os.Stderr, "stale daemon pidfile: pid %d is not supervisor %d's child\n",
+			daemonPid, super)
 		return exitStalePidfile
 	}
-	if err := syscall.Kill(daemonPid, opts.Signal); err != nil {
+	if err := daemon.signal(opts.Signal); err != nil {
 		fmt.Fprintf(os.Stderr, "kill daemon pid=%d: %v\n", daemonPid, err)
 		return exitInsufficientPri
 	}
 	return exitOK
+}
+
+// signal delivers sig to the identified process through a pidfd, so
+// the pid cannot be reused between the identity check and the signal.
+// Without pidfds (Linux < 5.3) it falls back to kill(2) after the
+// same check.
+func (p procIdentity) signal(sig syscall.Signal) error {
+	fd, err := unix.PidfdOpen(p.pid, 0)
+	if err != nil {
+		if !errors.Is(err, syscall.ENOSYS) {
+			return err
+		}
+		if !p.alive() {
+			return syscall.ESRCH
+		}
+		return syscall.Kill(p.pid, sig)
+	}
+	defer unix.Close(fd)
+	if !p.alive() {
+		return syscall.ESRCH
+	}
+	return unix.PidfdSendSignal(fd, sig, nil, 0)
 }
