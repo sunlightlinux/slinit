@@ -2,6 +2,8 @@ module github.com/sunlightlinux/slinit
 
 go 1.25.0
 
+toolchain go1.26.11
+
 require (
 	github.com/godbus/dbus/v5 v5.2.2
 	golang.org/x/sys v0.41.0

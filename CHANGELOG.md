@@ -24,6 +24,19 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Security
+
+- **Release builds use a supported Go toolchain.** CI, the SLSA builder
+  and the tarball check all take the Go version from `go.mod`, which said
+  only `go 1.25.0`, so release binaries were built with Go 1.25.0, a line
+  that no longer receives security fixes. govulncheck reports five
+  standard-library vulnerabilities on code paths slinit uses, among them
+  two `os.Root` escapes (GO-2026-4970, GO-2026-4602) in checkpath and the
+  catalog, which rely on `os.Root` to stay inside a directory. `go.mod` now
+  carries `toolchain go1.26.11`; with it govulncheck reports none.
+  The minimum stays Go 1.25, so a distribution that builds with
+  `GOTOOLCHAIN=local` and an older patched Go is unaffected.
+
 ### Fixed
 
 - **`/etc/hostname` is read the way systemd reads it.** As PID 1, slinit
