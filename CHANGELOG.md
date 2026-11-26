@@ -203,6 +203,16 @@ verified with `git tag -v`.
   it. Unpin now travels milestone edges too. Found by the new control
   protocol fuzzer.
 
+- **A `start` racing a shutdown no longer holds the shutdown for 90
+  seconds.** `start` (with or without `--pin`) and `start-all` checked
+  for a shutdown in progress, then started the service in a separate
+  step; a shutdown that began in between had already stopped and
+  unpinned everything, so the service came up explicitly active, nothing
+  stopped it again, and the shutdown waited its full timeout. The check
+  and the start are now one step, as in dinit. *Compat:* such a start is
+  answered "shutting down" instead of being accepted, and `start-all`
+  stops at the point the shutdown began.
+
 - **`reload-signal` no longer races a reload of the service.** It read
   the configured signal without the graph lock while `reload` rewrote it
   under that lock. Found by a `-race` stress run of the daemon.

@@ -833,9 +833,10 @@ func (c *Connection) handleStartService(payload []byte) error {
 	// is that it stays up, whatever brought it up. Answering "already started"
 	// first dropped that, so disable or a dependent leaving then stopped it,
 	// and --pin was lost.
-	c.server.services.StartService(svc)
+	if !c.server.services.StartServiceUnlessShuttingDown(svc, pin) {
+		return c.writePacket(RplyShuttingDown, nil)
+	}
 	if pin {
-		c.server.services.PinStartService(svc)
 		// Persist the pin so a reboot keeps the operator's intent.
 		// Errors are logged; a full disk must not fail the start.
 		if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStarted); err != nil {
@@ -1658,7 +1659,10 @@ func (c *Connection) handleStartAll() error {
 			continue
 		}
 
-		c.server.services.StartService(svc)
+		if !c.server.services.StartServiceUnlessShuttingDown(svc, false) {
+			// A shutdown began during the walk; start nothing more.
+			break
+		}
 		started++
 	}
 

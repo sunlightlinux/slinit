@@ -502,6 +502,28 @@ func (ss *ServiceSet) StartService(svc Service) {
 	ss.processQueuesLocked()
 }
 
+// StartServiceUnlessShuttingDown is StartService, then PinStartService
+// when pin is set, for a control connection: it refuses, returning
+// false, once a shutdown has begun. The check is made under the same
+// hold of queueMu as the start, because StopAllServices begins the
+// shutdown under queueMu: a start checked before it and made after it
+// would leave the service explicitly active (and pinned) with nothing
+// left to stop it, and the shutdown waiting for it until its timeout.
+func (ss *ServiceSet) StartServiceUnlessShuttingDown(svc Service, pin bool) bool {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	if ss.IsShuttingDown() {
+		return false
+	}
+	svc.Start()
+	ss.processQueuesLocked()
+	if pin {
+		svc.PinStart()
+		ss.processQueuesLocked()
+	}
+	return true
+}
+
 // WakeService starts a service without marking it active (re-attaches to
 // active dependents). Returns false if no active dependents were found.
 func (ss *ServiceSet) WakeService(svc Service) bool {
