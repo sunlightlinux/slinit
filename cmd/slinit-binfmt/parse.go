@@ -26,7 +26,7 @@ func parseFile(r io.Reader, source string) ([]spec, error) {
 	for sc.Scan() {
 		lineNo++
 		raw := sc.Text()
-		trimmed := strings.TrimLeft(raw, " \t")
+		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" || trimmed[0] == '#' || trimmed[0] == ';' {
 			continue
 		}
