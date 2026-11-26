@@ -62,6 +62,11 @@ Variables such as **required_files**, **required_dirs**,
 **capabilities**, **output_log** and **extra_commands** are reported
 as not mapped.
 
+A quoted value may run on across lines, and a line ending in a
+backslash continues on the next one, as in the shell; the newlines in
+a value become spaces. A quote left open to the end of the script is
+wrapped (see below) with a warning.
+
 Only literal values are mapped. A mapped variable whose value the
 shell has to compute (a **$VAR** set in */etc/conf.d*, a
 **${x:-default}**, **\`cmd\`** or **$(cmd)**), or one assigned in shell

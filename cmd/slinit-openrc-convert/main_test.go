@@ -589,3 +589,50 @@ func TestUpstreamCommandsAreLiteral(t *testing.T) {
 		}
 	}
 }
+
+// A quoted value may run on across lines, and a trailing backslash
+// joins the next one. The line-by-line scan saw only the first line:
+// command_args="-a<newline>-b --conf /etc/bar.conf" loaded as
+// ["/usr/sbin/bar", "-a"].
+func TestMultiLineValues(t *testing.T) {
+	want := []string{"/usr/sbin/bar", "-a", "-b", "--conf", "/etc/bar.conf"}
+	for _, tc := range []struct{ name, body string }{
+		{"quoted", "command_args=\"-a\n\t-b --conf /etc/bar.conf\"\n"},
+		{"backslash-split-word", "command_args=\"-a -b --co\\\nnf /etc/bar.conf\"\n"},
+		{"quoted-backslash", "command_args=\"-a \\\n-b --conf /etc/bar.conf\"\n"},
+		{"apostrophe-in-comment", "# don't stop here\ncommand_args=\"-a\n-b --conf /etc/bar.conf\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := "#!/sbin/openrc-run\ndescription=\"Bar\n daemon\"\ncommand=/usr/sbin/bar\n" + tc.body + "command_background=yes\n"
+			cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+			parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+			var buf bytes.Buffer
+			emitSlinitFile(&buf, cfg)
+			d, err := config.Parse(strings.NewReader(buf.String()), "d", "d")
+			if err != nil {
+				t.Fatalf("does not load: %v\n%s", err, buf.String())
+			}
+			if strings.Join(d.Command, "|") != strings.Join(want, "|") {
+				t.Errorf("command = %q, want %q\n%s", d.Command, want, buf.String())
+			}
+		})
+	}
+}
+
+// A quote left open to the end of the script cannot be read as any
+// value: wrap it, and say so.
+func TestUnterminatedQuoteIsWrapped(t *testing.T) {
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/bar\ncommand_args=\"-a\n-b\ncommand_background=yes\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	if cfg.svcType != "scripted" {
+		t.Errorf("not wrapped: %q", cfg.command)
+	}
+	found := false
+	for _, w := range warns {
+		found = found || (w.level == "WARN" && strings.Contains(w.msg, "end of the script"))
+	}
+	if !found {
+		t.Errorf("no WARN about the unterminated quote: %v", warns)
+	}
+}

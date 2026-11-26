@@ -24,7 +24,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -229,7 +228,7 @@ func convertScript(path, wrapper string) (*slinitConfig, []warning, error) {
 // --- Parser ---
 
 var (
-	varAssignRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
+	varAssignRe = regexp.MustCompile(`(?s)^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
 	funcDefRe   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*(\{)?\s*$`)
 
 	// logicAssignRe finds an assignment to a variable the converter maps
@@ -251,6 +250,37 @@ var mappedVars = []string{
 }
 
 var mappedVarAlt = strings.Join(mappedVars, "|")
+
+// lineContinues reports whether a line ends inside a quoted string
+// (open) or with an unquoted, unescaped backslash (cont), so the next
+// line belongs to it. An unquoted # at the start of a word starts a
+// comment, where quotes do not count.
+func lineContinues(line string) (open, cont bool) {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case c == '\\':
+			if i == len(line)-1 {
+				return quote != 0, quote == 0 || quote == '"'
+			}
+			i++
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			return false, false
+		}
+	}
+	return quote != 0, false
+}
 
 // shellBlockDelta is how far a top-level line opens (+) or closes (-)
 // an if/case/for/while/until block, counted on the line with its
@@ -321,10 +351,30 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 	}
 	blockDepth := 0
 
-	scanner := bufio.NewScanner(strings.NewReader(script))
-	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20)
-	for scanner.Scan() {
-		raw := scanner.Text()
+	// Scan logical lines: a quoted string runs on across newlines, as
+	// in command_args="-a<newline>-b", and a trailing backslash joins
+	// the next line. Read line by line, the first line of such a value
+	// was all the scan saw.
+	lines := strings.Split(script, "\n")
+	unterminated := false
+	for i := 0; i < len(lines); i++ {
+		raw := lines[i]
+		for {
+			open, cont := lineContinues(raw)
+			if !open && !cont {
+				break
+			}
+			if i+1 >= len(lines) {
+				unterminated = true
+				break
+			}
+			i++
+			if cont {
+				raw = raw[:len(raw)-1] + lines[i]
+			} else {
+				raw += "\n" + lines[i]
+			}
+		}
 		line := strings.TrimSpace(raw)
 
 		// Skip comments and blanks.
@@ -362,7 +412,9 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 
 		// Top-level assignment. One inside an if/case/loop is logic.
 		if m := varAssignRe.FindStringSubmatch(line); m != nil && blockDepth == 0 {
-			vars[m[1]] = stripQuotes(m[2])
+			// The shell splits an unquoted expansion on newlines as on
+			// spaces; a newline left in would also end a comment line.
+			vars[m[1]] = strings.ReplaceAll(stripQuotes(m[2]), "\n", " ")
 			continue
 		}
 		// Anything else at top level (`. /etc/rc.conf`, a test, an
@@ -383,6 +435,9 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 	// rarpd's if/else turned into a command with neither -f nor -a. Such
 	// a script runs through openrc-run, which evaluates it as OpenRC does.
 	var dynamic []string
+	if unterminated {
+		dynamic = append(dynamic, "a quoted string or continued line runs to the end of the script")
+	}
 	for _, k := range mappedVars {
 		if logicSet[k] {
 			dynamic = append(dynamic, fmt.Sprintf("%s is assigned in shell logic (if/case/loop, && or a function)", k))
