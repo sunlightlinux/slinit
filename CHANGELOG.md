@@ -983,10 +983,6 @@ requires.
     with no arguments also lists mounts fstab does not know).
   - `esyslog`/`elog` took `LEVEL.FACILITY`; `FACILITY.LEVEL` (OpenRC,
     logger) works now and the old order is still accepted.
-- **`slinit-supports` answered from the working directory**: installed,
-  it said "No" for 189 of 387 names (including `capabilities` and
-  `exec-condition`). The lists are now generated from source and built
-  in.
 - **An installed slinit-supports said "No" to real directives.** It
   discovered directive and opcode names from `./pkg/config/parser.go`
   relative to its working directory and fell back to the curated table
@@ -994,7 +990,9 @@ requires.
   `--list-all` printed 198 lines instead of 387. The lists are now
   generated into `pkg/features/zdiscovered.go` by `tools/featuresgen`
   (`go generate ./pkg/features`) and compiled in; a test fails when the
-  committed file is stale.
+  committed file is stale. `exec-condition` and `assert-exec-condition`,
+  matched before the parser's directive switch, were missing even from
+  the repository and are found now.
 - **slinit-supervise-daemon `--stop` orphaned the daemon and returned
   0**: the `--retry` given to `--stop` never reached the supervisor and
   the wait gave up early, SIGKILLed the supervisor and left the daemon
