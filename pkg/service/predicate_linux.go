@@ -13,7 +13,15 @@ import (
 // pathIsMountPoint returns true iff path is a filesystem mount point.
 // Detection: the device id of path differs from the device id of its
 // parent. Falls back to checking /proc/self/mountinfo if stat fails.
+//
+// The path is resolved first, as systemd's AT_SYMLINK_FOLLOW does: the
+// parent compared against is the parent of the directory the path
+// names, so "/proc/" and "/proc/." are /proc, and a symlink is judged
+// by its target rather than by the directory the link sits in.
 func pathIsMountPoint(path string) (bool, string) {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
 	st, err := os.Stat(path)
 	if err != nil {
 		return false, fmt.Sprintf("path %q: %v", path, err)

@@ -832,3 +832,36 @@ func TestEvalRawDispatch(t *testing.T) {
 		}
 	}
 }
+
+// TestPathIsMountPointSpelling: the answer is about the directory the
+// path names, as systemd's path_is_mount_point(AT_SYMLINK_FOLLOW) has
+// it, not about how the path is spelled. A trailing slash or "." made
+// the parent the directory itself, and a symlink made the parent the
+// link's own directory, so /proc/ read as no mount point and a link to
+// /proc/sys/kernel as one.
+func TestPathIsMountPointSpelling(t *testing.T) {
+	mp := hostMountPoints(t)
+	if !mp["/proc"] || mp["/proc/sys/kernel"] {
+		t.Skip("needs /proc mounted and /proc/sys/kernel not a mount point")
+	}
+	dir := t.TempDir()
+	toProc := filepath.Join(dir, "to-proc")
+	toKernel := filepath.Join(dir, "to-kernel")
+	if err := os.Symlink("/proc", toProc); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/proc/sys/kernel", toKernel); err != nil {
+		t.Fatal(err)
+	}
+	runPred(t, PredPathIsMountPoint, []predCase{
+		{"/proc/", false, true},
+		{"/proc/.", false, true},
+		{"/proc//", false, true},
+		{"/proc/sys/kernel/", false, false},
+		{"/proc/sys/kernel/..", false, mp["/proc/sys"]},
+		{"//", false, true},
+		{toProc, false, true},
+		{toKernel, false, false},
+		{toKernel, true, true},
+	})
+}
