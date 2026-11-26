@@ -140,6 +140,13 @@ verified with `git tag -v`.
   "could not be loaded" text for a missing service now sees
   "service 'X' not found"; a client checking the reply code sees
   `RplyNoService` (60) where it saw `RplyServiceLoadErr2` (72).
+- **The clock timestamp was not saved on a normal shutdown.** slinit
+  wrote `/var/lib/slinit/clock` after unmounting the filesystems and
+  remounting `/` read-only, so the write failed (logged only at debug
+  level) and the next boot's clock guard on a machine without a working
+  RTC started from whenever the file was last written: the previous
+  clock correction, not the last shutdown. It is now written before the
+  shutdown hook and the unmounts.
 
 - **A FIFO named in `required-files` froze PID 1**: the readability check
   opened it and waited for a writer with the service set's lock held.

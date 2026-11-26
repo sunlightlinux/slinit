@@ -305,6 +305,15 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 		persistJournalTail(logger)
 	}
 
+	// Persist current time for next boot's clock guard, while the
+	// filesystems are still writable: unmountAll ends by remounting /
+	// read-only.
+	if err := WriteClockTimestamp(); err != nil {
+		logger.Debug("Failed to save clock timestamp: %v", err)
+	} else {
+		logger.Debug("Clock timestamp saved for next boot")
+	}
+
 	// Settle pause (s6-linux-init-maker -q): give journals and other
 	// flash-backed writers a beat to finish before umountall unwinds
 	// the fs. Zero (default) skips the sleep entirely.
@@ -320,13 +329,6 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	if !hookHandledCleanup {
 		swapOff(logger)
 		unmountAll(logger)
-	}
-
-	// Persist current time for next boot's clock guard
-	if err := WriteClockTimestamp(); err != nil {
-		logger.Debug("Failed to save clock timestamp: %v", err)
-	} else {
-		logger.Debug("Clock timestamp saved for next boot")
 	}
 
 	// Sync filesystems to minimize data loss. Skipped when the caller
