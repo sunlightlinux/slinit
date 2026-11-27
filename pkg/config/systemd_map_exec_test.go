@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"syscall"
@@ -105,7 +106,7 @@ func TestSystemdTTYCluster(t *testing.T) {
 			}},
 		{name: "a tty on stdin defaults to the console", body: "StandardInput=tty-force\n",
 			lines: map[string][]string{"tty-path": {"/dev/console"}}},
-		{name: "TTYPath before StandardInput says what slinit does", body: "TTYPath=/dev/tty9\nStandardInput=tty\n",
+		{name: "TTYPath before StandardInput says what slinit does", body: "TTYPath=/dev/tty9\nStandardInput=tty\nStandardOutput=journal\n",
 			lines: map[string][]string{"tty-path": {"/dev/tty9"}},
 			warn:  []string{"NOTE", "TTYPath=/dev/tty9", "stdin, stdout and stderr"}},
 		{name: "TTYPath expands specifiers", body: "TTYPath=/dev/%N\n",
@@ -365,7 +366,7 @@ func TestSystemdCredentials(t *testing.T) {
 		{name: "set is the fallback of load, whichever comes first",
 			body:  "LoadCredential=k:/etc/hostname\nSetCredential=k:fallback\n",
 			lines: map[string][]string{"set-credential": {"k:fallback"}, "load-credential": {"k:/etc/hostname"}},
-			warn:  []string{"NOTE", "only when the LoadCredential= file"},
+			warn:  []string{"NOTE", "falls back to the value"},
 			desc: func(t *testing.T, d *ServiceDescription) {
 				// slinit writes them in order: the file goes last and wins.
 				if len(d.Credentials) != 2 || d.Credentials[1].Path != "/etc/hostname" {
@@ -382,8 +383,19 @@ func TestSystemdCredentials(t *testing.T) {
 		{name: "a glob systemd refuses", body: "ImportCredential=a*b\n", warn: []string{"WARN", "not a valid credential"}},
 		{name: "a rename", body: "ImportCredential=a.*:b\n",
 			lines: map[string][]string{"import-credential": nil}, warn: []string{"WARN", "rename"}},
-		{name: "one pattern survives", body: "ImportCredential=a.*\nImportCredential=b.*\n",
-			lines: map[string][]string{"import-credential": {"b.*"}}, warn: []string{"WARN", "keeping the last"}},
+		{name: "every pattern is kept", body: "ImportCredential=a.*\nImportCredential=b.*\nImportCredential=a.*\n",
+			lines: map[string][]string{"import-credential": {"a.*"}},
+			desc: func(t *testing.T, d *ServiceDescription) {
+				if !reflect.DeepEqual(d.ImportCredentials, []string{"a.*", "b.*"}) {
+					t.Errorf("ImportCredentials = %q", d.ImportCredentials)
+				}
+			}},
+		{name: "an empty pattern resets the list", body: "ImportCredential=a.*\nImportCredential=\nImportCredential=b.*\n",
+			desc: func(t *testing.T, d *ServiceDescription) {
+				if !reflect.DeepEqual(d.ImportCredentials, []string{"b.*"}) {
+					t.Errorf("ImportCredentials = %q", d.ImportCredentials)
+				}
+			}},
 	})
 
 	// SetCredential= first: still written before the load-credential.
@@ -515,4 +527,230 @@ func TestSystemdExecMappingsLoadTogether(t *testing.T) {
 	if d.TTYPath != "/dev/tty2" || d.LogFile != "/var/log/p" || d.ReloadSignal != syscall.SIGUSR2 || len(d.FinishCommand) == 0 {
 		t.Errorf("description: tty %q log %q reload %v finish %q", d.TTYPath, d.LogFile, d.ReloadSignal, d.FinishCommand)
 	}
+}
+
+// sdOrderResult is one conversion of a unit made of groups of lines.
+type sdOrderResult struct {
+	how   string
+	out   string
+	warns []SystemdWarning
+	desc  *ServiceDescription
+}
+
+// sdOrders converts a unit whose [Service] lines come in two groups, in
+// every arrangement systemd reads alike: a then b, b then a, a in the
+// unit with b in a drop-in, and b in the unit with a in a drop-in. The
+// lines inside a group keep their order (a reset only resets what
+// comes before it). check runs on each.
+func sdOrders(t *testing.T, a, b string, check func(t *testing.T, r sdOrderResult)) {
+	t.Helper()
+	const head = "[Service]\nExecStart=/bin/sleep 1\n"
+	for _, v := range []struct{ how, unit, dropin string }{
+		{"a,b", head + a + "\n" + b + "\n", ""},
+		{"b,a", head + b + "\n" + a + "\n", ""},
+		{"a; drop-in b", head + a + "\n", "[Service]\n" + b + "\n"},
+		{"b; drop-in a", head + b + "\n", "[Service]\n" + a + "\n"},
+	} {
+		t.Run(v.how, func(t *testing.T) {
+			dir := t.TempDir()
+			p := writeUnit(t, dir, "ord.service", v.unit)
+			if v.dropin != "" {
+				writeUnit(t, filepath.Join(dir, "ord.service.d"), "50-x.conf", v.dropin)
+			}
+			cfg, warns, err := ConvertSystemdUnitIn(p, []string{dir})
+			if err != nil {
+				t.Fatalf("convert: %v", err)
+			}
+			var buf bytes.Buffer
+			EmitSlinitFile(&buf, cfg)
+			desc, err := SystemdUnitToServiceDescription(p, "ord", dir)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			check(t, sdOrderResult{v.how, buf.String(), warns, desc})
+		})
+	}
+}
+
+// sdWant checks the emitted values of key; nil wants none.
+func sdWant(t *testing.T, r sdOrderResult, key string, want ...string) {
+	t.Helper()
+	if got := exLines(r.out, key); !reflect.DeepEqual(got, want) && !(len(got) == 0 && len(want) == 0) {
+		t.Errorf("%s: %s = %q, want %q\n%s", r.how, key, got, want, r.out)
+	}
+}
+
+func sdWarn(t *testing.T, r sdOrderResult, level string, subs ...string) {
+	t.Helper()
+	if !exHas(r.warns, level, subs...) {
+		t.Errorf("%s: no %s holding %q in %v", r.how, level, subs, r.warns)
+	}
+}
+
+// ExecReload= and ReloadSignal= name one signal between them, whatever
+// their order: the review found an empty ExecReload= dropping the
+// ReloadSignal=, and the later line deciding the signal.
+func TestSystemdReloadSignalOrder(t *testing.T) {
+	t.Run("empty ExecReload= keeps ReloadSignal=", func(t *testing.T) {
+		sdOrders(t, "ExecReload=/bin/kill -HUP $MAINPID\nExecReload=", "ReloadSignal=SIGUSR2", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "reload-signal", "SIGUSR2")
+		})
+	})
+	t.Run("ExecReload= decides without notify-reload", func(t *testing.T) {
+		sdOrders(t, "ExecReload=/bin/kill -HUP $MAINPID", "ReloadSignal=SIGUSR2", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "reload-signal", "HUP")
+			sdWarn(t, r, "NOTE", "ReloadSignal=SIGUSR2", "notify-reload only")
+			if r.desc.ReloadSignal != syscall.SIGHUP {
+				t.Errorf("%s: ReloadSignal = %v", r.how, r.desc.ReloadSignal)
+			}
+		})
+	})
+	t.Run("ReloadSignal= decides with notify-reload", func(t *testing.T) {
+		sdOrders(t, "ExecReload=/bin/kill -HUP $MAINPID\nReloadSignal=SIGUSR2", "Type=notify-reload", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "reload-signal", "SIGUSR2")
+			sdWarn(t, r, "NOTE", "ExecReload=", "SIGHUP", "notify-reload")
+		})
+	})
+	t.Run("notify-reload defaults to SIGHUP", func(t *testing.T) {
+		sdOrders(t, "Type=notify-reload", "ReloadSignal=USR1\nReloadSignal=", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "reload-signal", "SIGHUP")
+		})
+	})
+	t.Run("a dropped reload command is reset too", func(t *testing.T) {
+		sdOrders(t, "ExecReload=/usr/sbin/nginx -s reload\nExecReload=", "ReloadSignal=USR1", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "reload-signal", "SIGUSR1")
+			if exHas(r.warns, "WARN", "no reload command") {
+				t.Errorf("%s: warning for a reset ExecReload=: %v", r.how, r.warns)
+			}
+		})
+	})
+}
+
+// A SetCredential= backs a LoadCredential= of its name: systemd uses it
+// when the file is missing, where slinit would fail the start.
+func TestSystemdCredentialFallback(t *testing.T) {
+	present := filepath.Join(t.TempDir(), "present")
+	writeFile(t, present, "secret")
+	missing := filepath.Join(t.TempDir(), "missing")
+	t.Run("missing file", func(t *testing.T) {
+		sdOrders(t, "LoadCredential=k:"+missing, "SetCredential=k:fallback", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "load-credential")
+			sdWant(t, r, "set-credential", "k:fallback")
+			sdWarn(t, r, "NOTE", "dropped", "missing")
+			if len(r.desc.Credentials) != 1 || r.desc.Credentials[0].Value != "fallback" {
+				t.Errorf("%s: Credentials = %+v", r.how, r.desc.Credentials)
+			}
+		})
+	})
+	t.Run("present file", func(t *testing.T) {
+		sdOrders(t, "LoadCredential=k:"+present, "SetCredential=k:fallback", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "load-credential", "k:"+present)
+			sdWant(t, r, "set-credential", "k:fallback")
+			if s, l := strings.Index(r.out, "set-credential = "), strings.Index(r.out, "load-credential = "); s > l {
+				t.Errorf("%s: set-credential must precede load-credential:\n%s", r.how, r.out)
+			}
+		})
+	})
+	t.Run("a missing file without a fallback stays", func(t *testing.T) {
+		sdOrders(t, "LoadCredential=k:"+missing, "SetCredential=other:v", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "load-credential", "k:"+missing)
+		})
+	})
+	t.Run("each empty assignment resets its own list", func(t *testing.T) {
+		sdOrders(t, "LoadCredential=a:"+present+"\nLoadCredential=", "SetCredential=b:v", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "load-credential")
+			sdWant(t, r, "set-credential", "b:v")
+		})
+		sdOrders(t, "SetCredential=b:v\nSetCredential=", "LoadCredential=a:"+present, func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "set-credential")
+			sdWant(t, r, "load-credential", "a:"+present)
+		})
+	})
+	t.Run("import patterns add up", func(t *testing.T) {
+		sdOrders(t, "ImportCredential=a.*", "ImportCredential=b.*", func(t *testing.T, r sdOrderResult) {
+			if len(r.desc.ImportCredentials) != 2 || !strings.Contains(r.out, "import-credential += ") {
+				t.Errorf("%s: ImportCredentials = %q\n%s", r.how, r.desc.ImportCredentials, r.out)
+			}
+		})
+	})
+}
+
+// The three streams and the TTY are settled from the last value of
+// each, whatever order the lines and drop-ins give them.
+func TestSystemdStdioOrder(t *testing.T) {
+	t.Run("a later null on stdin drops the tty", func(t *testing.T) {
+		sdOrders(t, "StandardInput=tty\nStandardInput=null", "TTYReset=no", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "tty-path")
+			sdWant(t, r, "close-stdin", "yes")
+			sdWant(t, r, "log-type", "journal")
+		})
+	})
+	t.Run("a later journal on stdout drops the tty", func(t *testing.T) {
+		sdOrders(t, "StandardOutput=tty\nStandardOutput=journal", "StandardError=inherit", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "tty-path")
+			sdWant(t, r, "log-type", "journal")
+		})
+	})
+	t.Run("data after a file", func(t *testing.T) {
+		sdOrders(t, "StandardInput=file:/etc/hostname\nStandardInput=data", "StandardInputText=hi", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "standard-input-file")
+			if string(r.desc.StandardInput) != "hi\n" {
+				t.Errorf("%s: stdin %q", r.how, r.desc.StandardInput)
+			}
+		})
+	})
+	t.Run("data overrides the default and an explicit null", func(t *testing.T) {
+		sdOrders(t, "StandardInput=null", "StandardInputText=hi", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "close-stdin")
+			if string(r.desc.StandardInput) != "hi\n" {
+				t.Errorf("%s: stdin %q", r.how, r.desc.StandardInput)
+			}
+		})
+	})
+	t.Run("a file wins over data", func(t *testing.T) {
+		sdOrders(t, "StandardInput=file:/etc/hostname", "StandardInputText=hi", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "standard-input-file", "/etc/hostname")
+			sdWant(t, r, "standard-input-data")
+			sdWarn(t, r, "NOTE", "unused")
+		})
+	})
+	t.Run("TTYPath and a tty stdin", func(t *testing.T) {
+		sdOrders(t, "TTYPath=/dev/tty3", "StandardInput=tty\nUtmpIdentifier=tty3", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "tty-path", "/dev/tty3")
+			sdWant(t, r, "inittab-line", "tty3")
+			if exHas(r.warns, "NOTE", "stdin, stdout and stderr") {
+				t.Errorf("%s: all three streams are the tty, yet a note: %v", r.how, r.warns)
+			}
+		})
+	})
+	t.Run("a tty on stdout only", func(t *testing.T) {
+		sdOrders(t, "TTYPath=/dev/tty3", "StandardOutput=tty", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "tty-path", "/dev/tty3")
+			sdWarn(t, r, "NOTE", "stdin, stdout and stderr", "stdin null")
+		})
+	})
+	t.Run("stderr to null with a logfile", func(t *testing.T) {
+		sdOrders(t, "StandardOutput=append:/var/log/x", "StandardError=null", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "logfile", "/var/log/x")
+			sdWant(t, r, "close-stderr")
+			sdWarn(t, r, "WARN", "StandardError=null", "not carried")
+		})
+	})
+	t.Run("stderr to its own file", func(t *testing.T) {
+		sdOrders(t, "StandardOutput=append:/var/log/x", "StandardError=append:/var/log/e", func(t *testing.T, r sdOrderResult) {
+			sdWant(t, r, "logfile", "/var/log/x")
+			sdWant(t, r, "stderr-logfile", "/var/log/e")
+		})
+	})
+}
+
+// What only a type = process service runs is dropped, with a word, from
+// a oneshot, whether Type= comes before or after it.
+func TestSystemdProcessOnlyOrder(t *testing.T) {
+	sdOrders(t, "ExecStopPost=/bin/true\nStandardError=append:/var/log/e", "Type=oneshot", func(t *testing.T, r sdOrderResult) {
+		sdWant(t, r, "finish-command")
+		sdWant(t, r, "stderr-logfile")
+		sdWarn(t, r, "WARN", "ExecStopPost=", "type = process only")
+		sdWarn(t, r, "WARN", "StandardError=append:/var/log/e", "type = process only")
+	})
 }

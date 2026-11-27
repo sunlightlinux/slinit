@@ -86,7 +86,7 @@ func TestSystemdLifecycleMappings(t *testing.T) {
 		{name: "success reset", unit: "SuccessExitStatus=1\nSuccessExitStatus=\nSuccessExitStatus=2",
 			want: []string{"normal-exit = 2"}},
 		{name: "success and prevent accumulate", unit: "SuccessExitStatus=1\nRestartPreventExitStatus=5",
-			want: []string{"normal-exit = 1 5"}},
+			want: []string{"normal-exit = 5 1"}},
 		{name: "bad words dropped, rest kept", unit: "SuccessExitStatus=3 BOGUS 300 sigterm",
 			want: []string{"normal-exit = 3"}, warn: []string{"WARN", "BOGUS", "left out"}},
 		{name: "realtime signal", unit: "SuccessExitStatus=RTMIN+2",
@@ -189,13 +189,13 @@ func TestSystemdLifecycleMappings(t *testing.T) {
 			check: func(d *ServiceDescription) error { return lcEq("RebootArgument", d.RebootArgument, "a$b lc.service") }},
 
 		// Runtime limit.
-		{name: "runtime max", unit: "RuntimeMaxSec=1d", want: []string{"runtime-max-sec = 86400s"}, warn: []string{"NOTE", "not marked failed"},
+		{name: "runtime max", unit: "RuntimeMaxSec=1d", want: []string{"runtime-max-sec = 86400s"}, warn: []string{"NOTE", "timed out", "restart= applies"},
 			check: func(d *ServiceDescription) error { return lcEq("RuntimeMaxSec", d.RuntimeMaxSec, 24*time.Hour) }},
 		{name: "runtime max fraction", unit: "RuntimeMaxSec=500ms", want: []string{"runtime-max-sec = 0.5s"}},
-		{name: "runtime max reset", unit: "RuntimeMaxSec=10\nRuntimeMaxSec=infinity", want: []string{"runtime-max-sec = 0"},
+		{name: "runtime max reset", unit: "RuntimeMaxSec=10\nRuntimeMaxSec=infinity", none: []string{"runtime-max-sec"},
 			check: func(d *ServiceDescription) error { return lcEq("RuntimeMaxSec", d.RuntimeMaxSec, time.Duration(0)) }},
 		{name: "runtime max 0", unit: "RuntimeMaxSec=0", none: []string{"runtime-max-sec"}, warn: []string{"WARN", "RuntimeMaxSec=0 ignored"}},
-		{name: "runtime max huge", unit: "RuntimeMaxSec=500y", want: []string{"runtime-max-sec = 0"}},
+		{name: "runtime max huge", unit: "RuntimeMaxSec=500y", none: []string{"runtime-max-sec"}},
 		{name: "runtime extra", unit: "RuntimeRandomizedExtraSec=5min", want: []string{"runtime-randomized-extra = 300"},
 			check: func(d *ServiceDescription) error {
 				return lcEq("RuntimeRandomizedExtra", d.RuntimeRandomizedExtra, 5*time.Minute)
@@ -216,9 +216,9 @@ func TestSystemdLifecycleMappings(t *testing.T) {
 			check: func(d *ServiceDescription) error {
 				return lcEq("NotifyAccess", d.NotifyAccess, service.NotifyAccessAll)
 			}},
-		{name: "bus name", unit: "BusName=org.example.%N", want: []string{"bus-name = org.example.lc"}, warn: []string{"NOTE", "Type=dbus"},
+		{name: "bus name", unit: "Type=dbus\nBusName=org.example.%N", want: []string{"bus-name = org.example.lc"}, warn: []string{"NOTE", "system bus"},
 			check: func(d *ServiceDescription) error { return lcEq("BusName", d.BusName, "org.example.lc") }},
-		{name: "bus name empty", unit: "BusName=org.example.A\nBusName=", want: []string{"bus-name = org.example.A"},
+		{name: "bus name empty", unit: "BusName=org.example.A\nBusName=\nType=dbus", want: []string{"bus-name = org.example.A"},
 			warn: []string{"WARN", "BusName="}},
 		{name: "fd store", unit: "FileDescriptorStoreMax=16\nFileDescriptorStorePreserve=restart",
 			want: []string{"file-descriptor-store-max = 16", "file-descriptor-store-preserve = no"},
@@ -354,5 +354,101 @@ func TestSystemdLifecycleTables(t *testing.T) {
 		if got, err := lcSignalFrom(in); err == nil {
 			t.Errorf("%q → %q, want an error", in, got)
 		}
+	}
+}
+
+// The two exit status lists are kept apart: an empty assignment of one
+// left the other's values out of normal-exit.
+func TestSystemdExitListsOrder(t *testing.T) {
+	sdOrders(t, "RestartPreventExitStatus=42\nRestartPreventExitStatus=", "SuccessExitStatus=143", func(t *testing.T, r sdOrderResult) {
+		sdWant(t, r, "normal-exit", "143")
+		sdWarn(t, r, "NOTE", "SuccessExitStatus=143")
+	})
+	sdOrders(t, "SuccessExitStatus=143\nSuccessExitStatus=", "RestartPreventExitStatus=42", func(t *testing.T, r sdOrderResult) {
+		sdWant(t, r, "normal-exit", "42")
+		if exHas(r.warns, "NOTE", "SuccessExitStatus=") || exHas(r.warns, "WARN", "SuccessExitStatus=") {
+			t.Errorf("%s: a note for a reset SuccessExitStatus=: %v", r.how, r.warns)
+		}
+	})
+	sdOrders(t, "SuccessExitStatus=143 SIGTERM", "RestartPreventExitStatus=143 7", func(t *testing.T, r sdOrderResult) {
+		if got := exLines(r.out, "normal-exit"); len(got) != 1 || len(strings.Fields(got[0])) != 3 {
+			t.Errorf("%s: normal-exit = %q, want 7, 143 and SIGTERM once each", r.how, got)
+		}
+	})
+}
+
+// SuccessExitStatus= beside an action or a restart that sees the exit
+// as a failure is a WARN, wherever the other line is.
+func TestSystemdSuccessExitStatusWarns(t *testing.T) {
+	sdOrders(t, "SuccessExitStatus=143", "FailureAction=reboot", func(t *testing.T, r sdOrderResult) {
+		sdWarn(t, r, "WARN", "SuccessExitStatus=143", "failure-action = reboot")
+	})
+	sdOrders(t, "SuccessExitStatus=143", "Restart=always", func(t *testing.T, r sdOrderResult) {
+		sdWarn(t, r, "WARN", "SuccessExitStatus=143", "restart = yes")
+	})
+	sdOrders(t, "SuccessExitStatus=143", "Restart=on-failure", func(t *testing.T, r sdOrderResult) {
+		sdWarn(t, r, "NOTE", "SuccessExitStatus=143")
+		if exHas(r.warns, "WARN", "SuccessExitStatus=") {
+			t.Errorf("%s: WARN for on-failure: %v", r.how, r.warns)
+		}
+	})
+}
+
+// RuntimeMaxSec= is ignored on a oneshot in systemd, wherever Type= is;
+// with Restart= it is carried, as runtime-max-sec now fails the run.
+func TestSystemdRuntimeMaxOrder(t *testing.T) {
+	sdOrders(t, "RuntimeMaxSec=1d", "Type=oneshot", func(t *testing.T, r sdOrderResult) {
+		sdWant(t, r, "runtime-max-sec")
+		sdWarn(t, r, "NOTE", "RuntimeMaxSec=1d", "Type=oneshot")
+	})
+	sdOrders(t, "RuntimeMaxSec=1d", "Restart=always", func(t *testing.T, r sdOrderResult) {
+		sdWant(t, r, "runtime-max-sec", "86400s")
+	})
+}
+
+// BusName= gates readiness in slinit, so only Type=dbus carries it.
+func TestSystemdBusNameOrder(t *testing.T) {
+	sdOrders(t, "BusName=org.example.Ord", "Type=dbus", func(t *testing.T, r sdOrderResult) {
+		sdWant(t, r, "bus-name", "org.example.Ord")
+		if r.desc.BusName != "org.example.Ord" {
+			t.Errorf("%s: BusName = %q", r.how, r.desc.BusName)
+		}
+	})
+	sdOrders(t, "BusName=org.example.Ord", "Type=notify", func(t *testing.T, r sdOrderResult) {
+		sdWant(t, r, "bus-name")
+		sdWarn(t, r, "NOTE", "BusName=org.example.Ord", "not carried")
+		if r.desc.BusName != "" {
+			t.Errorf("%s: BusName = %q", r.how, r.desc.BusName)
+		}
+	})
+}
+
+// RestartForceExitStatus=0 is kept: slinit's IsForceRestartExit takes
+// it. On a oneshot it restarts every successful run, which is a WARN.
+func TestSystemdRestartForceZero(t *testing.T) {
+	emitted, _, desc := lcConvert(t, "RestartForceExitStatus=0 3")
+	if !slices.Contains(emitted, "restart-force-exit-status = 0 3") || !slices.Equal(desc.RestartForceExitCodes, []int{0, 3}) {
+		t.Errorf("emitted %q, parsed %v", emitted, desc.RestartForceExitCodes)
+	}
+	sdOrders(t, "RestartForceExitStatus=0", "Type=oneshot", func(t *testing.T, r sdOrderResult) {
+		sdWarn(t, r, "WARN", "RestartForceExitStatus=", "oneshot")
+	})
+}
+
+// An empty signal assignment resets it; exit as an action gets a note.
+func TestSystemdLifecycleNits(t *testing.T) {
+	for _, k := range []string{"FinalKillSignal", "RestartKillSignal", "WatchdogSignal"} {
+		emitted, warns, _ := lcConvert(t, k+"=SIGQUIT\n"+k+"=")
+		for _, l := range emitted {
+			if strings.Contains(l, "-signal = ") {
+				t.Errorf("%s= did not reset: %q", k, l)
+			}
+		}
+		if lcWarned(warns, "WARN", k) {
+			t.Errorf("%s=: %v", k, warns)
+		}
+	}
+	if _, warns, _ := lcConvert(t, "FailureAction=exit"); !lcWarned(warns, "NOTE", "powers off", "PID 1") {
+		t.Errorf("FailureAction=exit: %v", warns)
 	}
 }

@@ -21,12 +21,43 @@ import (
 // three reasons. systemd expands specifiers in their values (%n, %t),
 // and the expansion needs the unit's name, which a conv does not see.
 // An empty assignment resets them, where a conv can only emit nothing.
-// Or what they map to depends on what another directive of the unit
-// already mapped to: StandardError=null cannot be honoured once stdout
-// goes to a logfile, a SetCredential= is only a fallback for a
-// LoadCredential= of the same name. Such a rule looks at the slinit
-// settings already in cfg.mapped, so it is right whichever order the
-// two directives come in, as far as the settings tell them apart.
+// Or what they map to depends on another directive of the unit, which
+// may come before or after it, in a drop-in as well: StandardError=null
+// cannot be honoured once stdout goes to a logfile, a SetCredential= is
+// only a fallback for a LoadCredential= of the same name, ExecReload=
+// and ReloadSignal= name one signal between them, a finish-command
+// needs type = process. Such a rule records what the line says in
+// exState, and exFinish decides once the whole unit is read, so the
+// order of the lines does not change the result, as in systemd.
+
+// exState is what the execution-environment rules saw, for exFinish.
+type exState struct {
+	in, out, err exStream
+	data         []byte // StandardInputText= / StandardInputData=, as systemd buffers them
+	ttyPath      string // TTYPath=, "" when unset
+	utmpID       string
+
+	load, set []exCred
+	imports   []string
+
+	reloadSignal, reloadSignalRaw string // ReloadSignal=, in slinit's spelling
+	execReloadSignal              string // what ExecReload=kill -SIG $MAINPID sends
+	execReloadLine                string
+	execReloadWarns               []SystemdWarning
+}
+
+func exStateOf(cfg *SystemdConfig) *exState {
+	return sdState(cfg, "exec", func() *exState { return &exState{} })
+}
+
+// exFinish settles the mappings that depend on more than one line.
+func exFinish(cfg *SystemdConfig) []SystemdWarning {
+	st := exStateOf(cfg)
+	warns := exFinishStdio(cfg, st)
+	warns = append(warns, exFinishCreds(cfg, st)...)
+	warns = append(warns, exFinishReload(cfg, st)...)
+	return append(warns, exFinishStopPost(cfg)...)
+}
 
 func init() {
 	// The TTY cluster. slinit acts on tty-path only, where systemd acts
@@ -71,6 +102,9 @@ func init() {
 
 	registerService("ExecStopPost", sdRule{custom: mapExecStopPost})
 	registerService("ExecReload", sdRule{custom: mapExecReload})
+	registerService("ReloadSignal", sdRule{custom: mapReloadSignal})
+
+	registerFinisher(exFinish)
 
 	sdServiceNoEquivalent["LoadCredentialEncrypted"] = sdGap{why: "slinit cannot decrypt a credential sealed with the TPM2 or host key; " +
 		"decrypt it with systemd-creds and use load-credential"}
@@ -264,21 +298,13 @@ func exColonWord(s string) (word, rest string, err error) {
 
 // --- TTY ------------------------------------------------------------
 
-// mapTTYPath: TTYPath= → tty-path. systemd uses the device only when a
-// stdio stream is a TTY (StandardInput=tty and its kin, or
-// StandardOutput=tty), where slinit connects stdin, stdout and stderr
-// to tty-path whenever it is set. Every unit that sets TTYPath= also
-// asks for a TTY on stdin, normally before it, so the note is for the
-// case where the order says nothing yet. An empty assignment restores
-// systemd's default, /dev/console.
+// mapTTYPath records TTYPath=; exFinishStdio sets tty-path from it. An
+// empty assignment restores systemd's default, /dev/console.
 func mapTTYPath(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	st := exStateOf(cfg)
 	v := strings.TrimSpace(val)
-	_, had := exMapped(cfg, "tty-path")
 	if v == "" {
-		if had {
-			cfg.setMapped("tty-path", "/dev/console")
-			exUtmpLine(cfg)
-		}
+		st.ttyPath = ""
 		return nil
 	}
 	p, warns, err := exPath(cfg, key, v)
@@ -288,12 +314,7 @@ func mapTTYPath(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	if err != nil {
 		return append(warns, exIgnored(key, val, err))
 	}
-	cfg.setMapped("tty-path", p)
-	exUtmpLine(cfg)
-	if !had {
-		warns = append(warns, exNote(key, val, "→ tty-path; slinit connects stdin, stdout and stderr to it, "+
-			"which systemd does only for the streams StandardInput=/StandardOutput=/StandardError= set to tty"))
-	}
+	st.ttyPath = p
 	return warns
 }
 
@@ -330,14 +351,15 @@ func ttySizeConv(v string) (string, []SystemdWarning, error) {
 // --- utmp -----------------------------------------------------------
 
 // mapUtmpIdentifier: UtmpIdentifier= → inittab-id, and inittab-line
-// from TTYPath=, as systemd fills ut_line from TTYPath= minus "/dev/".
-// ut_id holds four bytes: systemd keeps the last four of a longer
-// identifier (copy_suffix), where slinit would keep the first four.
+// from the TTY (exFinishStdio), as systemd fills ut_line from TTYPath=
+// minus "/dev/". ut_id holds four bytes: systemd keeps the last four of
+// a longer identifier (copy_suffix), where slinit would keep the first
+// four.
 func mapUtmpIdentifier(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	st := exStateOf(cfg)
 	v := strings.TrimSpace(val)
 	if v == "" {
-		cfg.dropMapped("inittab-id")
-		cfg.dropMapped("inittab-line")
+		st.utmpID = ""
 		return nil
 	}
 	id, warns := expandSpecifiers(cfg, key, v)
@@ -350,23 +372,8 @@ func mapUtmpIdentifier(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		}
 		return append(warns, exIgnored(key, val, errors.New(why)))
 	}
-	cfg.setMapped("inittab-id", id)
-	exUtmpLine(cfg)
+	st.utmpID = id
 	return warns
-}
-
-// exUtmpLine sets inittab-line from tty-path once both it and
-// inittab-id are known, whichever came first.
-func exUtmpLine(cfg *SystemdConfig) {
-	if _, ok := exMapped(cfg, "inittab-id"); !ok {
-		return
-	}
-	tty, ok := exMapped(cfg, "tty-path")
-	if !ok {
-		cfg.dropMapped("inittab-line")
-		return
-	}
-	cfg.setMapped("inittab-line", strings.TrimPrefix(tty, "/dev/"))
 }
 
 func utmpModeConv(v string) (string, []SystemdWarning, error) {
@@ -625,53 +632,44 @@ func mapLogFilterPatterns(cfg *SystemdConfig, key, val string) []SystemdWarning 
 
 // --- stdio ----------------------------------------------------------
 
-// exTTYStdio connects the service's stdio to a TTY, tty-path, unless
-// TTYPath= already chose the device; systemd's default is /dev/console.
-func exTTYStdio(cfg *SystemdConfig) {
-	if _, ok := exMapped(cfg, "tty-path"); !ok {
-		cfg.setMapped("tty-path", "/dev/console")
-		exUtmpLine(cfg)
-	}
+// The three streams are recorded as they are read and settled once the
+// whole unit is (exFinishStdio): each one's default and an "inherit"
+// depend on the others (stdout inherits a TTY on stdin, stderr follows
+// stdout, StandardInputText= turns the default stdin into data), and
+// the last assignment of each wins wherever it comes, drop-ins
+// included.
+
+// exStream is one StandardInput=/Output=/Error= value systemd accepts.
+type exStream struct {
+	set  bool
+	kind string // the value, or "file" for file:/append:/truncate:
+	path string // the file, for kind "file"
+	diff string // how slinit opens the file differently
+	raw  string // the value as written
 }
 
-// mapStandardInput: null is close-stdin, a file standard-input-file and
-// a TTY tty-path; data is what StandardInputText=/Data= feed anyway.
+func (s exStream) isTTY() bool { return strings.HasPrefix(s.kind, "tty") }
+
+// mapStandardInput records StandardInput=. A value systemd refuses
+// keeps the earlier one.
 func mapStandardInput(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	v := strings.TrimSpace(val)
+	s := exStream{set: true, kind: v, raw: v}
+	var warns []SystemdWarning
 	switch {
-	case v == "null":
-		cfg.closeStdin = true
-		return nil
-	case v == "data":
-		return nil
-	case v == "tty" || v == "tty-force" || v == "tty-fail" || v == "tty-graceful":
-		exTTYStdio(cfg)
-		warns := []SystemdWarning{exWarn(key, val, "→ tty-path; systemd makes the tty the service's controlling terminal, "+
-			"slinit only with options = unmask-intr — add it for a getty or a shell")}
-		if v == "tty-graceful" {
-			warns = append(warns, exNote(key, val, "slinit has no fallback to /dev/null when there is no console"))
-		}
-		if _, ok := exMapped(cfg, "logfile"); ok {
-			warns = append(warns, exNote(key, val, "with tty-path set, slinit sends stdout to the tty too, not to the logfile"))
-		}
-		return warns
+	case v == "null" || v == "data" || v == "tty" || v == "tty-force" || v == "tty-fail" || v == "tty-graceful":
 	case strings.HasPrefix(v, "file:"):
-		p, warns, err := exPath(cfg, key, strings.TrimPrefix(v, "file:"))
+		p, w, err := exPath(cfg, key, strings.TrimPrefix(v, "file:"))
 		if err != nil {
-			return append(warns, exIgnored(key, val, err))
+			return append(w, exIgnored(key, val, err))
 		}
-		if _, ok := exMapped(cfg, "standard-input-data"); ok {
-			// slinit refuses a service with both; systemd reads the
-			// file and leaves the data unused.
-			cfg.dropMapped("standard-input-data")
-			warns = append(warns, exNote(key, val, "StandardInputText=/StandardInputData= dropped: systemd reads the file instead"))
-		}
-		cfg.setMapped("standard-input-file", literalDollars(p))
-		return warns
+		s.kind, s.path, warns = "file", p, w
 	case v == "socket" || v == "fd" || strings.HasPrefix(v, "fd:") || v == "broker" || v == "broker-log":
-		return []SystemdWarning{exNote(key, val, "has no slinit equivalent; the service's stdin is /dev/null")}
+	default:
+		return []SystemdWarning{exIgnored(key, val, fmt.Errorf("%q is not a standard input type", v))}
 	}
-	return []SystemdWarning{exIgnored(key, val, fmt.Errorf("%q is not a standard input type", v))}
+	exStateOf(cfg).in = s
+	return warns
 }
 
 // exOutputFile is the path of a file:, append: or truncate: output,
@@ -708,97 +706,197 @@ func exOutputGap(key, val, v string) ([]SystemdWarning, bool) {
 	return nil, false
 }
 
-// mapStandardOutput: append:/file:/truncate: → logfile, which takes
-// stderr along unless StandardError= sends it elsewhere, as systemd's
-// default StandardError=inherit does; null → close-stdout; tty →
-// tty-path. A value systemd would refuse leaves the earlier one.
-func mapStandardOutput(cfg *SystemdConfig, key, val string) []SystemdWarning {
+// exOutputStream reads a StandardOutput= / StandardError= value; ok is
+// false for one systemd refuses, which keeps the earlier one.
+func exOutputStream(cfg *SystemdConfig, key, val string) (exStream, []SystemdWarning, bool) {
 	v := strings.TrimSpace(val)
 	p, diff, warns, isFile, err := exOutputFile(cfg, key, v)
 	if err != nil {
-		return append(warns, exIgnored(key, val, err))
+		return exStream{}, append(warns, exIgnored(key, val, err)), false
 	}
-	gap, isGap := exOutputGap(key, val, v)
-	if !isFile && !isGap && v != "null" && v != "tty" {
-		return []SystemdWarning{exIgnored(key, val, fmt.Errorf("%q is not a standard output type", v))}
+	if isFile {
+		return exStream{set: true, kind: "file", path: p, diff: diff, raw: v}, warns, true
 	}
-	// The last assignment wins: whatever an earlier one mapped to goes.
-	cfg.dropMapped("logfile")
-	cfg.dropMapped("close-stdout")
-	switch {
-	case v == "null":
-		cfg.setMapped("close-stdout", "yes")
-		return nil
-	case v == "tty":
-		exTTYStdio(cfg)
-		return []SystemdWarning{exNote(key, val, "→ tty-path; slinit connects stdin and stderr to the tty too")}
-	case isGap:
-		return gap
+	if _, isGap := exOutputGap(key, val, v); !isGap && v != "null" && v != "tty" {
+		return exStream{}, []SystemdWarning{exIgnored(key, val, fmt.Errorf("%q is not a standard output type", v))}, false
 	}
-	p = literalDollars(p)
-	cfg.setMapped("logfile", p)
-	if diff != "" {
-		warns = append(warns, exNote(key, val, diff))
-	}
-	if errFile, ok := exMapped(cfg, "stderr-logfile"); ok && errFile == p {
-		// Both streams to one file: slinit's logfile merges them.
-		cfg.dropMapped("stderr-logfile")
-	}
-	if _, ok := exMapped(cfg, "close-stderr"); ok {
-		warns = append(warns, exWarn(key, val, "StandardError=null is not carried: slinit writes stderr to the logfile with stdout"))
-	}
-	if _, ok := exMapped(cfg, "tty-path"); ok {
-		warns = append(warns, exNote(key, val, "with tty-path set, slinit sends stdout to the tty, not to the logfile"))
+	return exStream{set: true, kind: v, raw: v}, nil, true
+}
+
+// mapStandardOutput records StandardOutput=: append:/file:/truncate: →
+// logfile, which takes stderr along unless StandardError= sends it
+// elsewhere, as systemd's default StandardError=inherit does; null →
+// close-stdout; tty → tty-path.
+func mapStandardOutput(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	s, warns, ok := exOutputStream(cfg, key, val)
+	if ok {
+		exStateOf(cfg).out = s
 	}
 	return warns
 }
 
-// mapStandardError: a file other than stdout's → stderr-logfile (a
-// type = process setting); null → close-stderr, which slinit cannot
-// honour once stdout goes to a logfile; inherit and the rest leave
-// stderr with stdout.
+// mapStandardError records StandardError=: a file other than stdout's →
+// stderr-logfile (a type = process setting); null → close-stderr, which
+// slinit cannot honour once stdout goes to a logfile; inherit and the
+// rest leave stderr with stdout.
 func mapStandardError(cfg *SystemdConfig, key, val string) []SystemdWarning {
-	v := strings.TrimSpace(val)
-	p, diff, warns, isFile, err := exOutputFile(cfg, key, v)
-	if err != nil {
-		return append(warns, exIgnored(key, val, err))
-	}
-	gap, isGap := exOutputGap(key, val, v)
-	if !isFile && !isGap && v != "null" && v != "tty" {
-		return []SystemdWarning{exIgnored(key, val, fmt.Errorf("%q is not a standard output type", v))}
-	}
-	cfg.dropMapped("stderr-logfile")
-	cfg.dropMapped("close-stderr")
-	logfile, hasLog := exMapped(cfg, "logfile")
-	switch {
-	case v == "null":
-		if hasLog {
-			return []SystemdWarning{exWarn(key, val, "not carried: slinit writes stderr to the logfile with stdout")}
-		}
-		cfg.setMapped("close-stderr", "yes")
-		return nil
-	case v == "tty":
-		exTTYStdio(cfg)
-		return []SystemdWarning{exNote(key, val, "→ tty-path; slinit connects stdin and stdout to the tty too")}
-	case isGap:
-		if hasLog && v != "inherit" {
-			gap = append(gap, exNote(key, val, "slinit writes stderr to the logfile with stdout"))
-		}
-		return gap
-	}
-	p = literalDollars(p)
-	if hasLog && p == logfile {
-		return warns // merged into the logfile, as both go to one file
-	}
-	cfg.setMapped("stderr-logfile", p)
-	if diff != "" {
-		warns = append(warns, exNote(key, val, diff))
-	}
-	if cfg.svcType != "process" {
-		warns = append(warns, exWarn(key, val, fmt.Sprintf(
-			"stderr-logfile works for type = process only; this %s service's stderr is not written to it", cfg.svcType)))
+	s, warns, ok := exOutputStream(cfg, key, val)
+	if ok {
+		exStateOf(cfg).err = s
 	}
 	return warns
+}
+
+// exInheritable is exec_input_is_inheritable: a stdin systemd's
+// StandardOutput= default (and inherit) passes on to stdout.
+func exInheritable(in exStream) bool {
+	return in.isTTY() || in.kind == "socket" || strings.HasPrefix(in.kind, "fd")
+}
+
+// exFinishStdio settles stdin, stdout, stderr and the TTY from the last
+// value of each directive, as systemd does once the unit is loaded
+// (service_fix_stdio). What it leaves unset — a stdout to the journal,
+// the default — config.defaultToJournal turns into log-type = journal
+// afterwards for a process service.
+func exFinishStdio(cfg *SystemdConfig, st *exState) []SystemdWarning {
+	var warns []SystemdWarning
+	in := st.in
+	if !in.set {
+		in = exStream{kind: "null", raw: "null"}
+	}
+	if in.kind == "null" && len(st.data) > 0 {
+		// StandardInputText=/Data= make the default stdin data, and an
+		// explicit null too (systemd does not tell them apart).
+		in = exStream{set: true, kind: "data", raw: "data"}
+	}
+	out := st.out
+	if !out.set || out.kind == "inherit" {
+		switch {
+		case in.isTTY():
+			out = exStream{set: true, kind: "tty", raw: "inherit"}
+		case exInheritable(in):
+			out = exStream{set: true, kind: in.kind, raw: "inherit"}
+		default:
+			out = exStream{kind: "journal", raw: "journal"}
+		}
+	}
+	errOwn := st.err.set && st.err.kind != "inherit"
+	errS := out
+	if errOwn {
+		errS = st.err
+	}
+
+	// stdin.
+	switch {
+	case in.kind == "null":
+		if in.set {
+			cfg.closeStdin = true
+		}
+	case in.kind == "data":
+		if len(st.data) > 0 {
+			cfg.setMapped("standard-input-data", base64.StdEncoding.EncodeToString(st.data))
+		}
+	case in.isTTY():
+		warns = append(warns, exWarn("StandardInput", in.raw, "→ tty-path; systemd makes the tty the service's controlling terminal, "+
+			"slinit only with options = unmask-intr — add it for a getty or a shell"))
+		if in.kind == "tty-graceful" {
+			warns = append(warns, exNote("StandardInput", in.raw, "slinit has no fallback to /dev/null when there is no console"))
+		}
+	case in.kind == "file":
+		cfg.setMapped("standard-input-file", literalDollars(in.path))
+	default:
+		warns = append(warns, exNote("StandardInput", in.raw, "has no slinit equivalent; the service's stdin is /dev/null"))
+	}
+	if len(st.data) > 0 && in.kind != "data" {
+		// slinit refuses a service with both; systemd leaves the data
+		// unused.
+		warns = append(warns, exNote("StandardInput", in.raw,
+			"StandardInputText=/StandardInputData= unused: this stdin replaces them, as in systemd"))
+	}
+
+	// stdout.
+	switch out.kind {
+	case "file":
+		cfg.setMapped("logfile", literalDollars(out.path))
+		if out.diff != "" {
+			warns = append(warns, exNote("StandardOutput", out.raw, out.diff))
+		}
+	case "null":
+		cfg.setMapped("close-stdout", "yes")
+	case "tty", "journal", "syslog":
+	default:
+		gap, _ := exOutputGap("StandardOutput", out.raw, out.kind)
+		warns = append(warns, gap...)
+	}
+
+	// stderr, where StandardError= sends it apart from stdout.
+	if errOwn && !(errS.kind == out.kind && errS.path == out.path && errS.kind != "null") {
+		withLog := out.kind == "file"
+		switch errS.kind {
+		case "file":
+			switch {
+			case cfg.svcType != "process":
+				warns = append(warns, exWarn("StandardError", errS.raw, fmt.Sprintf(
+					"dropped: stderr-logfile works for type = process only; this %s service's stderr is not written to it", cfg.svcType)))
+			default:
+				cfg.setMapped("stderr-logfile", literalDollars(errS.path))
+				if errS.diff != "" {
+					warns = append(warns, exNote("StandardError", errS.raw, errS.diff))
+				}
+			}
+		case "null":
+			if withLog {
+				warns = append(warns, exWarn("StandardError", errS.raw, "not carried: slinit writes stderr to the logfile with stdout"))
+			} else {
+				cfg.setMapped("close-stderr", "yes")
+			}
+		case "tty":
+		default:
+			gap, _ := exOutputGap("StandardError", errS.raw, errS.kind)
+			warns = append(warns, gap...)
+			if withLog {
+				warns = append(warns, exNote("StandardError", errS.raw, "slinit writes stderr to the logfile with stdout"))
+			}
+		}
+	}
+
+	// The TTY. slinit connects all three streams to tty-path; systemd
+	// only the ones set to tty, and uses TTYPath= for those.
+	ttyUsed := in.isTTY() || out.kind == "tty" || errS.kind == "tty"
+	tty := st.ttyPath
+	if tty == "" && ttyUsed {
+		tty = "/dev/console"
+	}
+	if tty != "" {
+		cfg.setMapped("tty-path", tty)
+		if !(in.isTTY() && out.kind == "tty" && errS.kind == "tty") {
+			what := "tty-path = " + tty
+			if st.ttyPath != "" {
+				what = "TTYPath=" + st.ttyPath + " → tty-path"
+			}
+			warns = append(warns, SystemdWarning{"NOTE", what + ": slinit connects stdin, stdout and stderr to it, where " +
+				"systemd connects only the streams StandardInput=/StandardOutput=/StandardError= set to tty " +
+				"(here " + exStreamNames(in, out, errS) + ")"})
+		}
+	}
+	if st.utmpID != "" {
+		cfg.setMapped("inittab-id", st.utmpID)
+		if tty != "" {
+			cfg.setMapped("inittab-line", strings.TrimPrefix(tty, "/dev/"))
+		}
+	}
+	return warns
+}
+
+// exStreamNames lists where each stream goes in systemd, for a note.
+func exStreamNames(in, out, errS exStream) string {
+	name := func(s exStream) string {
+		if s.kind == "file" {
+			return s.path
+		}
+		return s.kind
+	}
+	return fmt.Sprintf("stdin %s, stdout %s, stderr %s", name(in), name(out), name(errS))
 }
 
 // exStdinDataMax keeps the standard-input-data line under the 64 KiB a
@@ -810,12 +908,12 @@ const exStdinDataMax = 60000
 // its specifiers expanded and a newline after it. slinit's
 // standard-input-text takes no escapes, adds no newline and is replaced
 // by a second "=" line, so the buffer is written as standard-input-data,
-// base64, which carries any bytes exactly; each assignment decodes it
-// and appends.
+// base64, which carries any bytes exactly (exFinishStdio).
 func mapStandardInputData(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	st := exStateOf(cfg)
 	v := strings.TrimSpace(val)
 	if v == "" {
-		cfg.dropMapped("standard-input-data")
+		st.data = nil
 		return nil
 	}
 	var add []byte
@@ -842,19 +940,12 @@ func mapStandardInputData(cfg *SystemdConfig, key, val string) []SystemdWarning 
 		}
 		add = b
 	}
-	if _, ok := exMapped(cfg, "standard-input-file"); ok {
-		return append(warns, exNote(key, val, "ignored: StandardInput=file: feeds stdin, as in systemd"))
-	}
-	var buf []byte
-	if cur, ok := exMapped(cfg, "standard-input-data"); ok {
-		buf, _ = base64.StdEncoding.DecodeString(cur)
-	}
-	enc := base64.StdEncoding.EncodeToString(append(buf, add...))
-	if len(enc) > exStdinDataMax {
+	buf := append(slices.Clone(st.data), add...)
+	if n := base64.StdEncoding.EncodedLen(len(buf)); n > exStdinDataMax {
 		return append(warns, exIgnored(key, val, fmt.Errorf(
-			"the standard input data would come to %d bytes of base64, more than a slinit line holds", len(enc))))
+			"the standard input data would come to %d bytes of base64, more than a slinit line holds", n)))
 	}
-	cfg.setMapped("standard-input-data", enc)
+	st.data = buf
 	return warns
 }
 
@@ -1013,42 +1104,24 @@ func exCredName(cfg *SystemdConfig, key, v string) (name, rest string, warns []S
 	return name, rest, warns, nil
 }
 
-// exCredLine returns the index in cfg.mapped of the key line for the
-// credential name, or -1.
-func exCredLine(cfg *SystemdConfig, key, name string) int {
-	for i, kv := range cfg.mapped {
-		if kv.key == key {
-			if n, _, _ := strings.Cut(kv.value, ":"); n == name {
-				return i
-			}
-		}
-	}
-	return -1
+// exCred is one LoadCredential= or SetCredential=, by name.
+type exCred struct {
+	name  string
+	value string // the file (load) or the decoded value (set)
+	raw   string // the assignment as written
 }
 
 // exPutCred records a credential as systemd's exec_context_put_*_credential
-// does, replacing one of the same kind and name. slinit writes the
-// credentials in file order, a later one of the same name over an
-// earlier one, and systemd uses a SetCredential= only when the
-// LoadCredential= of its name finds no file: so a set-credential goes
-// before the load-credential of its name, which wins whenever its file
-// is there.
-func exPutCred(cfg *SystemdConfig, key, name, value string) {
-	if i := exCredLine(cfg, key, name); i >= 0 {
-		cfg.mapped = slices.Delete(cfg.mapped, i, i+1)
-	}
-	kv := kvPair{key, name + ":" + value}
-	if key == "set-credential" {
-		if i := exCredLine(cfg, "load-credential", name); i >= 0 {
-			cfg.mapped = slices.Insert(cfg.mapped, i, kv)
-			return
+// does, replacing one of the same kind and name.
+func exPutCred(list []exCred, c exCred) []exCred {
+	for i := range list {
+		if list[i].name == c.name {
+			list[i] = c
+			return list
 		}
 	}
-	cfg.mapped = append(cfg.mapped, kv)
+	return append(list, c)
 }
-
-const exCredFallbackNote = "systemd uses SetCredential= only when the LoadCredential= file of the same name is missing; " +
-	"slinit writes the file over it when it is there, and fails the start when it is not"
 
 // mapLoadCredential: LoadCredential=ID:PATH → load-credential, for an
 // absolute PATH to a file. systemd also reads every file under a
@@ -1056,9 +1129,11 @@ const exCredFallbackNote = "systemd uses SetCredential= only when the LoadCreden
 // (or ID alone) as a credential slinit itself received or one in a
 // credential store; slinit's load-credential reads one regular file.
 func mapLoadCredential(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	st := exStateOf(cfg)
 	v := strings.TrimSpace(val)
 	if v == "" {
-		cfg.dropMapped("load-credential")
+		// Resets the LoadCredential= list only; SetCredential= keeps its own.
+		st.load = nil
 		return nil
 	}
 	name, rest, warns, err := exCredName(cfg, key, v)
@@ -1094,10 +1169,7 @@ func mapLoadCredential(cfg *SystemdConfig, key, val string) []SystemdWarning {
 			"dropped: %s is no regular file; systemd reads a directory's files or connects to a socket, "+
 				"slinit's load-credential reads one regular file", src)))
 	}
-	exPutCred(cfg, "load-credential", name, literalDollars(src))
-	if exCredLine(cfg, "set-credential", name) >= 0 {
-		warns = append(warns, exNote(key, val, exCredFallbackNote))
-	}
+	st.load = exPutCred(st.load, exCred{name, src, v})
 	return warns
 }
 
@@ -1108,9 +1180,10 @@ func mapLoadCredential(cfg *SystemdConfig, key, val string) []SystemdWarning {
 // own documentation suggests for a trailing one, a NUL, blanks at the
 // ends) drops the credential.
 func mapSetCredential(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	st := exStateOf(cfg)
 	v := strings.TrimSpace(val)
 	if v == "" {
-		cfg.dropMapped("set-credential")
+		st.set = nil
 		return nil
 	}
 	name, rest, warns, err := exCredName(cfg, key, v)
@@ -1129,9 +1202,50 @@ func mapSetCredential(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	if err != nil {
 		return append(warns, exIgnored(key, val, fmt.Errorf("%v — write the value to a file and use LoadCredential=", err)))
 	}
-	exPutCred(cfg, "set-credential", name, literalDollars(data))
-	if exCredLine(cfg, "load-credential", name) >= 0 {
-		warns = append(warns, exNote(key, val, exCredFallbackNote))
+	st.set = exPutCred(st.set, exCred{name, data, v})
+	return warns
+}
+
+// exFinishCreds writes the credentials. systemd uses a SetCredential=
+// only when the LoadCredential= of its name finds no file; slinit loads
+// both, in file order, a later one over an earlier one, and fails the
+// start on a missing file. So every set-credential goes before the
+// load-credentials, and a load-credential whose file is missing where
+// the unit is converted is left out when a SetCredential= backs it: the
+// direct loader converts on the host that runs the service, where
+// systemd would take the value.
+func exFinishCreds(cfg *SystemdConfig, st *exState) []SystemdWarning {
+	var warns []SystemdWarning
+	drop := map[string]bool{}
+	for _, s := range st.set {
+		for _, l := range st.load {
+			if l.name != s.name {
+				continue
+			}
+			if fi, err := os.Stat(l.value); err == nil && fi.Mode().IsRegular() {
+				warns = append(warns, exNote("LoadCredential", l.raw, "with SetCredential="+s.name+":… as its fallback: "+
+					"the file is there, so slinit loads it over the value, but should it go missing slinit fails the start, "+
+					"where systemd falls back to the value"))
+			} else {
+				drop[l.name] = true
+				warns = append(warns, exNote("LoadCredential", l.raw, "dropped: "+l.value+" is missing here, so systemd "+
+					"uses SetCredential="+s.name+":… instead, and slinit would fail the start; set-credential kept"))
+			}
+		}
+		cfg.mapped = append(cfg.mapped, kvPair{"set-credential", s.name + ":" + literalDollars(s.value)})
+	}
+	for _, l := range st.load {
+		if !drop[l.name] {
+			cfg.mapped = append(cfg.mapped, kvPair{"load-credential", l.name + ":" + literalDollars(l.value)})
+		}
+	}
+	// import-credential: "=" replaces slinit's list, "+=" adds to it.
+	for i, g := range st.imports {
+		key := "import-credential"
+		if i > 0 {
+			key += "+"
+		}
+		cfg.mapped = append(cfg.mapped, kvPair{key, g})
 	}
 	return warns
 }
@@ -1139,12 +1253,12 @@ func mapSetCredential(cfg *SystemdConfig, key, val string) []SystemdWarning {
 // mapImportCredential: ImportCredential=GLOB → import-credential. Both
 // search the credentials the manager received and the plain credential
 // stores; systemd also the .encrypted ones. A ":NEWNAME" rename has no
-// slinit form. slinit's "=" replaces the pattern, so a converted unit
-// keeps one: the last.
+// slinit form. Every pattern is kept (exFinishCreds writes them).
 func mapImportCredential(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	st := exStateOf(cfg)
 	v := strings.TrimSpace(val)
 	if v == "" {
-		cfg.dropMapped("import-credential")
+		st.imports = nil
 		return nil
 	}
 	w, rest, err := exColonWord(v)
@@ -1162,11 +1276,12 @@ func mapImportCredential(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		return append(warns, exWarn(key, val, "dropped: slinit's import-credential cannot rename what it imports"))
 	}
 	glob = literalDollars(glob)
-	if prev, ok := exMapped(cfg, "import-credential"); ok && prev != glob {
-		warns = append(warns, exWarn(key, val, fmt.Sprintf(
-			"slinit's import-credential takes one pattern in a converted unit, keeping the last (dropped: %q)", prev)))
+	if err := validateSlinitSetting("import-credential", glob); err != nil {
+		return append(warns, exIgnored(key, val, err))
 	}
-	cfg.setMapped("import-credential", glob)
+	if !slices.Contains(st.imports, glob) {
+		st.imports = append(st.imports, glob) // systemd keeps a set
+	}
 	return warns
 }
 
@@ -1286,22 +1401,32 @@ func mapExecStopPost(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		warns = append(warns, exNote(key, val, "→ finish-command, run after each exit of the main process, but not when it could not be "+
 			"started at all; bounded by hook-timeout (default 5 s), not TimeoutStopSec=; slinit only logs its failure, "+
 			"and sets no $SERVICE_RESULT/$EXIT_CODE/$EXIT_STATUS"))
-		if cfg.svcType != "process" {
-			warns = append(warns, exWarn(key, val, fmt.Sprintf(
-				"slinit runs a finish-command for type = process only; this %s service will not run it", cfg.svcType)))
-		}
 		cfg.setMapped("finish-command", value)
 	}
 	return warns
 }
 
+// exFinishStopPost: slinit runs a finish-command for type = process
+// only. Type= may come after ExecStopPost=, so this is decided here.
+func exFinishStopPost(cfg *SystemdConfig) []SystemdWarning {
+	if _, ok := cfg.hasMapped("finish-command"); !ok || cfg.svcType == "process" {
+		return nil
+	}
+	cfg.dropMapped("finish-command")
+	return []SystemdWarning{{"WARN", fmt.Sprintf(
+		"ExecStopPost= dropped: slinit runs a finish-command for type = process only; this %s service would not run it", cfg.svcType)}}
+}
+
 // mapExecReload: the ExecReload= that only signals the main process,
 // "kill -HUP $MAINPID", is slinit's reload-signal. slinit has no reload
 // command: its extra-started-command runs as root, outside the service's
-// environment and credentials, so any other ExecReload= is dropped.
+// environment and credentials, so any other ExecReload= is dropped. The
+// signal is settled with ReloadSignal= in exFinishReload; an empty
+// assignment drops what ExecReload= said, and nothing else.
 func mapExecReload(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	st := exStateOf(cfg)
 	if strings.TrimSpace(val) == "" {
-		cfg.dropMapped("reload-signal")
+		st.execReloadSignal, st.execReloadLine, st.execReloadWarns = "", "", nil
 		return nil
 	}
 	cmds, warns, err := parseExecLine(cfg, key, val)
@@ -1312,9 +1437,7 @@ func mapExecReload(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	for _, c := range cmds {
 		if slices.Contains(c.refs, "$MAINPID") || slices.Contains(c.refs, "${MAINPID}") {
 			if sig, ok := killMainPID(c.cmd.argv); ok {
-				cfg.setMapped("reload-signal", sig)
-				warns = append(warns, exNote(key, val, fmt.Sprintf(
-					"→ reload-signal = %s; send it with slinitctl reload-signal (slinitctl reload re-reads the service file)", sig)))
+				st.execReloadSignal, st.execReloadLine = sig, val
 				continue
 			}
 			warns = append(warns, exWarn(key, val, "uses $MAINPID, which slinit does not provide — dropped"))
@@ -1322,6 +1445,65 @@ func mapExecReload(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		}
 		warns = append(warns, exWarn(key, val, "dropped: slinit has no reload command (an extra-started-command runs as root, "+
 			"outside the service's environment); run it by hand, or make the daemon reload on a signal and set reload-signal"))
+	}
+	st.execReloadWarns = append(st.execReloadWarns, warns...)
+	return nil
+}
+
+// mapReloadSignal records ReloadSignal=; an empty assignment resets it
+// to the default, as config_parse_signal does.
+func mapReloadSignal(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	st := exStateOf(cfg)
+	v := strings.TrimSpace(val)
+	if v == "" {
+		st.reloadSignal, st.reloadSignalRaw = "", ""
+		return nil
+	}
+	sig, err := lcSignalFrom(v)
+	if err != nil {
+		return []SystemdWarning{exIgnored(key, val, err)}
+	}
+	st.reloadSignal, st.reloadSignalRaw = sig, v
+	return nil
+}
+
+// exSameSignal reports whether two signal spellings name one signal.
+func exSameSignal(a, b string) bool {
+	x, err1 := parseSignal(a)
+	y, err2 := parseSignal(b)
+	return err1 == nil && err2 == nil && x == y
+}
+
+// exFinishReload picks the one signal slinit's reload-signal sends. In
+// systemd a reload runs ExecReload= when there is one; Type=notify-reload
+// then sends ReloadSignal= (SIGHUP by default) as well, and any other
+// type ignores ReloadSignal=. So with notify-reload the signal is
+// ReloadSignal='s, otherwise the one ExecReload= sends.
+func exFinishReload(cfg *SystemdConfig, st *exState) []SystemdWarning {
+	warns := slices.Clone(st.execReloadWarns)
+	es, rs := st.execReloadSignal, st.reloadSignal
+	switch {
+	case cfg.unitType == "notify-reload":
+		sig := rs
+		if sig == "" {
+			sig = "SIGHUP"
+		}
+		cfg.setMapped("reload-signal", sig)
+		if es != "" && !exSameSignal(es, sig) {
+			warns = append(warns, exNote("ExecReload", st.execReloadLine, fmt.Sprintf(
+				"systemd sends SIG%s with it and then %s, as Type=notify-reload does; slinit's reload-signal = %s sends %s only",
+				strings.TrimPrefix(es, "SIG"), sig, sig, sig)))
+		}
+	case es != "":
+		cfg.setMapped("reload-signal", es)
+		warns = append(warns, exNote("ExecReload", st.execReloadLine, fmt.Sprintf(
+			"→ reload-signal = %s; send it with slinitctl reload-signal (slinitctl reload re-reads the service file)", es)))
+		if rs != "" && !exSameSignal(rs, es) {
+			warns = append(warns, exNote("ReloadSignal", st.reloadSignalRaw,
+				"ignored: systemd uses it with Type=notify-reload only, and the reload here is ExecReload='s "+es))
+		}
+	case rs != "":
+		cfg.setMapped("reload-signal", rs)
 	}
 	return warns
 }

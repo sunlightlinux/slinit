@@ -56,6 +56,7 @@ type SystemdConfig struct {
 	startWhenIdle bool // Type=idle
 
 	svcType      string // process | bgprocess | scripted
+	unitType     string // Type= as systemd names it, once it is one systemd knows
 	command      string
 	argv0        string // ExecStart=@path argv0 …
 	stopCommand  string
@@ -705,6 +706,13 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	var warns []SystemdWarning
 	switch key {
 	case "Type":
+		switch val {
+		case "simple", "exec", "forking", "oneshot", "notify", "notify-reload", "dbus", "idle":
+			// A mapping that depends on the type systemd sees (BusName=
+			// with dbus, ReloadSignal= with notify-reload) reads this in
+			// its finisher, as svcType folds several types into one.
+			cfg.unitType = val
+		}
 		switch val {
 		case "simple", "exec":
 			cfg.svcType = "process"
@@ -1941,6 +1949,12 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 		fmt.Fprintln(w, "close-stdin = yes")
 	}
 	for _, h := range c.mapped {
+		// A key ending in "+" adds to the setting ("key += value"): a
+		// list setting whose "=" replaces it, written once per value.
+		if k, ok := strings.CutSuffix(h.key, "+"); ok {
+			fmt.Fprintf(w, "%s += %s\n", k, h.value)
+			continue
+		}
 		fmt.Fprintf(w, "%s = %s\n", h.key, h.value)
 	}
 	if c.restart != "" {

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,10 +19,30 @@ import (
 // means are gaps.
 //
 // Some directives only have a meaning together with another one the
-// unit may set before or after it (RemainAfterExit= and Type=,
-// TimeoutAbortSec= and TimeoutStopFailureMode=, RestartSteps= and
-// RestartMaxDelaySec=). A rule sees one assignment at a time, so these
-// say what holds in every case, or are gaps.
+// unit may set before or after it, in a drop-in as well: the two exit
+// status lists share normal-exit, RuntimeMaxSec= and BusName= depend
+// on Type=. Their rules record what the lines say
+// in lcState, and lcFinish decides once the whole unit is read, so the
+// order of the lines does not change the result. The rest say what
+// holds in every case (RemainAfterExit=), or are gaps (TimeoutAbortSec=,
+// RestartSteps=).
+
+// lcState is what the lifecycle rules saw, for lcFinish.
+type lcState struct {
+	// The two lists systemd keeps apart and slinit folds into
+	// normal-exit: an empty assignment of one resets that one only.
+	prevent, success []string
+	successRaw       []string // the SuccessExitStatus= values, for the note
+
+	runtimeMax    string // runtime-max-sec, "" for no limit
+	runtimeMaxRaw string
+
+	busName, busNameRaw string
+}
+
+func lcStateOf(cfg *SystemdConfig) *lcState {
+	return sdState(cfg, "lifecycle", func() *lcState { return &lcState{} })
+}
 
 func init() {
 	// --- Restart policy ---
@@ -29,18 +50,17 @@ func init() {
 	// slinit's normal-exit is upstart's "normal exit": exit codes and
 	// signals that keep the service from being restarted, under every
 	// restart= setting. That is RestartPreventExitStatus= exactly.
-	registerService("RestartPreventExitStatus", sdRule{key: "normal-exit", shape: sdList,
-		conv: lcStatusList("RestartPreventExitStatus", true, false)})
+	registerService("RestartPreventExitStatus", sdRule{custom: lcExitList})
 	// SuccessExitStatus= says the exit is a success. slinit has no such
 	// list; normal-exit gives the part restart = on-failure sees, which
 	// is what most units list these for (SuccessExitStatus=143 on a JVM).
 	// Exit 0 is left out: a success in systemd already, as normal-exit
 	// it would stop restart = yes from restarting a clean exit.
-	registerService("SuccessExitStatus", sdRule{key: "normal-exit", shape: sdList,
-		conv: lcSuccessStatus})
-	// slinit's list takes exit codes only.
+	registerService("SuccessExitStatus", sdRule{custom: lcExitList})
+	// slinit's list takes exit codes only. 0 is kept: it forces a restart
+	// after a clean exit in both (IsForceRestartExit takes it).
 	registerService("RestartForceExitStatus", sdRule{key: "restart-force-exit-status", shape: sdList,
-		conv: lcStatusList("RestartForceExitStatus", false, true)})
+		conv: lcStatusList("RestartForceExitStatus", false, false)})
 	registerService("RestartMode", sdRule{key: "restart-mode", conv: lcRestartMode})
 	registerService("RestartRandomizedDelaySec", sdRule{key: "restart-randomized-delay",
 		// systemd refuses infinity here and ignores the line (service_verify).
@@ -58,10 +78,12 @@ func init() {
 	// --- Stopping and killing ---
 
 	registerService("KillMode", sdRule{key: "kill-mode", conv: lcKillMode})
-	registerService("FinalKillSignal", sdRule{key: "final-kill-signal", conv: lcSignal})
-	registerService("RestartKillSignal", sdRule{key: "restart-kill-signal", conv: lcSignal})
-	registerService("WatchdogSignal", sdRule{key: "watchdog-signal", conv: lcSignal})
-	registerService("ReloadSignal", sdRule{key: "reload-signal", conv: lcSignal})
+	// An empty assignment resets the signal to its default in systemd
+	// (config_parse_signal), so it drops the setting. ReloadSignal= is
+	// decided with ExecReload= (systemd_map_exec.go).
+	registerService("FinalKillSignal", exScalar("final-kill-signal", lcSignal))
+	registerService("RestartKillSignal", exScalar("restart-kill-signal", lcSignal))
+	registerService("WatchdogSignal", exScalar("watchdog-signal", lcSignal))
 	// slinit's survive-final-kill-signal is SendSIGKILL= inverted: it
 	// turns off the final-kill-signal escalation of a stop that timed
 	// out, and nothing else.
@@ -70,7 +92,7 @@ func init() {
 	registerService("TimeoutStopFailureMode", sdRule{key: "timeout-stop-failure-mode", conv: lcStopFailureMode})
 	registerService("ExitType", sdRule{key: "exit-type", conv: lcExitType})
 	registerService("OOMPolicy", sdRule{key: "oom-policy"})
-	registerService("RuntimeMaxSec", sdRule{key: "runtime-max-sec", conv: lcRuntimeMax})
+	registerService("RuntimeMaxSec", sdRule{custom: lcRuntimeMaxRule})
 	registerService("RuntimeRandomizedExtraSec", sdRule{key: "runtime-randomized-extra", conv: lcSeconds("infinity")})
 
 	// --- Process setup and notification ---
@@ -116,6 +138,136 @@ func init() {
 	sdServiceIgnored["BusPolicy"] = "kdbus-era; systemd ignores it since v226"
 	sdServiceIgnored["SysVStartPriority"] = "SysV ordering hint; systemd ignores it"
 	sdServiceIgnored["TimeoutCleanSec"] = "bounds `systemctl clean`, an operation slinit does not have"
+
+	registerFinisher(lcFinish)
+}
+
+// lcExitList records one RestartPreventExitStatus= / SuccessExitStatus=
+// assignment in its own list. The words systemd would log and skip are
+// reported here, where the line is.
+func lcExitList(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	st := lcStateOf(cfg)
+	v := strings.TrimSpace(trimQuotes(val))
+	if key == "SuccessExitStatus" {
+		if v == "" {
+			st.success, st.successRaw = nil, nil
+			return nil
+		}
+		out, warns, _ := lcStatusList(key, true, true)(v)
+		st.success = append(st.success, strings.Fields(out)...)
+		st.successRaw = append(st.successRaw, v)
+		return warns
+	}
+	if v == "" {
+		st.prevent = nil
+		return nil
+	}
+	out, warns, _ := lcStatusList(key, true, false)(v)
+	st.prevent = append(st.prevent, strings.Fields(out)...)
+	return warns
+}
+
+// lcRuntimeMaxRule records RuntimeMaxSec=; lcFinish decides whether it
+// can be carried. A value systemd refuses keeps the earlier one.
+func lcRuntimeMaxRule(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	v := strings.TrimSpace(trimQuotes(val))
+	out, _, err := lcRuntimeMax(v)
+	if err == nil && out != "0" {
+		err = validateSlinitSetting("runtime-max-sec", out)
+	}
+	if err != nil {
+		return []SystemdWarning{{"WARN", fmt.Sprintf("[Service] %s=%s ignored: %v", key, val, err)}}
+	}
+	st := lcStateOf(cfg)
+	if out == "0" {
+		st.runtimeMax, st.runtimeMaxRaw = "", "" // infinity: no limit
+	} else {
+		st.runtimeMax, st.runtimeMaxRaw = out, v
+	}
+	return nil
+}
+
+// lcFinish settles the lifecycle mappings that depend on more than one
+// line of the unit.
+func lcFinish(cfg *SystemdConfig) []SystemdWarning {
+	st := lcStateOf(cfg)
+	var warns []SystemdWarning
+
+	// normal-exit: both lists, each status once.
+	var normal []string
+	seen := map[string]bool{}
+	for _, w := range append(slices.Clone(st.prevent), st.success...) {
+		if !seen[w] {
+			seen[w] = true
+			normal = append(normal, w)
+		}
+	}
+	if len(normal) > 0 {
+		v := strings.Join(normal, " ")
+		if err := validateSlinitSetting("normal-exit", v); err != nil {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("normal-exit = %s ignored: %v", v, err)})
+		} else {
+			cfg.setMapped("normal-exit", v)
+		}
+	}
+	if len(st.success) > 0 {
+		warns = append(warns, lcSuccessWarning(cfg, strings.Join(st.successRaw, " ")))
+	}
+
+	// RestartForceExitStatus=0 on a oneshot: both restart it after every
+	// run that succeeds.
+	if v, ok := cfg.hasMapped("restart-force-exit-status"); ok && cfg.svcType == "scripted" &&
+		slices.Contains(strings.Fields(v), "0") {
+		warns = append(warns, SystemdWarning{"WARN", "RestartForceExitStatus= holds 0 on a Type=oneshot service: " +
+			"it is started again after every run that succeeds, in slinit as in systemd"})
+	}
+
+	warns = append(warns, lcFinishRuntimeMax(cfg, st)...)
+	warns = append(warns, lcFinishBusName(cfg, st)...)
+	return warns
+}
+
+// lcSuccessWarning says how normal-exit falls short of SuccessExitStatus=.
+// It is a WARN where the difference changes what happens: slinit still
+// counts the exit a failure, so a failure-action fires on it and a
+// success-action does not; and normal-exit keeps restart = yes and
+// on-success from restarting the service, which systemd does on a
+// success.
+func lcSuccessWarning(cfg *SystemdConfig, raw string) SystemdWarning {
+	var why []string
+	if a, ok := cfg.hasMapped("failure-action"); ok && a != "none" {
+		why = append(why, "failure-action = "+a+" fires on these exits, where systemd counts them a success")
+	}
+	if a, ok := cfg.hasMapped("success-action"); ok && a != "none" {
+		why = append(why, "success-action = "+a+" does not fire on these exits")
+	}
+	if cfg.restart == "yes" || cfg.restart == "on-success" {
+		why = append(why, "restart = "+cfg.restart+" does not restart the service after these exits, where systemd does")
+	}
+	if len(why) > 0 {
+		return SystemdWarning{"WARN", "SuccessExitStatus=" + raw + " → normal-exit, which only keeps slinit from restarting " +
+			"the service on these; the exit still counts as a failure: " + strings.Join(why, "; ")}
+	}
+	return SystemdWarning{"NOTE", "SuccessExitStatus=" + raw + " → normal-exit, which only keeps slinit from " +
+		"restarting the service on these: unlike systemd it does so under restart = yes and on-success as well, " +
+		"and the exit still counts as a failure, for failure-action and for a oneshot's start"}
+}
+
+// lcFinishRuntimeMax: systemd ignores RuntimeMaxSec= on Type=oneshot,
+// whose run is bounded by TimeoutStartSec=; Type= may come after it,
+// so this is decided here. Elsewhere slinit's runtime-max-sec ends the
+// run as a timeout failure, so restart= applies as Restart= does.
+func lcFinishRuntimeMax(cfg *SystemdConfig, st *lcState) []SystemdWarning {
+	if st.runtimeMax == "" {
+		return nil
+	}
+	if cfg.svcType == "scripted" {
+		return []SystemdWarning{{"NOTE", "RuntimeMaxSec=" + st.runtimeMaxRaw + " dropped: systemd ignores it on Type=oneshot " +
+			"(TimeoutStartSec= bounds the run)"}}
+	}
+	cfg.setMapped("runtime-max-sec", st.runtimeMax)
+	return []SystemdWarning{{"NOTE", "RuntimeMaxSec= → runtime-max-sec; when it passes slinit fails the service as timed out " +
+		"and restart= applies, as in systemd"}}
 }
 
 // lcWatchdogGap is why WatchdogSec= has no slinit equivalent.
@@ -209,9 +361,7 @@ func lcRuntimeMax(v string) (string, []SystemdWarning, error) {
 		// earlier assignment.
 		return "0", nil, nil
 	}
-	return s + "s", []SystemdWarning{{"NOTE", "RuntimeMaxSec= → runtime-max-sec; when it passes slinit stops the service " +
-		"as an operator stop would: it is not marked failed and restart= does not start it again, " +
-		"where systemd fails it and Restart= applies"}}, nil
+	return s + "s", nil, nil
 }
 
 // lcUnsigned is systemd's config_parse_unsigned for a decimal value.
@@ -362,24 +512,17 @@ func lcStatusList(key string, withSignals, skipZero bool) func(string) (string, 
 	}
 }
 
-func lcSuccessStatus(v string) (string, []SystemdWarning, error) {
-	out, warns, err := lcStatusList("SuccessExitStatus", true, true)(v)
-	if out != "" {
-		warns = append(warns, SystemdWarning{"NOTE", "SuccessExitStatus=" + v + " → normal-exit, which only keeps slinit from " +
-			"restarting the service on these: unlike systemd it does so under restart = yes and on-success as well, " +
-			"and the exit still counts as a failure, for failure-action and for a oneshot's start"})
-	}
-	return out, warns, err
-}
-
 // lcAction converts systemd's emergency actions to slinit's system
 // actions. slinit's shutdown is always the orderly one, and has no
 // soft-reboot or kexec as an action: those become a full reboot, the
 // action the unit asks for or a heavier one, never a lighter one.
 func lcAction(v string) (string, []SystemdWarning, error) {
 	switch v {
-	case "none", "reboot", "poweroff", "halt", "exit":
+	case "none", "reboot", "poweroff", "halt":
 		return v, nil, nil
+	case "exit":
+		return v, []SystemdWarning{{"NOTE", "action exit: systemd on a host (not in a container) powers off instead; " +
+			"slinit as PID 1 ignores it, and ends only a user or container instance"}}, nil
 	}
 	base, note := "", ""
 	switch v {
@@ -387,6 +530,9 @@ func lcAction(v string) (string, []SystemdWarning, error) {
 		"halt-force", "halt-immediate", "exit-force":
 		base = v[:strings.IndexByte(v, '-')]
 		note = "slinit stops the services in order first"
+		if base == "exit" {
+			note += "; systemd on a host powers off instead, and slinit as PID 1 ignores exit"
+		}
 	case "soft-reboot", "soft-reboot-force", "kexec", "kexec-force":
 		base = "reboot"
 		note = "slinit has no " + strings.TrimSuffix(v, "-force") + " action, so the machine reboots"
@@ -459,18 +605,41 @@ func lcFDStorePreserve(v string) (string, []SystemdWarning, error) {
 		"which keeps the store across a restart; systemd releases it on every stop"}}, nil
 }
 
-// lcBusName maps BusName=, whose specifiers systemd expands.
+// lcBusName records BusName=, whose specifiers systemd expands; Type=
+// may come later, so lcFinishBusName decides.
 func lcBusName(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	v, warns := expandSpecifiers(cfg, key, strings.TrimSpace(trimQuotes(val)))
-	return append(warns, cfg.applyRule("Service", key, v, sdRule{key: "bus-name", conv: func(v string) (string, []SystemdWarning, error) {
-		if v == "" {
-			// No bus name in systemd, which ignores the line; slinit
-			// would read it as clearing an earlier one.
-			return "", nil, fmt.Errorf("an empty bus name is invalid")
-		}
-		return v, []SystemdWarning{{"NOTE", "BusName= → bus-name; where dbus-send is installed and no ready-check-command " +
-			"is set, slinit counts the service started once the name is on the bus, which systemd does for Type=dbus only"}}, nil
-	}})...)
+	err := validateSlinitSetting("bus-name", v)
+	if v == "" {
+		// No bus name in systemd, which ignores the line; slinit
+		// would read it as clearing an earlier one.
+		err = fmt.Errorf("an empty bus name is invalid")
+	}
+	if err != nil {
+		return append(warns, SystemdWarning{"WARN", fmt.Sprintf("[Service] %s=%s ignored: %v", key, val, err)})
+	}
+	st := lcStateOf(cfg)
+	st.busName, st.busNameRaw = v, strings.TrimSpace(trimQuotes(val))
+	return warns
+}
+
+// lcFinishBusName: slinit's bus-name does one thing, it holds the start
+// until the name is on the bus (a dbus-send ready check, whenever
+// dbus-send is installed). That is systemd's Type=dbus. For any other
+// type systemd only records the name, and a gate there would hold every
+// start of the service on a bus that may not be up, so the name is not
+// carried. slinit offers no option to keep the name without the gate.
+func lcFinishBusName(cfg *SystemdConfig, st *lcState) []SystemdWarning {
+	if st.busName == "" {
+		return nil
+	}
+	if cfg.unitType != "dbus" {
+		return []SystemdWarning{{"NOTE", "BusName=" + st.busNameRaw + " not carried: slinit's bus-name holds the start " +
+			"until the name is on the bus, which systemd does for Type=dbus only"}}
+	}
+	cfg.setMapped("bus-name", st.busName)
+	return []SystemdWarning{{"NOTE", "BusName= → bus-name; slinit counts the service started once the name is on the " +
+		"system bus, polling with dbus-send (without dbus-send it does not wait)"}}
 }
 
 // lcRebootArgument maps RebootArgument=, whose specifiers systemd
