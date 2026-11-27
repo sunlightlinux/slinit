@@ -22,6 +22,17 @@ wait_for_service "nnp-off-svc" "STARTED" 10
 
 _pid_on=$(_read_pid nnp-svc)
 _pid_off=$(_read_pid nnp-off-svc)
+# STARTED comes at fork; these attributes are set by slinit-runner just
+# before it execs the command, so wait until the pid is no longer the
+# runner (as 125 does) before reading them.
+_wait_exec() { # pid
+    _d=$(( $(date +%s) + 10 ))
+    while [ "$(date +%s)" -lt "$_d" ] &&
+          [ "$(cat "/proc/$1/comm" 2>/dev/null)" = slinit-runner ]; do
+        sleep 0.2
+    done
+}
+_wait_exec "$_pid_on"
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -z "$_pid_on" ] || [ -z "$_pid_off" ]; then
