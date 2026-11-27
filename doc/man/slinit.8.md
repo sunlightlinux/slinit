@@ -663,6 +663,13 @@ the container runtime. slinit then also exits when nothing is active any
 more (see **EXIT STATUS**), but not while a **slinitctl restart** is
 between its stop and its start (since 4.0.4).
 
+A container that runs as a non-root user (**docker run \--user**,
+Kubernetes *runAsNonRoot*) usually cannot write under */run*: slinit
+then logs that it could not create its control socket, its catch-all
+log and */dev/log*, and runs the services without them. Give the
+control socket a writable path with **-p** (for example
+*/tmp/slinit.socket*) and pass the same path to **slinitctl -p**.
+
 **Task limits.** slinit waits for its children without an OS thread
 per child, so its thread count does not grow with the number of
 services, output loggers or on-demand sockets (since 4.1.0). The Go
