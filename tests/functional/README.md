@@ -507,6 +507,48 @@ assert_contains "$output" "STARTED" "myservice is started"
 test_summary
 ```
 
+### Making sure a new case can fail
+
+A case for a fix proves something only if it fails without the fix.
+For each new case, run it against the release before the fix, with the
+case copied in, and see it fail on the assertion that targets the fix:
+
+```bash
+git worktree add --detach ../base v4.0.3
+cp tests/functional/cases/NN-name.sh ../base/tests/functional/cases/
+(cd ../base/tests/functional && ./run-tests.sh cases/NN-name.sh)   # must FAIL
+./tests/functional/run-tests.sh tests/functional/cases/NN-name.sh  # must PASS
+```
+
+When the bug existed only between releases, revert the fix's code (not
+its tests) in a throwaway worktree instead, and when a case passes
+everywhere, drop it: 313's predecessor, a GOGC=off pidfd-leak case,
+passed with the fixes neutered because in the VM the reaper never wins
+the race. Run new cases under `SLINIT_NO_KVM=1` too, as CI does: a
+state read once right after STARTED can see slinit-runner still
+setting up the process there (281, 114); poll instead.
+
+### Shutdown, crash and PID-1-killing cases
+
+A case cannot watch the VM's own shutdown (the runner is gone), and a
+case that crashes or shuts down PID 1 ends the run. Start a nested
+instance instead and act on it; its shutdown can be timed and its death
+observed:
+
+```bash
+R=/tmp/NN; mkdir -p "$R/svcs"; printf '%s\n' 'type = internal' > "$R/svcs/boot"
+setsid /sbin/slinit --user --socket-path "$R/sock" --services-dir "$R/svcs" \
+    --log-file "$R/log" </dev/null >/dev/null 2>"$R/stderr" &
+NEST=$!
+sl() { timeout 10 slinitctl --socket-path "$R/sock" "$@"; }
+# ... sl poweroff; then poll `kill -0 $NEST` for a bounded time
+```
+
+304, 313, 316, 317, 319 and 320 time a nested poweroff; 308 and 323
+check the nested instance survives; 318 and 322 read its threads.
+Global slinitctl flags (`--no-wait`, `--pin`, `--force`) go before the
+verb: after it they are silently ignored.
+
 ## Service Files for Tests
 
 Tests that need custom services can include a `.d/` directory alongside the
