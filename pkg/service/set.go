@@ -908,6 +908,15 @@ func (ss *ServiceSet) ServiceActive(svc Service) {
 // ServiceInactive decrements the active service count.
 func (ss *ServiceSet) ServiceInactive(svc Service) {
 	ss.activeServices--
+	// A service that stopped on its own (its process died or failed,
+	// a dependency failed under it) was not stopped on request, whatever
+	// an operator asked for earlier: a container that ends now ends as a
+	// failure. MarkOperatorStop used to hold for good, so `slinitctl stop
+	// extra` followed later by a crash of the workload ended the container
+	// with exit 0, a Succeeded pod for a crash.
+	if svc != nil && svc.Record().StopReason() != ReasonNormal {
+		ss.operatorStopped.Store(false)
+	}
 	// Notify event loop that a service became inactive
 	if ss.inactiveCh != nil {
 		select {

@@ -28,7 +28,7 @@ is `busybox:1.37-musl` plus statically built `slinit`, `slinitctl` and
 the working tree on every run unless `KEEP_IMAGE=1`.
 
 `CONTAINER_RUNTIME=podman` selects Podman, and both runtimes are
-exercised: 27/27 under Docker (2026-11-27), 22/23 under rootless Podman 6.0 (before cases 24-27 existed), where
+exercised: 28/28 under Docker (2026-11-27), 22/23 under rootless Podman 6.0 (before cases 24-28 existed), where
 `17-memory-limit` skips itself. Rootless is the more searching of the two,
 because the container's root is a mapped uid with no real CAP_SYS_ADMIN.
 
@@ -75,6 +75,7 @@ against the same PID 1 contract these cases pin.
 | 25-pid1-argv | slinit's own argv as PID 1: `--syslog-socket=` (empty) switches /dev/log off while the default serves it, and `-t NAME` picks the boot service (guards 67bb49c: without it the empty value was ignored) |
 | 26-pids-limit-cgroup-hidden | `--pids-limit 25` with an empty tmpfs over /sys/fs/cgroup, so slinit cannot read the limit: it boots on a small fixed thread reserve and stops cleanly (with only 0f1c71d, before 58d2b19, it died at start, exit 2) |
 | 27-restart-keeps-container | five `slinitctl restart app` with the boot target depending on app: the container stays up and app is STARTED after each (4.0.3 ended the container at the first, `Error: EOF`) |
+| 28-crash-after-stop-is-failure | after `slinitctl stop` of a side service, a crash of the workload ends the container non-zero; stopping the workload itself still exits 0 (4.0.3 exited 0 for the crash) |
 
 `soak.sh` runs the lifecycle over and over against a tree with a
 worker, an orphan generator and a SIGTERM-ignoring service. It rotates

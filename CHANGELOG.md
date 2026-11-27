@@ -26,6 +26,16 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A crash after an unrelated `slinitctl stop` ends a container as a
+  failure again.** A stop request marks the stop as requested, so that
+  a stop which cascades until nothing is left ends the container with
+  exit 0 rather than "boot failure"; the mark never cleared, so
+  stopping a side service and later losing the workload to a crash also
+  ended with exit 0 (a Succeeded pod in Kubernetes). A service that
+  stops on its own (killed, failed, timed out, failed with its
+  dependency) now takes the mark back; stopping the workload itself
+  still exits 0.
+
 - **`slinitctl restart` no longer ends a container.** slinitctl
   restarts a service as two requests, a stop and then a start. In
   between, the service and what it took down with it (a boot target
