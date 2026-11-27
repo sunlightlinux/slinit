@@ -2908,7 +2908,15 @@ func runListBoots(conn net.Conn) error {
 		// No events seen yet — still emit the current boot so the
 		// operator sees SOMETHING (matches `journalctl --list-boots`
 		// behaviour on a freshly-booted system before any logging).
-		fmt.Printf(" 0 %s (no events yet)\n", journal.BootID())
+		// The ID PID 1 persisted: journal.BootID() reads a cache
+		// only PID 1 initialises, and panicked here.
+		id := "unknown"
+		if b, err := os.ReadFile(journal.BootIDPath); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				id = v
+			}
+		}
+		fmt.Printf(" 0 %s (no events yet)\n", id)
 		return nil
 	}
 

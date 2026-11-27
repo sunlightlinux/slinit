@@ -142,6 +142,11 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`slinit-journalctl --list-boots` panicked when there was no event
+  yet** (an empty ring buffer and no journal on disk): it asked the
+  journal for the current boot ID through a cache only PID 1
+  initialises. It now reads the ID slinit persisted.
+
 - **An empty or `uninitialized` `/etc/machine-id` is treated like a
   missing one**, as systemd treats it: such a file (how images ship one
   to be filled on first boot) was reported as malformed, which brought
