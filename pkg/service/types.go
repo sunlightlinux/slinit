@@ -469,6 +469,10 @@ const (
 	LogToBuffer                 // Log to a memory buffer
 	LogToPipe                   // Pipe to another process (service)
 	LogToCommand                // Pipe to an external command (OpenRC OUTPUT_LOGGER)
+	// LogToJournal sends each line to slinit's journal, through the
+	// same rotator pipeline as LogToFile (filters, rate limit, level),
+	// and to logfile as well when one is set.
+	LogToJournal
 )
 
 // ExitStatus holds the exit status of a child process.

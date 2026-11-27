@@ -1217,6 +1217,16 @@ func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
 					"(type = %s would run outside the jail)", desc.Type),
 			}
 		}
+		// log-type = journal is fed by the rotator only process
+		// services run. A new value, so refusing it costs no config
+		// that loads today, where ignoring it would drop the output.
+		if desc.LogType == service.LogToJournal {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: fmt.Sprintf("log-type = journal is only supported for type = process "+
+					"(type = %s would drop its output)", desc.Type),
+			}
+		}
 		// The rest are ignored on other types too, but nothing is
 		// confined by them, so a config that loads today keeps loading
 		// and is told: lock-file's one-instance guarantee does not
@@ -2065,7 +2075,7 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 		svc.SetLogBufMax(desc.LogBufMax)
 	case service.LogToPipe:
 		svc.SetLogType(desc.LogType)
-	case service.LogToFile:
+	case service.LogToFile, service.LogToJournal:
 		svc.SetLogType(desc.LogType)
 		svc.SetLogFileDetails(desc.LogFile, desc.LogFilePerms, desc.LogFileUID, desc.LogFileGID)
 		// stderr-logfile is a process-service knob: scripted and

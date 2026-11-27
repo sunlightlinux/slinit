@@ -3608,6 +3608,8 @@ func applyLogType(desc *ServiceDescription, value string) error {
 		desc.LogType = service.LogToPipe
 	case "command":
 		desc.LogType = service.LogToCommand
+	case "journal":
+		desc.LogType = service.LogToJournal
 	default:
 		return fmt.Errorf("unknown log type: %s", value)
 	}

@@ -1127,12 +1127,19 @@ apply OS-level changes:
     Both files carry the bare service name in the journal, so
     `slinit-journalctl -u` still finds every line from either stream.
 
-**log-type**=*none*|*file*|*buffer*|*pipe*|*command*
+**log-type**=*none*|*file*|*buffer*|*pipe*|*command*|*journal*
 :   *none*: drop output; *file*: append to **logfile**; *buffer*:
     keep an in-memory ring buffer (queryable via **slinitctl
     catlog**); *pipe*: pipe to a service declaring **consumer-of** this one, or
     to **shared-logger** when that is set; *command*: pipe to
-    **output-logger** / **error-logger**.
+    **output-logger** / **error-logger**; *journal* (since 4.1.0): send
+    each line to the journal (**slinit-journalctl -u** *name*), through
+    the same filters as *file* (**log-include**, **log-level-max**,
+    **log-rate-limit-\***, ...), and to **logfile** as well when one is
+    set. *journal* is for **type = process** only; another type refuses
+    to load with it, rather than drop its output. A systemd unit loaded
+    directly whose output has no other destination gets *journal*, as
+    systemd's default **StandardOutput=journal** does.
 
 **log-select**=*+regex* *-regex* ...
 :   s6-log-style selection chain. Each token is `+`*regex* (keep) or

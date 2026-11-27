@@ -26,6 +26,16 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`log-type = journal`**: a process service's output goes to the
+  journal, where `slinit-journalctl -u NAME` shows it, with no logfile.
+  Output reached the journal only through a logfile's rotator, so a
+  service without one wrote it nowhere. The same filters as `file`
+  apply, and a `logfile` set beside it gets the lines too. A systemd
+  unit loaded directly or converted that names no other destination now
+  gets it, as systemd's default `StandardOutput=journal` does
+  (*Compat:* its output used to be dropped; `type = scripted` and
+  `bgprocess` units still have no journal output).
+
 - **`rlimit-nproc`, `-cpu`, `-fsize`, `-stack`, `-rss`, `-locks`,
   `-sigpending`, `-msgqueue`, `-nice`, `-rtprio` and `-rttime`**: the
   resource limits slinit could not set, beside `rlimit-nofile`, `-core`,

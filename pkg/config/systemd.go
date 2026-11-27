@@ -499,7 +499,25 @@ func finishSystemdUnit(cfg *SystemdConfig) []SystemdWarning {
 	}
 	warns = append(warns, applyStopSignal(cfg)...)
 	warns = append(warns, dropAliasRefs(cfg)...)
+	defaultToJournal(cfg)
 	return warns
+}
+
+// defaultToJournal sends a process service's output to the journal when
+// the unit names no other destination: systemd's default is
+// StandardOutput=journal, and without a log type slinit drops the output.
+// Only for type = process, the one type log-type = journal supports.
+func defaultToJournal(cfg *SystemdConfig) {
+	if cfg.svcType != "process" {
+		return
+	}
+	for _, kv := range cfg.mapped {
+		switch kv.key {
+		case "logfile", "log-type", "close-stdout", "tty-path", "output-logger", "shared-logger":
+			return
+		}
+	}
+	cfg.mapped = append(cfg.mapped, kvPair{"log-type", "journal"})
 }
 
 // applyStopSignal turns ExecStop=kill -s SIG $MAINPID into term-signal

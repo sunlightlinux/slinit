@@ -2857,10 +2857,11 @@ func (s *ProcessService) startProcess() error {
 			return err
 		}
 		outputPipe = s.outputPipeW
-	} else if s.logType == LogToFile && s.logFile != "" {
+	} else if (s.logType == LogToFile && s.logFile != "") || s.logType == LogToJournal {
 		// Use LogRotator if rotation, filtering, processing, rate
-		// limit, or severity filter is configured
-		if s.logMaxSize > 0 || s.logMaxFiles > 0 || s.logRotateTime > 0 ||
+		// limit, or severity filter is configured, and always for the
+		// journal, which only the rotator feeds.
+		if s.logType == LogToJournal || s.logMaxSize > 0 || s.logMaxFiles > 0 || s.logRotateTime > 0 ||
 			len(s.logProcessor) > 0 || len(s.logIncludes) > 0 || len(s.logExcludes) > 0 ||
 			len(s.logSelect) > 0 ||
 			(s.logRateLimitInterval > 0 && s.logRateLimitBurst > 0) ||
@@ -3000,7 +3001,7 @@ func (s *ProcessService) startProcess() error {
 	// Optional separate stderr file: stderr gets its own rotator, so
 	// the two streams land in two files instead of interleaving in one.
 	var errorPipe *os.File
-	if s.logType == LogToFile && s.stderrLogFile != "" {
+	if (s.logType == LogToFile || s.logType == LogToJournal) && s.stderrLogFile != "" {
 		if s.stderrRotator != nil {
 			s.stderrRotator.Close()
 		}
@@ -3060,7 +3061,7 @@ func (s *ProcessService) startProcess() error {
 		if err != nil {
 			if outputPipe != nil && s.logType == LogToBuffer {
 				s.logBuf.CloseWriteEnd()
-			} else if outputPipe != nil && s.logType == LogToFile {
+			} else if outputPipe != nil && (s.logType == LogToFile || s.logType == LogToJournal) {
 				outputPipe.Close()
 			} else if s.syslogForwarderOnly != nil && outputPipe != nil {
 				outputPipe.Close()
@@ -3166,7 +3167,7 @@ func (s *ProcessService) startProcess() error {
 		s.exitStatus = noteStartExecFailure(s.Record(), err)
 		if outputPipe != nil && s.logType == LogToBuffer {
 			s.logBuf.CloseWriteEnd()
-		} else if outputPipe != nil && s.logType == LogToFile {
+		} else if outputPipe != nil && (s.logType == LogToFile || s.logType == LogToJournal) {
 			if s.logRotator != nil {
 				s.logRotator.Close()
 				s.logRotator = nil
@@ -3218,7 +3219,7 @@ func (s *ProcessService) startProcess() error {
 	if outputPipe != nil && s.logType == LogToBuffer {
 		s.logBuf.CloseWriteEnd()
 		s.logBuf.StartReader()
-	} else if s.logType == LogToFile {
+	} else if s.logType == LogToFile || s.logType == LogToJournal {
 		// outputPipe is nil with stderr-logfile and no logfile; stderr
 		// still has its rotator to start.
 		if outputPipe != nil {

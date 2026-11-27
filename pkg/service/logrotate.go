@@ -704,8 +704,10 @@ func (lr *LogRotator) processLine(line []byte) {
 		return
 	}
 
-	// Open file if needed
-	if lr.file == nil {
+	// Open file if needed. A rotator with no path is journal-only
+	// (log-type = journal): no file to open, and the write below is
+	// skipped once the line is forwarded and queued for the journal.
+	if lr.file == nil && lr.filePath != "" {
 		if err := lr.openFileLocked(); err != nil {
 			return
 		}
@@ -767,6 +769,9 @@ func (lr *LogRotator) processLine(line []byte) {
 		emitLine, emitLevel, emitFields = true, lineLevel, lr.journalFields
 	}
 
+	if lr.filePath == "" {
+		return
+	}
 	if lr.batching && lr.file != nil && lr.fileRegular {
 		lr.pend = append(lr.pend, out...)
 		lr.pendEnds = append(lr.pendEnds, len(lr.pend))

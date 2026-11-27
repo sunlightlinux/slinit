@@ -82,3 +82,41 @@ func TestSystemdLimitsMapped(t *testing.T) {
 		}
 	}
 }
+
+func TestLogTypeJournalLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeServiceFile(t, dir, "p", "type = process\ncommand = /bin/true\nlog-type = journal\n")
+	writeServiceFile(t, dir, "s", "type = scripted\ncommand = /bin/true\nlog-type = journal\n")
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	dl := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(dl)
+	if _, err := dl.LoadService("p"); err != nil {
+		t.Fatalf("log-type = journal on a process service: %v", err)
+	}
+	if _, err := dl.LoadService("s"); err == nil || !strings.Contains(err.Error(), "only supported for type = process") {
+		t.Fatalf("log-type = journal on a scripted service: %v", err)
+	}
+}
+
+// A converted simple service sends its output to the journal, as
+// systemd's default StandardOutput=journal does; one that names another
+// destination, or is not a process service, gets no log-type.
+func TestSystemdOutputDefaultsToJournal(t *testing.T) {
+	for _, c := range []struct {
+		body string
+		want bool
+	}{
+		{"", true},
+		{"StandardOutput=journal\n", true},
+		{"StandardOutput=append:/var/log/x.log\n", false},
+		{"StandardOutput=null\n", false},
+		{"Type=oneshot\n", false},
+		{"Type=forking\n", false},
+	} {
+		lines, _ := convertService(t, c.body)
+		got := strings.Contains(strings.Join(lines, "\n"), "log-type = journal")
+		if got != c.want {
+			t.Errorf("%q: log-type = journal emitted %v, want %v", c.body, got, c.want)
+		}
+	}
+}
