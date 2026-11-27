@@ -692,17 +692,20 @@ func (ss *ServiceSet) StartOnceService(svc Service) bool {
 
 // StopAllServices stops all services (for shutdown).
 func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
-	// Snapshot services under read lock to avoid racing with concurrent
-	// AddService/RemoveService calls from control socket goroutines.
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	// The snapshot is taken under queueMu (then ss.mu, the order
+	// releaseStopsLastLocked uses), in the same hold that marks the
+	// shutdown. Taken before it, a service loaded and started between
+	// the two (StartServiceUnlessShuttingDown saw no shutdown yet) was
+	// missing from the list and never stopped: the shutdown waited out
+	// its timeout for it.
 	ss.mu.RLock()
 	snapshot := make([]Service, 0, len(ss.records))
 	for _, svc := range ss.records {
 		snapshot = append(snapshot, svc)
 	}
 	ss.mu.RUnlock()
-
-	ss.queueMu.Lock()
-	defer ss.queueMu.Unlock()
 	// The type first: whoever sees the shutdown sees its type.
 	ss.shutdownType.Store(uint32(shutdownType))
 	ss.restartEnabled.Store(false)

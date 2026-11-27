@@ -142,6 +142,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A service loaded and started just as a shutdown began was never
+  stopped** (unreleased): the shutdown listed the services before it
+  took the lock that marks the shutdown, so a service loaded in between
+  and started (the start saw no shutdown yet) was missing from the list,
+  and the shutdown waited out its timeout. The list is now taken in the
+  same hold of the lock.
+
 - **`slinit-logind` held an OS thread per session, and kept watching
   sessions that had ended.** Each session's leader was watched by a
   goroutine in poll(2) on its pidfd, which holds an OS thread: 300 SSH
