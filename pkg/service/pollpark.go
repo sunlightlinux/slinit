@@ -24,8 +24,11 @@ import (
 // Only for fds whose readiness a poll does not consume. A PSI trigger
 // reports each event to one poll only, and to answer whether an epoll
 // fd is ready the kernel polls its members (fs/eventpoll.c), so the
-// nested check could take the event before epoll_wait sees it. Not
-// measured; psiwatch keeps poll(2).
+// nested check takes the event before epoll_wait sees it. Measured on
+// 7.3 (CPU trigger, 60s of pressure bursts): poll(2) saw 21 events, this
+// route 0 of them, and the trigger fd in the netpoller directly 0 as
+// well (it never asks for EPOLLPRI, yet its poll still clears the
+// event). psiwatch keeps poll(2).
 //
 // Where the epoll route is not available it falls back to poll(2).
 // Revents are filled in as poll(2) would; EINTR is retried.
