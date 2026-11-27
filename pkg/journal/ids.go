@@ -84,21 +84,39 @@ func InitIDs(hostname string) error {
 		return nil
 	}
 
+	// A failure here is reported, never left as an uninitialised cache:
+	// every event slinit emits stamps these IDs, and the getters panic
+	// until initDone is set. A malformed /etc/machine-id used to return
+	// early, and the first service event then panicked PID 1 (a kernel
+	// panic at boot). An ID that cannot be resolved is replaced by a
+	// transient one, as a missing machine-id already is.
+	var errs []error
 	boot, err := resolveBootID()
 	if err != nil {
-		return fmt.Errorf("journal: resolve boot ID: %w", err)
+		errs = append(errs, fmt.Errorf("journal: resolve boot ID: %w", err))
+		boot = fallbackID()
 	}
 	idCache.boot = boot
 
 	machine, err := resolveMachineID()
 	if err != nil {
-		return fmt.Errorf("journal: resolve machine ID: %w", err)
+		errs = append(errs, fmt.Errorf("journal: resolve machine ID: %w", err))
+		machine = fallbackID()
 	}
 	idCache.machine = machine
 
 	idCache.hostname = hostname
 	idCache.initDone = true
-	return nil
+	return errors.Join(errs...)
+}
+
+// fallbackID is a transient ID for one that could not be resolved, or
+// all zeroes (systemd's SD_ID128_NULL) if not even that can be made.
+func fallbackID() string {
+	if id, err := newRandomID(); err == nil {
+		return id
+	}
+	return strings.Repeat("0", idHexLen)
 }
 
 // BootID returns the current-boot 128-bit hex identifier. Panics if

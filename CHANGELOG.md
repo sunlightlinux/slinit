@@ -149,6 +149,13 @@ verified with `git tag -v`.
   start process ran on, untracked. Only dependents still waiting for
   the service are failed now.
 
+- **A malformed `/etc/machine-id` was a kernel panic at boot.** The
+  journal's ID set-up returned on the bad file before marking its cache
+  ready, and the first service event then called a getter that panics
+  on an unready cache: PID 1 exited, "Attempted to kill init!". The
+  bad file is now treated like a missing one (a transient ID for this
+  boot, with the warning slinit already printed), and any ID that
+  cannot be resolved is replaced rather than left unset.
 - **A rescue or emergency boot gave a bare shell prompt with no word
   of why.** The line saying the shell is up, and that leaving it
   reboots, was a notice, and the boot console shows warnings and
