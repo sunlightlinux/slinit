@@ -4,7 +4,7 @@ Go native fuzz tests (`testing.F`) for slinit's input parsing surfaces.
 
 ## This directory is not all of them
 
-29 targets live here. Another 19 sit beside the code they exercise,
+29 targets live here. Another 20 sit beside the code they exercise,
 because a fuzz target for an unexported parser has to live in its own
 package:
 
@@ -21,7 +21,7 @@ package:
 | `cmd/slinit-immortal-convert` | `FuzzParseImmortalYAML` |
 | `pkg/timedate` | `FuzzReadZoneTab`, `FuzzValidateZone` |
 | `pkg/hostname` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease` |
-| `pkg/journal` | `FuzzParseSyslog` |
+| `pkg/journal` | `FuzzParseSyslog`, `FuzzAppendJSONMatchesMarshal` |
 | `pkg/process` | `FuzzMatchFDName` |
 | `pkg/control` | `FuzzControlServer` |
 
