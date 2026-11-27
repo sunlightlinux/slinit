@@ -142,6 +142,12 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`TestDispatchEerrorReturnsOneAndUsesStderr` (cmd/slinit-einfo) failed
+  under `go test -json`** (unreleased, test only): in test2json mode the
+  testing package sets `os.Stderr = os.Stdout`, so the test's capture,
+  which matched the applet table against `os.Stderr`, left the stderr
+  applets on the real fd 2. It now matches on the descriptor.
+
 - **The perf job's demo build 404ed on a removed Alpine package**
   (unreleased, CI only): Alpine keeps only the newest build of a package,
   and `nginx-1.28.3-r7` and `zstd-libs-1.5.7-r2` pinned in `demo/build.sh`
