@@ -20,8 +20,9 @@ import (
 //
 // So the reserve takes at most a quarter of the tasks the pids cgroup
 // still allows (cgroup v2, or the v1 pids controller of a v1 or hybrid
-// host) and a quarter of what RLIMIT_NPROC leaves the uid when that
-// binds (an eighth of the limit if the uid's tasks cannot be counted).
+// host) and, when RLIMIT_NPROC binds, an eighth of it or a quarter of
+// what it leaves the uid, whichever is less (the uid's tasks this /proc
+// shows can be fewer than the kernel counts).
 // When it is cut
 // that far, GOMAXPROCS is lowered with it, to half the reserve: the
 // runtime wants a thread per P running at once (GC workers, a burst of
@@ -74,11 +75,17 @@ func capThreadReserve(want, procs int, known bool, pidsMax, pidsCur int64, pidsO
 		// RLIMIT_NPROC counts every task of the uid, not this process's:
 		// a quarter of what the uid has left, as for the pids cgroup, or
 		// an eighth of the limit when the tasks could not be counted.
+		// The count can come out low (tasks of the uid in other pid
+		// namespaces, or hidden by hidepid, still count against the
+		// limit), so it can only lower the eighth, never raise it.
 		c := nproc / 8
 		if usedOK {
-			c = 0
+			left := uint64(0)
 			if used < nproc {
-				c = (nproc - used) / 4
+				left = (nproc - used) / 4
+			}
+			if left < c {
+				c = left
 			}
 		}
 		if c < uint64(reserve) {
@@ -258,4 +265,22 @@ func statusUIDThreads(status string) (uid, threads int, ok bool) {
 		}
 	}
 	return uid, threads, haveU && haveT
+}
+
+// looksLikeContainer reports the marks container runtimes leave for the
+// processes they start: the container environment variable (systemd's
+// convention, set by podman, LXC, systemd-nspawn) and Docker's and
+// podman's marker files. PID 1 of a container started without -o is
+// then not taken for PID 1 of a machine, whose unreadable task limits
+// mean none.
+func looksLikeContainer() bool {
+	if os.Getenv("container") != "" {
+		return true
+	}
+	for _, f := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(f); err == nil {
+			return true
+		}
+	}
+	return false
 }

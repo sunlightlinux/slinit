@@ -316,13 +316,6 @@ func main() {
 
 	bootWords := parseArgs(flag.CommandLine, os.Args[1:], os.Getpid() == 1)
 
-	// Make the threads the runtime will want later while the kernel still
-	// gives them out (see threadreserve.go), as many as the task limits
-	// leave room for (threadbudget.go). After the flags, which say whether
-	// this is a container; before anything that starts goroutines in
-	// numbers.
-	applyThreadReserve(os.Getpid() == 1 && !containerMode)
-
 	if showVersion {
 		detected := platform.Detect()
 		if detected == platform.None {
@@ -332,6 +325,13 @@ func main() {
 		}
 		os.Exit(0)
 	}
+
+	// Make the threads the runtime will want later while the kernel still
+	// gives them out (see threadreserve.go), as many as the task limits
+	// leave room for (threadbudget.go). After the flags, which say whether
+	// this is a container; before anything that starts goroutines in
+	// numbers.
+	applyThreadReserve(os.Getpid() == 1 && !containerMode && !looksLikeContainer())
 
 	// Container-manager entrypoint synchronization (s6-linux-init -W).
 	// Runs BEFORE any other setup: the container manager may still be
