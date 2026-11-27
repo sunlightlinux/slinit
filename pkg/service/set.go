@@ -934,6 +934,12 @@ func (ss *ServiceSet) EndClientRestart() {
 	if ss.clientRestarts.Add(-1) < 0 {
 		ss.clientRestarts.Store(0)
 	}
+	ss.PokeInactive()
+}
+
+// PokeInactive makes the event loop look again at whether anything is
+// active, as it does after a service stopped.
+func (ss *ServiceSet) PokeInactive() {
 	if ss.inactiveCh != nil {
 		select {
 		case ss.inactiveCh <- struct{}{}:

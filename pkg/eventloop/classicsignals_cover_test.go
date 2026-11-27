@@ -3,6 +3,7 @@ package eventloop
 import (
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -111,5 +112,31 @@ func TestCheckInactiveWaitsForClientRestart(t *testing.T) {
 	ss.EndClientRestart()
 	if !el.checkInactive() {
 		t.Fatal("container PID 1 kept running with nothing active once the restart was over")
+	}
+}
+
+// The wait for a restart's start is counted from the moment nothing is
+// active, not from the stop request, and is bounded: a client that
+// stopped something for a restart and never sends the start does not
+// keep a finished container running for good.
+func TestCheckInactiveRestartWaitIsBounded(t *testing.T) {
+	saved := clientRestartWait
+	clientRestartWait = 50 * time.Millisecond
+	defer func() { clientRestartWait = saved }()
+
+	logger := logging.New(logging.LevelError)
+	ss := service.NewServiceSet(logger)
+	el := New(ss, logger)
+	el.SetPID1Mode(true)
+	el.SetContainerMode(true)
+
+	ss.BeginClientRestart()
+	defer ss.EndClientRestart()
+	if el.checkInactive() {
+		t.Fatal("exited at once with a client restart pending")
+	}
+	time.Sleep(80 * time.Millisecond)
+	if !el.checkInactive() {
+		t.Fatal("still waiting for a restart's start long after the bound")
 	}
 }

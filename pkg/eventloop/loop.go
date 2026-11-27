@@ -29,6 +29,11 @@ type EventLoop struct {
 	logger   *logging.Logger
 	sigCh    chan os.Signal
 
+	// restartWaitUntil is when nothing being active stops waiting for a
+	// client restart's start (checkInactive); zero while not waiting.
+	// Used only on the loop's goroutine.
+	restartWaitUntil time.Time
+
 	// Shutdown state, protected by mu for concurrent access from
 	// signal handler goroutine and control socket goroutines.
 	mu                sync.Mutex
@@ -292,10 +297,15 @@ func (el *EventLoop) Run(ctx context.Context) error {
 	}
 }
 
+// clientRestartWait is how long nothing being active may wait for the
+// start half of a client's restart (see checkInactive).
+var clientRestartWait = 60 * time.Second
+
 // checkInactive evaluates whether the event loop should exit after a service
 // became inactive. Returns true if the loop should terminate.
 func (el *EventLoop) checkInactive() bool {
 	if el.services.CountActiveServices() != 0 {
+		el.restartWaitUntil = time.Time{}
 		return false
 	}
 
@@ -314,9 +324,21 @@ func (el *EventLoop) checkInactive() bool {
 	// A client between the stop and the start of a restart: what it
 	// stopped is about to be started again, so nothing being active now
 	// is not the end (a container's slinit used to exit here). The
-	// start, or the client going away, brings the check back.
+	// start, or the client going away, brings the check back. The wait
+	// is counted from here, when nothing is active, not from the stop
+	// request (a stop can take longer than any fixed bound), and is
+	// bounded, so a client that never sends the start does not keep a
+	// finished container running.
 	if el.services.ClientRestartPending() {
-		return false
+		now := time.Now()
+		if el.restartWaitUntil.IsZero() {
+			el.restartWaitUntil = now.Add(clientRestartWait)
+			time.AfterFunc(clientRestartWait, el.services.PokeInactive)
+		}
+		if now.Before(el.restartWaitUntil) {
+			return false
+		}
+		el.logger.Notice("A client restart left nothing active for %v without its start; exiting", clientRestartWait)
 	}
 
 	// Rescue/emergency: an empty service set is the whole point of the

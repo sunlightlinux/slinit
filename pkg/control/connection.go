@@ -84,11 +84,11 @@ type Connection struct {
 	// restartHeld is set while this client is between the stop and the
 	// start of a restart (a stop with StopFlagRestarting); see
 	// holdRestart. One per connection: any start ends it, as does the
-	// connection closing or restartHoldMax passing.
+	// connection closing. How long it may keep a container with nothing
+	// active from exiting is the event loop's to bound (checkInactive).
 	restartMu     sync.Mutex
 	restartHeld   bool
 	restartClosed bool
-	restartTimer  *time.Timer
 	// closing is set, under handlesMu, when close() starts. After it,
 	// nothing subscribes this connection to a service again: close()
 	// has taken its snapshot of the services to unsubscribe from, so a
@@ -2687,12 +2687,6 @@ func (c *Connection) handleListActions(payload []byte) error {
 	return c.writePacket(RplyActionList, []byte(result))
 }
 
-// restartHoldMax bounds how long one client may hold a restart open:
-// long enough for any stop to finish (a stop-timeout, then the kill),
-// short enough that a client stopped mid-restart (^Z) or a hand-written
-// one does not keep a finished container running for good.
-const restartHoldMax = 5 * time.Minute
-
 // holdRestart records that this client began a restart (see
 // ServiceSet.BeginClientRestart). A connection holds at most one.
 func (c *Connection) holdRestart() {
@@ -2703,7 +2697,6 @@ func (c *Connection) holdRestart() {
 	}
 	c.restartHeld = true
 	c.server.services.BeginClientRestart()
-	c.restartTimer = time.AfterFunc(restartHoldMax, c.releaseRestart)
 }
 
 // releaseRestart ends this client's restart hold, if it has one.
@@ -2711,10 +2704,6 @@ func (c *Connection) releaseRestart() {
 	c.restartMu.Lock()
 	held := c.restartHeld
 	c.restartHeld = false
-	if c.restartTimer != nil {
-		c.restartTimer.Stop()
-		c.restartTimer = nil
-	}
 	c.restartMu.Unlock()
 	if held {
 		c.server.services.EndClientRestart()
