@@ -672,7 +672,7 @@ control socket a writable path with **-p** (for example
 
 **Task limits.** slinit waits for its children without an OS thread
 per child, so its thread count does not grow with the number of
-services, output loggers or on-demand sockets (since 4.1.0). The Go
+services, output loggers or on-demand sockets (since 4.0.4). The Go
 runtime ends the whole process when the kernel refuses it a thread — a
 kernel panic for PID 1 — so slinit creates the threads it will need
 later at start-up and keeps them idle: GOMAXPROCS + 16, but no more

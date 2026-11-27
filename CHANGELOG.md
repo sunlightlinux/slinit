@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [4.0.5] — 2026-11-27
+
+**A fix release on the 4.0 long-term-support line, led by a 4.0.4
+regression:** 4.0.4 reserves OS threads at start-up, and in a container
+with a small pids limit it asked for more than the limit allowed and
+exited at once; the reserve is now sized to the task limits. The other
+fixes: a restarted slinit-journald no longer writes PID 1's backlog into
+the journal a second time, `restart-limit-count = N` allows N restarts
+again instead of about half, a service coming back to a dependency it no
+longer holds starts it again, a dependent no longer waits for good on a
+service that used up its restarts, and in container mode neither a crash
+after an unrelated `slinitctl stop` nor a `slinitctl restart` ends the
+container. Nothing documented changes, so this is an ordinary patch
+release. The control protocol stays at version 7.
+
 ### Fixed
 
 - **Restarting slinit-journald no longer writes PID 1's backlog
