@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (296 cases)
+# Run all tests (301 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -427,6 +427,11 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 295 | ro-root | read-only root at boot: /var writers (scripted write, `state-directory`, `logfile`) fail on their own and promptly, a /run writer works, boot completes |
 | 296 | hostname-machineid-garbage | garbage `/etc/machine-id` (was a kernel panic) and `/etc/hostname`: boot completes, events are emitted, the hostname is sane |
 | 297 | confd-overlay-bad | a `/etc/slinit.conf.d` overlay with a syntax error, or a directory in its place, fails only its service, naming the overlay file and line |
+| 298 | kcmdline-t-after-word | `splash -t kcmd-target`: the -t after a stray kernel word is honoured, boot is not started in its place |
+| 299 | kcmdline-dash-s-after-word | `splash -s`: boots normally to boot; `splash` is not a service (a -s that disabled the kernel-word filter sent this to the rescue menu) |
+| 300 | kcmdline-dash-s-around-word | `-s auto -s`: boots normally to boot; `auto` is not a service |
+| 301 | kcmdline-m-after-word | `splash -m kcmd-target`: as dinit, only the words after -m are services |
+| 302 | kcmdline-oddities | unknown options, a bad `-F` value, `-s`, stray words, a KEY=VALUE word and a ~1.6 KB line: `-t no-such-svc -t boot` after them are both honoured, boot starts, the KEY=VALUE reaches services |
 
 ## How It Works
 

@@ -319,7 +319,7 @@ func main() {
 	flag.DurationVar(&emergencyTimeout, "emergency-timeout", 0,
 		"maximum time to wait for services to stop during shutdown before force-exit (default 90s; workloads with heavy docker/systemd-style teardown may need 3-5m)")
 
-	parseArgs(flag.CommandLine, os.Args[1:], os.Getpid() == 1)
+	bootWords := parseArgs(flag.CommandLine, os.Args[1:], os.Getpid() == 1)
 
 	if showVersion {
 		detected := platform.Detect()
@@ -456,21 +456,14 @@ func main() {
 
 	// Positional args are treated as service names.
 	// When running as PID 1 on Linux, the kernel passes unrecognized cmdline
-	// args to init, so we only accept known service names ("single") and
-	// ignore everything else — matching dinit behavior.
-	// However, if -m (--system-mgr) or -o (--container) was explicitly given,
-	// the user controls the command line, so accept all args (dinit's
-	// process_sys_args logic: filtering only when PID1+root without -m/-o).
-	processSysArgs := isPID1 && !systemMode && !containerMode
-	if processSysArgs {
-		for _, arg := range flag.Args() {
-			if arg == "single" {
-				bootServices = append(bootServices, arg)
-			}
-			// Other kernel parameters (e.g. "nopti", "auto") are ignored
-		}
+	// args to init, so parseArgs has already kept only the words dinit
+	// would start: "single", and every word after an -m (--system-mgr) or
+	// -o (--container), which say the user wrote the line. Nothing on the
+	// line may stop PID 1, so those words are not checked again here.
+	if isPID1 {
+		bootServices = append(bootServices, bootWords...)
 	} else {
-		for _, arg := range flag.Args() {
+		for _, arg := range bootWords {
 			if len(arg) > 0 && arg[0] == '-' {
 				fmt.Fprintf(os.Stderr, "slinit: unrecognized option: %s\n", arg)
 				exitFlushed(cal, 1)

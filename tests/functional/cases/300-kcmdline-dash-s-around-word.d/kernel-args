@@ -1,0 +1,2 @@
+# LILO's `auto` with a -s before and after it.
+-s auto -s

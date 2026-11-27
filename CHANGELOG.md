@@ -142,6 +142,26 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A stray word on the kernel command line hid every slinit option
+  after it**, `-t` included, which slinit(8) says is always honoured:
+  as PID 1, option parsing stopped at the first word that was not an
+  option, and the kernel passes init every word it does not know, so
+  `splash -t rescue` booted the default `boot`. The PID-1 command line
+  is now read the way dinit reads it: options take effect wherever
+  they are; a naked word is a service only if it is `single`, or if it
+  comes after `-m`/`-o`; and `-s`, which shares system mode with `-m`
+  in slinit, no longer makes stray words services. Before, `-s splash`
+  started a service called `splash`, failed to load it and went to the
+  rescue menu with an auto-reboot, which a bootloader passing
+  sysvinit's single-user `-s` turned into a reboot loop. Unknown or
+  valueless options, values that do not parse and empty words are
+  still reported and ignored (dinit refuses them; PID 1 must boot), and
+  no longer end the scan; `-F abc` no longer leaves ready-fd at 0.
+  *Compat:* options after a stray word, ignored until now, take effect
+  (`splash -m foo` now starts `foo`); `-s` before a word no longer
+  makes the word a service; a `--` that reaches slinit is an ignored
+  unknown option, no longer the end of options.
+
 - **`slinit-journalctl --list-boots` panicked when there was no event
   yet** (an empty ring buffer and no journal on disk): it asked the
   journal for the current boot ID through a cache only PID 1
