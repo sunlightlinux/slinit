@@ -314,6 +314,14 @@ func ConvertSystemdUnitIn(path string, unitDirs []string) (*SystemdConfig, []Sys
 
 // --- Parser ---
 
+// sdKeepQuotes are the directives whose value is a list of quoted words,
+// read by extractSystemdWord: their quotes group words, as an Exec*=
+// line's do, and trimming the quotes around the whole value would split
+// LogExtraFields="NOTE=two words" into two fields.
+var sdKeepQuotes = map[string]bool{
+	"LogExtraFields": true,
+}
+
 var (
 	sectionRe = regexp.MustCompile(`^\[([A-Za-z]+)\]\s*$`)
 	kvRe      = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]*)\s*=\s*(.*)$`)
@@ -421,7 +429,7 @@ func parseSystemdFile(cfg *SystemdConfig, content string, preStartCount, postSta
 		// isn't standard here but be tolerant). Not on an Exec*= line:
 		// there quotes group words (parseExecLine), and
 		// "/opt/my app/run" --name "a b" would lose the first and last.
-		if !strings.HasPrefix(key, "Exec") {
+		if !strings.HasPrefix(key, "Exec") && !sdKeepQuotes[key] {
 			val = trimQuotes(val)
 		}
 		if section != "Install" && specifierKeys[key] {

@@ -43,7 +43,8 @@ verified with `git tag -v`.
   lines, as systemd's `SyslogIdentifier=`, `SyslogLevel=`,
   `SyslogLevelPrefix=` and `LogExtraFields=`. A line's `<N>` prefix is
   now left out of its text in the journal by default, as systemd leaves
-  it out (*Compat:* the log file keeps the line as written).
+  it out (*Compat:* the log file keeps the line as written). A systemd
+  unit's four directives map onto them.
 
 - **`reboot-argument` reaches the kernel.** A `failure-action` or
   `success-action` that reboots now passes the service's

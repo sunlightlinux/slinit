@@ -501,8 +501,7 @@ func TestSystemdExecReload(t *testing.T) {
 func TestSystemdExecGaps(t *testing.T) {
 	for key, val := range map[string]string{
 		"LoadCredentialEncrypted": "k:/etc/k.cred", "SetCredentialEncrypted": "k:AAAA",
-		"LogExtraFields": "A=b", "LogNamespace": "ns", "SyslogIdentifier": "sltag",
-		"SyslogFacility": "daemon", "SyslogLevel": "notice", "SyslogLevelPrefix": "yes",
+		"LogNamespace": "ns", "SyslogFacility": "daemon",
 	} {
 		out, w, _ := exConvert(t, key+"="+val+"\n")
 		if !exHas(w, "NOTE", key+"="+val, "no slinit equivalent") {

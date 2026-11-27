@@ -140,3 +140,27 @@ func TestSyslogMetaParsed(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemdSyslogMapped(t *testing.T) {
+	for _, c := range []struct{ unit, want string }{
+		{"SyslogIdentifier=webd", "syslog-identifier = webd"},
+		{"SyslogIdentifier=%N-x", "syslog-identifier = probe-x"},
+		{"SyslogLevel=warning", "syslog-level = warning"},
+		{"SyslogLevelPrefix=off", "syslog-level-prefix = no"},
+		{"LogExtraFields=TEAM=web TIER=1", "log-extra-fields = TEAM=web TIER=1"},
+		{"LogExtraFields=TEAM=web\nLogExtraFields=ZONE=a", "log-extra-fields = TEAM=web ZONE=a"},
+	} {
+		lines, _ := convertService(t, c.unit+"\n")
+		if out := strings.Join(lines, "\n"); !strings.Contains(out, c.want+"\n") {
+			t.Errorf("%s: no %q in\n%s", c.unit, c.want, out)
+		}
+	}
+	for _, c := range []string{"SyslogLevel=loud", "LogExtraFields=_PID=1", "LogExtraFields=\"NOTE=two words\"",
+		"SyslogIdentifier=x\nSyslogIdentifier=", "LogExtraFields=A=1\nLogExtraFields="} {
+		lines, _ := convertService(t, c+"\n")
+		out := strings.Join(lines, "\n")
+		if strings.Contains(out, "syslog-") || strings.Contains(out, "log-extra-fields") {
+			t.Errorf("%q: emitted\n%s", c, out)
+		}
+	}
+}

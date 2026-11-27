@@ -110,16 +110,10 @@ func init() {
 		"decrypt it with systemd-creds and use load-credential"}
 	sdServiceNoEquivalent["SetCredentialEncrypted"] = sdGap{why: "slinit cannot decrypt a credential sealed with the TPM2 or host key; " +
 		"decrypt it with systemd-creds and use set-credential"}
-	sdServiceNoEquivalent["LogExtraFields"] = sdGap{why: "slinit adds no fields of the unit's to the service's journal records"}
 	sdServiceNoEquivalent["LogNamespace"] = sdGap{why: "slinit has no per-service journal namespace (slinit-journald --namespace serves a whole daemon); " +
 		"the service's lines go to the default journal"}
-	sdServiceNoEquivalent["SyslogIdentifier"] = sdGap{why: "slinit tags the service's journal lines with the service name; " +
-		"log-forward-tag sets a tag for UDP forwarding only"}
 	sdServiceNoEquivalent["SyslogFacility"] = sdGap{why: "slinit's journal records carry no facility; " +
 		"log-forward-facility sets one for UDP forwarding only"}
-	sdServiceNoEquivalent["SyslogLevel"] = sdGap{why: "slinit gives a line with no <N> prefix the level info, " +
-		"or the one a leading ERROR:/WARN:-style keyword names"}
-	sdServiceNoEquivalent["SyslogLevelPrefix"] = sdGap{why: "slinit always reads a <N> prefix for the line's level, and leaves it in the line"}
 	// The bespoke case in applyServiceKey still answers PassEnvironment=
 	// with a vaguer note; this entry is reached once that case is gone.
 	sdServiceNoEquivalent["PassEnvironment"] = sdGap{why: "slinit's pass-environment also filters the env-file and slinitctl setenv " +
