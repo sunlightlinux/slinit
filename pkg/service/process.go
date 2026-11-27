@@ -207,10 +207,8 @@ type ProcessService struct {
 	currentRestartDelay time.Duration // current effective delay, advances on each restart
 	// restart-steps (systemd's RestartSteps=): the delay grows
 	// geometrically from restartDelay to restartDelayCap over this many
-	// restarts (expBackoffDelay); backoffRestarts counts them, and starts
-	// over with the linear backoff when a stable period ends.
-	restartSteps    int
-	backoffRestarts int
+	// restarts (expBackoffDelay), counted by ServiceRecord.backoffRestarts.
+	restartSteps int
 
 	// systemd-style RestartRandomizedDelaySec: jitter drawn from
 	// [0, restartRandomizedDelay) added to the effective restart delay
@@ -2641,7 +2639,6 @@ func (s *ProcessService) CheckRestart() bool {
 			s.restartIntervalTime = now
 			s.restartIntervalCount = 1
 			s.currentRestartDelay = s.restartDelay
-			s.backoffRestarts = 0
 		}
 	}
 

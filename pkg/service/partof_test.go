@@ -17,7 +17,10 @@ type partOfRig struct {
 	dir  string
 }
 
-func newPartOfRig(t *testing.T) *partOfRig {
+// newPartOfRig builds the rig; configure, if given, runs before x and m
+// are started (a setting changed after, the monitor goroutine reads
+// unlocked: -race reports it).
+func newPartOfRig(t *testing.T, configure ...func(*partOfRig)) *partOfRig {
 	t.Helper()
 	r := &partOfRig{dir: t.TempDir()}
 	r.set, _ = newTestSet()
@@ -37,6 +40,9 @@ func newPartOfRig(t *testing.T) *partOfRig {
 		waitState(t, r.x, StateStopped, 3*time.Second)
 		waitState(t, r.m, StateStopped, 3*time.Second)
 	})
+	for _, f := range configure {
+		f(r)
+	}
 	for _, s := range []Service{r.x, r.m} {
 		r.set.StartService(s)
 		if got := waitState(t, s, StateStarted, 3*time.Second); got != StateStarted {
@@ -122,12 +128,13 @@ func TestPartOfClientRestartRestartsMember(t *testing.T) {
 // restart-delay; RestartMode=direct keeps m up.
 func TestPartOfAutoRestart(t *testing.T) {
 	for _, direct := range []bool{false, true} {
-		r := newPartOfRig(t)
-		r.x.autoRestart = RestartAlways
-		r.x.SetRestartDelay(200 * time.Millisecond)
-		if direct {
-			r.x.SetRestartMode(RestartModeDirect)
-		}
+		r := newPartOfRig(t, func(r *partOfRig) {
+			r.x.autoRestart = RestartAlways
+			r.x.SetRestartDelay(200 * time.Millisecond)
+			if direct {
+				r.x.SetRestartMode(RestartModeDirect)
+			}
+		})
 		syscall.Kill(r.x.PID(), syscall.SIGKILL)
 		time.Sleep(100 * time.Millisecond)
 		if n := r.starts("m"); n != 1 {
@@ -183,5 +190,29 @@ func TestPartOfLoop(t *testing.T) {
 		if got := waitState(t, s, StateStopped, 3*time.Second); got != StateStopped {
 			t.Errorf("%s %v", s.Name(), got)
 		}
+	}
+}
+
+// A stop asked while x waits out its restart-delay reaches m too, and
+// the called-off restart leaves nothing that restarts m at x's next
+// start.
+func TestPartOfStopDuringRestartDelay(t *testing.T) {
+	r := newPartOfRig(t, func(r *partOfRig) {
+		r.x.autoRestart = RestartAlways
+		r.x.SetRestartDelay(1500 * time.Millisecond)
+	})
+	syscall.Kill(r.x.PID(), syscall.SIGKILL)
+	time.Sleep(200 * time.Millisecond) // x is parked on its delay
+	r.set.StopService(r.x)
+	if got := waitState(t, r.m, StateStopped, 3*time.Second); got != StateStopped {
+		t.Fatalf("m is %v after x was stopped during its restart-delay", got)
+	}
+	r.set.StartService(r.m)
+	r.waitStarts(t, "m", 2)
+	r.set.StartService(r.x)
+	r.waitStarts(t, "x", 2)
+	partOfSettle()
+	if n := r.starts("m"); n != 2 {
+		t.Errorf("m started %d times, want 2: x's plain start restarted it", n)
 	}
 }

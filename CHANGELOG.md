@@ -65,7 +65,10 @@ verified with `git tag -v`.
   as in systemd. A service that ends failed with no restart to come
   (its restart policy declined or its limit ran out) starts its
   on-failure services, by the same reading of "failed" as
-  failure-action. Both by name, like `part-of`; a unit's lines map onto
+  failure-action, except a start failed by a dependency (counted only
+  with failure-conditions = dependency-fails, as systemd runs no
+  OnFailure= for a dependency job); each is started this way at most
+  5 times in 10 seconds. Both by name, like `part-of`; a unit's lines map onto
   them, targets dropped. Before, both were a note in the conversion.
 
 - **A service's `.socket` unit is read with it.** Loading or converting
@@ -87,7 +90,7 @@ verified with `git tag -v`.
   grows geometrically from `restart-delay` to `restart-delay-cap` over N
   restarts (1s, 2.3s, 5.1s, 11.7s, 26.5s, then 1m for 1s/1m/5), the
   formula of systemd's `service_restart_usec_nth`, and starts over after
-  a stable period as the linear backoff does. Refused with
+  an explicit start or reset-failed, as systemd's count does. Refused with
   `restart-delay-step`, or without a curve to walk. A unit's
   `RestartSteps=` with `RestartMaxDelaySec=` maps onto it and
   `restart-delay-cap` (from systemd's 100ms when RestartSec= is unset);

@@ -103,3 +103,65 @@ func TestOnFailure(t *testing.T) {
 		})
 	}
 }
+
+// A handler whose start fails at once, naming its own failed service
+// or a pair naming each other: the starts come after the queues drain
+// and are limited, so StartService returns and the loop ends.
+func TestOnFailureSynchronousLoopEnds(t *testing.T) {
+	set, _ := newTestSet()
+	mk := func(name string, onFail ...string) *ProcessService {
+		s := NewProcessService(set, name)
+		s.SetCommand([]string{"/bin/true"})
+		s.autoRestart = RestartNever
+		s.SetRequiredPaths([]string{"/nonexistent-onfailure-test"}, nil)
+		s.SetOnFailure(onFail)
+		set.AddService(s)
+		return s
+	}
+	self := mk("self", "self")
+	a := mk("a", "b")
+	mk("b", "a")
+	done := make(chan struct{})
+	go func() {
+		set.StartService(self)
+		set.StartService(a)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StartService did not return: an on-failure loop inside the queue drain")
+	}
+}
+
+// A start that failed because a dependency did starts no on-failure
+// service, as systemd runs no OnFailure= for a dependency job; with
+// failure-conditions counting dependency failures it does.
+func TestOnFailureNotForADependencysFailure(t *testing.T) {
+	for _, depCond := range []bool{false, true} {
+		set, _ := newTestSet()
+		h := sleeper(set, "handler")
+		f := NewProcessService(set, "f")
+		f.SetCommand([]string{"/bin/true"})
+		f.SetRequiredPaths([]string{"/nonexistent-onfailure-test"}, nil)
+		set.AddService(f)
+		s := sleeper(set, "s")
+		s.Record().AddDep(f, DepRegular)
+		s.SetOnFailure([]string{"handler"})
+		if depCond {
+			fc, _ := ParseFailureConditions("process-fails dependency-fails")
+			s.failureConditions = fc
+		}
+		set.StartService(s)
+		waitState(t, s, StateStopped, 3*time.Second)
+		time.Sleep(200 * time.Millisecond)
+		want := StateStopped
+		if depCond {
+			want = StateStarted
+		}
+		if st := h.State(); st != want {
+			t.Errorf("dependency counted %v: handler %v, want %v", depCond, st, want)
+		}
+		set.StopService(h)
+	}
+}

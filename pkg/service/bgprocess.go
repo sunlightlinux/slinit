@@ -100,10 +100,8 @@ type BGProcessService struct {
 	currentRestartDelay time.Duration
 	// restart-steps (systemd's RestartSteps=): the delay grows
 	// geometrically from restartDelay to restartDelayCap over this many
-	// restarts (expBackoffDelay); backoffRestarts counts them, and starts
-	// over with the linear backoff when a stable period ends.
-	restartSteps    int
-	backoffRestarts int
+	// restarts (expBackoffDelay), counted by ServiceRecord.backoffRestarts.
+	restartSteps int
 
 	// systemd-style RestartRandomizedDelaySec: additive jitter drawn
 	// from [0, restartRandomizedDelay). 0 disables.
@@ -871,7 +869,6 @@ func (s *BGProcessService) CheckRestart() bool {
 			s.restartIntervalTime = now
 			s.restartIntervalCount = 1
 			s.currentRestartDelay = s.restartDelay
-			s.backoffRestarts = 0
 		}
 	}
 

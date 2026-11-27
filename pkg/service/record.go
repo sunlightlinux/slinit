@@ -271,9 +271,18 @@ type ServiceRecord struct {
 	partOfRestartOnStart bool
 	// conflicts and onFailure name services by name, as partOf does:
 	// see conflicts.go and onfailure.go.
-	conflicts    []string
-	onFailure    []string
-	inPartOfWave bool // this restart came from a part-of wave (partOfGen)
+	conflicts []string
+	onFailure []string
+	// onFailureStarts: when on-failure last started this service, for
+	// its start limit (onfailure.go).
+	onFailureStarts []time.Time
+	// backoffRestarts counts the automatic restarts restart-steps has
+	// walked (restartsteps.go). As systemd's n_restarts it starts over
+	// on an explicit start or reset-failed only: the geometric delays
+	// soon outgrow restart-limit-interval, and resetting with the
+	// linear backoff's stable period kept the curve from its end.
+	backoffRestarts int
+	inPartOfWave    bool // this restart came from a part-of wave (partOfGen)
 
 	// Service alias (alternative name for lookup)
 	provides string
@@ -1829,6 +1838,7 @@ func (sr *ServiceRecord) GetFailureConditions() FailureConditions { return sr.fa
 // `systemctl reset-failed`. No-op on a service that isn't marked failed.
 func (sr *ServiceRecord) ResetFailed() {
 	sr.startFailed = false
+	sr.backoffRestarts = 0
 	// IsFailed also reads the stop reason, which a failed start or a
 	// failing exit leaves at Failed/ExecFailed/TimedOut/Terminated.
 	// Clearing only the flag left is-failed answering "failed" after a
@@ -2845,6 +2855,10 @@ func (sr *ServiceRecord) Start() {
 	if sr.markedDown {
 		sr.markedDown = false
 	}
+	// ... and the restart-steps count, as systemd flushes n_restarts.
+	if sr.state.Load() == StateStopped {
+		sr.backoffRestarts = 0
+	}
 
 	if !sr.startExplicit {
 		sr.requiredBy++
@@ -3182,6 +3196,12 @@ func (sr *ServiceRecord) abandonPendingRestart() {
 	sr.restartPending = false
 	sr.self.CancelPendingRestart()
 	sr.desired.Store(StateStopped)
+	// The restart that was to restart the services part of this one is
+	// off, and this is the stop instead: it reaches them as any stop
+	// asked of this service does (part-of).
+	sr.partOfRestartOnStart = false
+	sr.inPartOfWave = false
+	sr.services.propagatePartOfStop(sr.self)
 	// Drop the explicit activation the way Stop() does. settleInactive
 	// otherwise hands off to Release(), which has nothing left to do on
 	// a service that is already STOPPED and so would not release the
@@ -3965,8 +3985,13 @@ func (sr *ServiceRecord) Stopped() {
 	// applies and let main's shutdown initiator handle it. The hook is
 	// invoked AFTER state is STOPPED so a reboot-action service is
 	// reported as STOPPED to listeners that fire before the reboot.
-	if len(sr.onFailure) > 0 && !willRestart && !sr.services.IsShuttingDown() && sr.stoppedAs() == endFailed {
-		sr.services.startOnFailure(sr.self)
+	// Not for a start that failed because a dependency did, unless
+	// failure-conditions counts that (systemd does not run OnFailure=
+	// for a job that failed on a dependency). failure-action keeps its
+	// older reading, which a setup may rely on.
+	if len(sr.onFailure) > 0 && !willRestart && !sr.services.IsShuttingDown() && sr.stoppedAs() == endFailed &&
+		(sr.stopReason != ReasonDepFailed || sr.failureConditions.Dependency) {
+		sr.services.queueOnFailure(sr.self)
 	}
 	if action := sr.chooseStoppedAction(willRestart); action != ActionNone {
 		if cb := sr.services.OnSystemAction; cb != nil {

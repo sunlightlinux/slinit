@@ -632,10 +632,15 @@ error. Repeat the line for several targets.
 :   Start *service* when this one ends failed with no restart to come:
     its **restart** policy declined, or **restart-limit-count** ran out.
     "Failed" is what **failure-action** reads as failed, so the two
-    always agree; a clean exit, a stop that was asked for and the stops
-    of a shutdown start nothing. systemd's **OnFailure=**; a template
-    instance such as *notify@web* works, as *notify@%n.service* does in
-    a unit.
+    agree, except that a start failed by a dependency's failure counts
+    only with **failure-conditions** = *dependency-fails*, as systemd
+    runs no **OnFailure=** for a dependency job. A clean exit, a stop
+    that was asked for and the stops of a shutdown start nothing. Each
+    service named is started this way at most 5 times in 10 seconds
+    (systemd's default start limit), so services that name each other
+    and keep failing come to rest; a service naming itself is skipped.
+    systemd's **OnFailure=**; a template instance such as *notify@web*
+    works, as *notify@%n.service* does in a unit.
 
 **chain-to**=*service*
 :   Start *service* when this one finishes. Three conditions, all
@@ -914,8 +919,9 @@ error. Repeat the line for several targets.
     then 1m. systemd's **RestartSteps=** with **RestartMaxDelaySec=**,
     computed the same way. Needs **restart-delay** above 0 and
     **restart-delay-cap** above it; refused with
-    **restart-delay-step**. Like the linear backoff, it starts over once
-    the service has run through a **restart-limit-interval**.
+    **restart-delay-step**. As systemd's count, it starts over on an
+    explicit start or **slinitctl reset-failed**, not with
+    **restart-limit-interval**, which its own delays soon outgrow.
     **restart-randomized-delay** and **restart-max-delay** apply on top.
     0 to 3000; 0 (default) is off.
 

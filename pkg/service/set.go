@@ -74,6 +74,9 @@ type ServiceSet struct {
 	// so a start has to look for services that conflict with it
 	// (conflicts.go); without any, the look is skipped.
 	anyConflicts atomic.Bool
+	// onFailureQueue holds on-failure starts until the queues are
+	// drained (onfailure.go).
+	onFailureQueue []onFailureStart
 
 	// queueMu protects the processing queues, console queue, and
 	// activeServices counter, plus service-state fields mutated during
@@ -824,6 +827,9 @@ func (ss *ServiceSet) ProcessQueues() {
 func (ss *ServiceSet) processQueuesLocked() {
 	for {
 		ss.drainQueuesLocked()
+		if ss.startQueuedOnFailure() {
+			continue
+		}
 		if !ss.releaseStopsLastLocked() {
 			return
 		}

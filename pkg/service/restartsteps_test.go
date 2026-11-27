@@ -35,6 +35,8 @@ func TestExpBackoffDelay(t *testing.T) {
 func TestRestartStepsWalk(t *testing.T) {
 	set, _ := newTestSet()
 	s := NewProcessService(set, "p")
+	s.SetCommand([]string{"/bin/sleep", "60"})
+	set.AddService(s)
 	s.SetRestartDelay(time.Second)
 	s.SetRestartBackoff(0, 8*time.Second)
 	s.SetRestartSteps(3)
@@ -48,8 +50,32 @@ func TestRestartStepsWalk(t *testing.T) {
 			t.Fatalf("delays %v, want %v", got, want)
 		}
 	}
-	s.backoffRestarts = 0 // what a stable period does (checkRestart)
+	set.StartService(s) // an explicit start flushes the count, as in systemd
+	set.StopService(s)
 	if d := s.nextRestartDelay(); d != time.Second {
-		t.Errorf("after the reset: %v, want 1s", d)
+		t.Errorf("after an explicit start: %v, want 1s", d)
+	}
+}
+
+// The restart limit's interval does not reset the curve: its delays
+// soon outgrow restart-limit-interval, and a reset there kept the curve
+// from ever reaching restart-delay-cap.
+func TestRestartStepsSurviveTheLimitInterval(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	s.SetRestartDelay(time.Second)
+	s.SetRestartBackoff(0, 8*time.Second)
+	s.SetRestartSteps(3)
+	s.SetRestartLimits(10*time.Second, 5)
+	var got []time.Duration
+	for i := 0; i < 5; i++ {
+		s.restartIntervalTime = time.Now().Add(-time.Hour) // the window long gone
+		if !s.CheckRestart() {
+			t.Fatal("restart refused")
+		}
+		got = append(got, s.nextRestartDelay().Round(time.Millisecond))
+	}
+	if got[3] != 8*time.Second || got[4] != 8*time.Second {
+		t.Errorf("delays %v: the curve went back to the start with the limit's window", got)
 	}
 }
