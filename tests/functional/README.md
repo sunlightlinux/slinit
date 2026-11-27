@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (324 cases)
+# Run all tests (325 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -455,6 +455,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 323 | control-socket-reopen-after-failed-bind | a nested instance whose control socket cannot be bound at start, fixed and SIGUSR1'd: the first connection is answered (v4.0.3: nil-pointer panic) |
 | 324 | shared-logger-producer-fd | 30 start/stop cycles of a process and of a scripted shared-logger producer on a nested GOGC=off instance: its descriptors stay flat (v4.0.3: +30 each) |
 | 325 | journald-dirty-file-rotated | a binary `slinit-journald` killed with SIGKILL and restarted sets the file left online aside and starts a new one; the directory still reads |
+| 326 | stop-pin-spares-reached-milestone | a stop pin refusing a stopping service's restart fails the dependent waiting on it, but spares a `depends-ms` dependent already past its milestone, which goes on to STARTED (v4.0.3 fails on the first, c83cad8; without 5afa5d2 on the second) |
 
 ## How It Works
 
