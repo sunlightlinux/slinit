@@ -693,7 +693,9 @@ an unknown option. An option slinit does not know
 (sysvinit's `-z`, `-h`), one of its own left without its value
 (sysvinit's `-b`, `-a`), a value that does not parse, or an empty
 token is reported and ignored, and the rest of the line is still
-read; dinit refuses these, but PID 1 must boot. Tokens of the form *KEY*=*VALUE*
+read; dinit refuses these, but PID 1 must boot. An empty value
+(`--devtmpfs-path=`, `--banner ""`) is a value: it switches the option
+off, as anywhere else. Tokens of the form *KEY*=*VALUE*
 that are not slinit options are exported into the service environment
 instead of being processed as arguments.
 

@@ -196,3 +196,24 @@ func TestParseArgs_NotPID1(t *testing.T) {
 		t.Errorf("services=%q words=%q", f.services, got)
 	}
 }
+
+// slinit's "empty disables" options (--devtmpfs-path=, --banner=,
+// --syslog-socket=, --kcmdline-dest=, --catch-all-log=) must still be
+// switched off as PID 1: a container's slinit is PID 1 of its pid
+// namespace, and slinit-nspawn(8) tells it --devtmpfs-path= so it does
+// not mount the host's devices over the container's /dev. The scan took
+// an empty value for a missing one and ignored the option. Only -t's
+// list refuses an empty service name.
+func TestScanSysArgs_EmptyValueDisables(t *testing.T) {
+	for _, args := range [][]string{{"--cgroup-path="}, {"-b", ""}, {"splash", "--cgroup-path="}} {
+		f := newSysArgsFlags()
+		f.cgroup = "/default"
+		got, w := f.scan(args...)
+		if f.cgroup != "" {
+			t.Errorf("%q: cgroup path %q, want it emptied (report %q)", args, f.cgroup, w)
+		}
+		if len(got) != 0 {
+			t.Errorf("%q: services %q, want none", args, got)
+		}
+	}
+}

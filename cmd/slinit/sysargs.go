@@ -91,19 +91,24 @@ func scanSysArgs(fs *flag.FlagSet, args []string, w io.Writer) []string {
 		}
 		bf, isBool := f.Value.(interface{ IsBoolFlag() bool })
 		isBool = isBool && bf.IsBoolFlag()
+		// An empty value is how slinit's string options are switched
+		// off (--devtmpfs-path=, --banner=, --syslog-socket=, ...), as
+		// a container's slinit, PID 1 of its namespace, is told to. Only
+		// -t's list has no use for one: it would name no service.
+		_, isList := f.Value.(*stringSlice)
 		if !hasValue {
 			if isBool {
 				value = "true"
 			} else {
-				if i+1 >= len(args) || args[i+1] == "" {
+				if i+1 >= len(args) {
 					fmt.Fprintf(w, "slinit: ignoring option without its value: %s\n", a)
-					i++
 					continue
 				}
 				i++
 				value = args[i]
 			}
-		} else if value == "" && !isBool {
+		}
+		if value == "" && (isBool || isList) {
 			fmt.Fprintf(w, "slinit: ignoring option without its value: %s\n", a)
 			continue
 		}
