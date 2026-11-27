@@ -211,9 +211,8 @@ PrivateNetwork=yes
 // a missing dependency, so 92 of 253 host units failed to load directly
 // (display-manager.service: After=ypbind.service); a unit loaded
 // directly now leaves such a reference out with a note. After= that
-// does resolve stays waits-for:, pulling the unit in — bolt relies on it
-// for polkit, systemd-remount-fs for systemd-fsck-root — and keeping a
-// start-order cycle a load error rather than a hang (see applyUnitKey).
+// does resolve is after:, ordering only, as in systemd (through 4.0 it
+// was waits-for:, which also started the unit).
 func TestSystemdOrderingOnMissingUnitsLoads(t *testing.T) {
 	root := t.TempDir()
 	units := filepath.Join(root, "systemd")
@@ -245,8 +244,8 @@ ExecStart=/usr/bin/dm
 		}
 		deps[d.DepType] = true
 	}
-	if !deps[service.DepWaitsFor] || len(deps) != 1 {
-		t.Errorf("peer dependencies = %v, want waits-for only", deps)
+	if !deps[service.DepAfter] || len(deps) != 1 {
+		t.Errorf("peer dependencies = %v, want after: only: After= orders, it does not start peer", deps)
 	}
 	for _, missing := range []string{"ypbind", "gone"} {
 		found := false

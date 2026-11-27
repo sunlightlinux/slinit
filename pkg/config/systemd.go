@@ -120,6 +120,8 @@ type SystemdConfig struct {
 	mapped      []kvPair // directives translated 1:1, emitted in order
 	depends     []string // depends-on: X
 	waitsFor    []string // waits-for: X
+	after       []string // after: X (ordering only)
+	before      []string // before: X (ordering only)
 	aliases     []string // [Install] Alias= .service names, bare
 	conditions  []condDir
 	comments    []string
@@ -600,6 +602,8 @@ func dropAliasRefs(cfg *SystemdConfig) []SystemdWarning {
 	}
 	cfg.depends = filter("depends-on:", cfg.depends)
 	cfg.waitsFor = filter("waits-for:", cfg.waitsFor)
+	cfg.after = filter("after:", cfg.after)
+	cfg.before = filter("before:", cfg.before)
 	conds := cfg.conditions[:0]
 	for _, c := range cfg.conditions {
 		if c.name == "assert-service-started" && isAlias(c.value) {
@@ -628,28 +632,24 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		cfg.description = trimQuotes(val)
 	case "Documentation", "DefaultDependencies", "IgnoreOnIsolate", "RefuseManualStart", "RefuseManualStop":
 		// Informational or systemd-internal; skip silently.
-	case "After":
-		// waits-for:, as through 4.0: it orders and also pulls the unit
-		// in, which systemd's After= does not. Ordering-only after: is
-		// the faithful mapping, and was tried: it turned start-order
-		// cycles real units contain into silent hangs. wickedd has
-		// Wants=wickedd-nanny and wickedd-nanny After=wickedd; as two
-		// waits-for: the pair fails to load with a cycle error, as two
-		// edges of which one only orders, both services sat in STARTING
-		// for good. systemd breaks such a cycle by dropping an ordering
-		// job, with a warning; until slinit's loader does the same,
-		// waits-for: keeps the cycle loud. A unit loaded directly leaves
-		// out a name that resolves to nothing, as systemd ignores it: see
+	case "After", "Before":
+		// Ordering only, as in systemd: after: and before: apply when both
+		// services start, and start neither. Through 4.0 After= became
+		// waits-for:, which also started the other service, and Before=
+		// was dropped. An ordering edge that closes a start-order loop
+		// with the unit's dependencies (wickedd: Wants=wickedd-nanny;
+		// wickedd-nanny: After=wickedd) is dropped with a warning once
+		// the tree is loaded, as systemd drops an ordering job on a cycle
+		// (ordercycle.go). A unit loaded directly leaves out a name that
+		// resolves to nothing, as systemd ignores it: see
 		// dropMissingSystemdRefs.
 		deps, targets, self := splitUnitRefs(val, cfg.svcName)
-		cfg.waitsFor = append(cfg.waitsFor, deps...)
+		if key == "After" {
+			cfg.after = append(cfg.after, deps...)
+		} else {
+			cfg.before = append(cfg.before, deps...)
+		}
 		warns = append(warns, noteDroppedTargets(key, targets, self)...)
-	case "Before":
-		// Not before:, for the reason After= is not after:: an ordering
-		// edge against a unit this one also pulls in (wickedd has both
-		// Wants= and Before= on wickedd-nanny) is a start deadlock.
-		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("[Unit] Before=%s is not carried over — "+
-			"order it from the other service (its After=, or `waits-for:`) if it matters", val)})
 	case "Requires", "RequiresOverridable", "BindsTo", "BindTo":
 		// depends-on: starts the dependency first and stops this service
 		// when the dependency stops, for whatever reason. That is
@@ -2017,6 +2017,27 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 			seen[d] = true
 		}
 	}
+	// A depends-on: already orders whenever it is held, which is always;
+	// a waits-for: only while the link holds, so Wants= with After= keeps
+	// the after: for a restart after the link broke.
+	hard := map[string]bool{}
+	for _, d := range c.depends {
+		hard[d] = true
+	}
+	done := map[string]bool{}
+	for _, d := range c.after {
+		if !hard[d] && !done[d] {
+			fmt.Fprintf(w, "after: %s\n", d)
+			done[d] = true
+		}
+	}
+	done = map[string]bool{}
+	for _, d := range c.before {
+		if !done[d] {
+			fmt.Fprintf(w, "before: %s\n", d)
+			done[d] = true
+		}
+	}
 }
 
 // --- Direct loading (no intermediate file) ---
@@ -2126,6 +2147,8 @@ func (dl *DirLoader) dropMissingSystemdRefs(desc *ServiceDescription, name, unit
 		return out
 	}
 	desc.WaitsFor = keep("waits-for:", desc.WaitsFor)
+	desc.After = keep("after:", desc.After)
+	desc.Before = keep("before:", desc.Before)
 }
 
 // descriptionExists reports whether findAndParse would find a

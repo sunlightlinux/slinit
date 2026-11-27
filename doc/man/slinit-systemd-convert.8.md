@@ -160,11 +160,12 @@ term-signal.
 
 Dependencies: **Requires** and **BindsTo** become **depends-on**
 (which stops this service when the dependency stops, as **BindsTo**
-does); **Wants** and **After** become **waits-for** (so **After** also
-pulls the other service in, which systemd's does not: mapped to the
-ordering-only **after**, a start-order cycle a real unit pair contains
-would hang both services instead of failing their load);
-**Requisite** becomes **assert-service-started**. Only **.service** and **.socket** references become
+does); **Wants** becomes **waits-for**; **After** and **Before** become
+**after** and **before**, ordering only, as in systemd (since 4.1.0;
+through 4.0 **After** became **waits-for** and so also started the
+other service, and **Before** was dropped; a loop they close is broken
+when the units are loaded, see **slinit**(8)); **Requisite** becomes
+**assert-service-started**. Only **.service** and **.socket** references become
 dependencies, a socket as the service it activates
 (**Requires=dm-event.socket** is **depends-on: dm-event**); a unit's
 reference to itself, such as its own socket, is dropped with a note. A
@@ -175,8 +176,7 @@ since slinit has no such services (and **sysroot.mount** is no
 dependency of any kind does not exist, so each name written must exist
 as a slinit service (or a unit slinit can load) on the target system.
 A unit loaded directly is more forgiving, as systemd is: see
-**slinit**(8). **Before** is reported and not carried over, for the
-same reason. **PartOf**, **Upholds**, **PropagatesReloadTo**,
+**slinit**(8). **PartOf**, **Upholds**, **PropagatesReloadTo**,
 **PropagatesStopTo**, **JoinsNamespaceOf**, **RequiresMountsFor** and
 **OnSuccess** have no slinit equivalent and are reported with what to
 use instead; **WantedBy** / **RequiredBy** produce a note suggesting
@@ -207,7 +207,7 @@ where systemd would run unconfined, a cgroup setting needs a
 
 Not carried over, and reported: inline **Environment=** (slinit takes
 an **EnvironmentFile** only), **PrivateUsers**, **PrivateDevices**,
-**Before**, and the directives listed in the notes of a conversion.
+and the directives listed in the notes of a conversion.
 
 Warnings — something was dropped or will not behave as it did — are
 always printed on stderr; notes about mappings that did happen, or

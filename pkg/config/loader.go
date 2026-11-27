@@ -108,10 +108,16 @@ type DirLoader struct {
 	overlayDirs []string // conf.d overlay directories (default: /etc/slinit.conf.d)
 	set         *service.ServiceSet
 	loading     map[string]bool // tracks loading state for circular dependency detection
-	curDepth    int             // current recursion depth during loading
-	platformSys platform.Type   // detected (or overridden) platform for keyword filtering
-	vttyDir     string          // vtty attach socket dir; see SetVTTYDir
-	mu          sync.Mutex      // serialises loading + curDepth mutation
+	// systemdLoaded names the services whose description came from a
+	// systemd unit (ordercycle.go prefers dropping their ordering edges).
+	systemdLoaded map[string]bool
+	// touched collects the services a LoadService call loaded, for the
+	// start-order cycle check once the whole tree is installed.
+	touched     []service.Service
+	curDepth    int           // current recursion depth during loading
+	platformSys platform.Type // detected (or overridden) platform for keyword filtering
+	vttyDir     string        // vtty attach socket dir; see SetVTTYDir
+	mu          sync.Mutex    // serialises loading + curDepth mutation
 }
 
 // SetVTTYDir sets where services with `vtty = yes` create their attach
@@ -136,6 +142,8 @@ func NewDirLoader(set *service.ServiceSet, dirs []string) *DirLoader {
 		set:         set,
 		loading:     make(map[string]bool),
 		overlayDirs: []string{defaultOverlayDir},
+
+		systemdLoaded: make(map[string]bool),
 	}
 }
 
@@ -189,7 +197,13 @@ func (dl *DirLoader) ServiceDirs() []string {
 func (dl *DirLoader) LoadService(name string) (service.Service, error) {
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
-	return dl.loadServiceLocked(name)
+	dl.touched = nil
+	svc, err := dl.loadServiceLocked(name)
+	if err == nil {
+		dl.breakOrderingCycles(dl.touched)
+	}
+	dl.touched = nil
+	return svc, err
 }
 
 // loadServiceLocked is the mutex-bypass variant of LoadService.
@@ -209,9 +223,18 @@ func (dl *DirLoader) loadServiceLocked(name string) (service.Service, error) {
 // For stopped services: full replacement possible (including type change).
 // For started services: in-place update with restrictions.
 // For starting/stopping services: reload refused.
-func (dl *DirLoader) ReloadService(svc service.Service) (service.Service, error) {
+func (dl *DirLoader) ReloadService(svc service.Service) (reloaded service.Service, err error) {
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
+	// The edges a reload installs (and the services it loads for them)
+	// can close a start-order cycle too.
+	dl.touched = nil
+	defer func() {
+		if err == nil && reloaded != nil {
+			dl.breakOrderingCycles(append(dl.touched, reloaded))
+		}
+		dl.touched = nil
+	}()
 
 	name := svc.Name()
 
@@ -748,6 +771,13 @@ func (dl *DirLoader) updateDependencies(svc service.Service, desc *ServiceDescri
 		}
 	}
 
+	// A systemd unit's new ordering edge may close a start-order loop,
+	// which the depth walk below would go round until MaxDepDepth: break
+	// it first, as a load does once its tree is in.
+	if dl.systemdLoaded[svc.Name()] {
+		dl.breakOrderingCycles([]service.Service{svc})
+	}
+
 	// Recalculate dependency depth after dep changes. A before: edge
 	// lives on its target, whose depth may change too.
 	var updater service.DepDepthUpdater
@@ -851,7 +881,12 @@ func (dl *DirLoader) checkCycle(svc service.Service, desc *ServiceDescription) e
 	allDepNames = append(allDepNames, desc.DependsMS...)
 	allDepNames = append(allDepNames, desc.WaitsFor...)
 	allDepNames = append(allDepNames, desc.PreparedBy...)
-	allDepNames = append(allDepNames, desc.After...)
+	// A systemd unit's after: on a loop is dropped once the reload is in
+	// (breakOrderingCycles), not refused; a slinit description's is
+	// refused, as dinit refuses it.
+	if !dl.systemdLoaded[svc.Name()] {
+		allDepNames = append(allDepNames, desc.After...)
+	}
 
 	// BFS: check if any transitive dependency leads back to svc
 	visited := map[string]bool{}
@@ -1054,7 +1089,14 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// grows with this service's.
 	svc.Record().SetDepDepth(calcServiceDepth(svc))
 	var beforeDepth service.DepDepthUpdater
+	// A systemd unit's before: may close a start-order loop, which is
+	// broken only once the tree is in (breakOrderingCycles); the depth
+	// walk would go round it until MaxDepDepth. Its targets' depth is
+	// updated there, after the loop is gone.
 	for _, d := range ownedDeps(svc) {
+		if dl.systemdLoaded[name] {
+			break
+		}
 		if d.depType == service.DepBefore {
 			beforeDepth.AddPotentialUpdate(d.to)
 		}
@@ -1118,6 +1160,7 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		dl.transferConsumerOf(ph, svc)
 	}
 	loaded = true
+	dl.touched = append(dl.touched, svc)
 
 	if dl.set.OnServiceLoaded != nil {
 		dl.set.OnServiceLoaded(svc)
@@ -1484,6 +1527,8 @@ func canFeedConsumer(svc service.Service) bool {
 }
 
 func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, error) {
+	// Set again below when the description comes from a systemd unit.
+	delete(dl.systemdLoaded, name)
 	// The name, argument included, is joined onto each service, init.d,
 	// unit and overlay directory below, and Join resolves ".." — so
 	// "a/../../tmp/x" or "x@/../../tmp/x" loaded a file from outside
@@ -1590,6 +1635,9 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 			}
 			if IsSystemdUnit(path) {
 				desc, err := SystemdUnitToServiceDescription(path, name, dl.systemdDirs...)
+				if err == nil {
+					dl.systemdLoaded[name] = true
+				}
 				if err != nil {
 					return nil, "", &ServiceLoadError{
 						ServiceName: name,
@@ -1835,7 +1883,30 @@ func (dl *DirLoader) resolveDependencies(svc service.Service, desc *ServiceDescr
 	var out []resolvedDep
 	for _, spec := range depSpecs {
 		for _, depName := range spec.names {
-			depSvc, err := dl.loadServiceLocked(depName)
+			// A before: makes its target wait for this service, not this
+			// service wait for it: while the target loads, this one is
+			// not a service it would be waiting on, and a waits-for back
+			// to it is the same order said from the other end
+			// (dracut-cmdline: Before=dracut-pre-udev; dracut-pre-udev:
+			// Wants=, After=dracut-cmdline), not a cycle. Kept marked, the
+			// target's edge back was refused as a cyclic dependency.
+			// A real loop through a before: is found by checkBeforeCycles
+			// or breakOrderingCycles. The same for a systemd unit's after:,
+			// whose loop is real but broken once the tree is in, as systemd
+			// breaks it, rather than refused depending on which of the two
+			// units happened to load first (multipathd: Wants=
+			// multipathd-queueing; multipathd-queueing: After=multipathd).
+			var depSvc service.Service
+			var err error
+			unmark := spec.depType == service.DepBefore ||
+				spec.depType == service.DepAfter && dl.systemdLoaded[svc.Name()]
+			if unmark && dl.loading[svc.Name()] {
+				delete(dl.loading, svc.Name())
+				depSvc, err = dl.loadServiceLocked(depName)
+				dl.loading[svc.Name()] = true
+			} else {
+				depSvc, err = dl.loadServiceLocked(depName)
+			}
 			if err != nil {
 				if spec.optional && errors.Is(err, ErrServiceNotFound) {
 					continue
@@ -1875,8 +1946,13 @@ func (dl *DirLoader) resolveDependencies(svc service.Service, desc *ServiceDescr
 		}
 	}
 
-	if err := checkBeforeCycles(svc, out); err != nil {
-		return nil, err
+	// A systemd unit's before: on a loop is dropped once the tree is
+	// installed (breakOrderingCycles), as systemd drops the job; a slinit
+	// description's is refused here, as dinit refuses it.
+	if !dl.systemdLoaded[svc.Name()] {
+		if err := checkBeforeCycles(svc, out); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }

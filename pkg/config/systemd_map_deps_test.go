@@ -11,24 +11,28 @@ func TestSystemdDependencyMapping(t *testing.T) {
 		name                     string
 		unit                     string
 		depends, waits           []string
+		after, before            []string
 		asserts                  []string
 		stopWhenUnneeded         bool
 		noteContains, notWarnFor string
 	}{
 		{
-			name:  "After= is still waits-for (see applyUnitKey)",
+			name:  "After= orders only",
 			unit:  "[Unit]\nAfter=db.service\n",
-			waits: []string{"db"},
+			after: []string{"db"},
 		},
 		{
-			name:         "Before= is reported, not mapped",
-			unit:         "[Unit]\nBefore=web.service\n",
-			noteContains: "Before=web.service is not carried over",
+			name:   "Before= orders only",
+			unit:   "[Unit]\nBefore=web.service\n",
+			before: []string{"web"},
 		},
 		{
-			name:  "Wants= and After= on one service is one edge",
+			// waits-for orders only while it holds; after: keeps the order
+			// for a restart once the link broke.
+			name:  "Wants= and After= on one service keep both",
 			unit:  "[Unit]\nWants=db.service\nAfter=db.service cache.service\n",
-			waits: []string{"db", "cache"},
+			waits: []string{"db"},
+			after: []string{"db", "cache"},
 		},
 		{
 			name:    "BindsTo= is depends-on, and After= adds no second edge",
@@ -53,7 +57,7 @@ func TestSystemdDependencyMapping(t *testing.T) {
 		{
 			name:  "a target in After= is dropped, the service kept",
 			unit:  "[Unit]\nAfter=network.target db.service\n",
-			waits: []string{"db"},
+			after: []string{"db"},
 		},
 		{
 			name:         "PartOf= has no equivalent and says so",
@@ -90,8 +94,8 @@ func TestSystemdDependencyMapping(t *testing.T) {
 			}
 			eq("depends-on", desc.DependsOn, tc.depends)
 			eq("waits-for", desc.WaitsFor, tc.waits)
-			eq("after", desc.After, nil)
-			eq("before", desc.Before, nil)
+			eq("after", desc.After, tc.after)
+			eq("before", desc.Before, tc.before)
 			var asserts []string
 			for _, p := range desc.Predicates {
 				if strings.Contains(p.String(), "service-started") {

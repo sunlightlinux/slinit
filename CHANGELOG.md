@@ -26,6 +26,19 @@ verified with `git tag -v`.
 
 ### Changed
 
+- **A systemd unit's `After=` orders only, as in systemd.** A `.service`
+  unit, loaded directly or converted, turned `After=X` into
+  `waits-for: X`, which also started X, and dropped `Before=`. They are
+  now `after:` and `before:`: they apply when both services start and
+  start neither. *Compat:* a unit that relied on `After=` to start the
+  other service (bolt for polkit, systemd-remount-fs for
+  systemd-fsck-root among systemd's own) needs `Wants=` or `Requires=`
+  for it. `Wants=` with `After=` on one unit keeps both edges. Loaded
+  together, the units of this host went from 238 to 243 that load:
+  wicked, wickedd, wickedd-nanny, multipathd and multipathd-queueing,
+  whose ordering made their `waits-for:` loops a load error, now load
+  with the loop broken (see Fixed).
+
 - **`runtime-max-sec` ends the run as a failure.** When the cap passed,
   slinit stopped the service as an operator would: not failed, and no
   `restart` setting brought it back, so `runtime-max-sec = 24h` with
@@ -217,6 +230,21 @@ verified with `git tag -v`.
   `ConditionCPUFeature=` on arm64 and every `ConditionVirtualization=`
   value but `qemu` (whose slinit meaning is wider) are now mapped,
   since the native checks answer as systemd's.
+
+- **A start-order loop through an ordering edge hung its services.** A
+  service waits while the other end of any of its edges is starting,
+  `after:` and `before:` included, so a loop of them is a deadlock; the
+  load-time check refused loops of dependency edges only, and an edge
+  closing a loop is often installed while the service at its other end
+  is still loading. Once a load or reload has installed its services,
+  slinit now finds such loops and drops one ordering edge of each — a
+  systemd unit's when there is one — with a warning naming the loop, as
+  systemd drops an ordering job on a cycle. A slinit file's `before:`
+  or `after:` closing a loop visible at load is refused, as in dinit.
+  Also: loading the target of a `before:` no longer counts the
+  declaring service as a dependency the target waits for, which
+  refused the same order said from both ends as a cycle
+  (dracut-cmdline / dracut-pre-udev).
 
 - **`before:` ordered the other way round.** `a: before: x` was stored
   on `a`, and the service holding an ordering edge waits for its target,
