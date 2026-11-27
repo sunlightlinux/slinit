@@ -26,14 +26,14 @@ STRACE_PKG="strace-6.17-r0.apk"
 LIBDW_PKG="libdw-0.194-r0.apk"
 LIBELF_PKG="libelf-0.194-r0.apk"
 MUSL_FTS_PKG="musl-fts-1.2.7-r7.apk"
-ZSTD_LIBS_PKG="zstd-libs-1.5.7-r2.apk"
+ZSTD_LIBS_PKG="zstd-libs-1.6.0-r1.apk"
 XZ_LIBS_PKG="xz-libs-5.8.4-r0.apk"
 LIBBZ2_PKG="libbz2-1.0.8-r6.apk"
 
 # nginx, for the systemd-unit demo. Only two packages: the minirootfs
 # already carries libssl, libcrypto and libz, so pcre2 is the one
 # missing shared library nginx links against.
-NGINX_PKG="nginx-1.28.3-r7.apk"
+NGINX_PKG="nginx-1.28.3-r10.apk"
 PCRE2_PKG="pcre2-10.49-r0.apk"
 
 # Directories
@@ -126,6 +126,26 @@ fi
 
 # Step 3: Download bash and dependencies (APK packages)
 echo "[3/7] Downloading bash packages..."
+# Alpine keeps only the newest build of a package in a stable branch: a
+# rebuild (nginx -r7 -> -r10) or a point update removes the pinned file
+# and the fetch 404s, which turned the perf job red. A pin that is
+# neither cached nor in the index is swapped for the package's current
+# build, with a warning so the pin can be bumped.
+PKG_INDEX=""
+for var in BASH_PKG READLINE_PKG LIBNCURSESW_PKG NCURSES_TERMINFO_PKG \
+           PCRE2_PKG NGINX_PKG STRACE_PKG LIBDW_PKG LIBELF_PKG MUSL_FTS_PKG \
+           ZSTD_LIBS_PKG XZ_LIBS_PKG LIBBZ2_PKG; do
+    pinned="${!var}"
+    [ -f "${CACHE_DIR}/${pinned}" ] && continue
+    [ -n "${PKG_INDEX}" ] || PKG_INDEX=$(curl -fsSL "${PACKAGES_URL}/")
+    grep -qF "\"${pinned}\"" <<<"${PKG_INDEX}" && continue
+    name=$(sed -E 's/-[0-9][^-]*-r[0-9]+\.apk$//' <<<"${pinned}")
+    current=$(grep -oE "\"${name}-[0-9][^\"]*-r[0-9]+\.apk\"" <<<"${PKG_INDEX}" | tr -d '"' | sort -V | tail -1 || true)
+    if [ -n "${current}" ]; then
+        echo "  WARNING: ${pinned} is gone from the mirror, using ${current}"
+        printf -v "${var}" '%s' "${current}"
+    fi
+done
 for pkg in "${BASH_PKG}" "${READLINE_PKG}" "${LIBNCURSESW_PKG}" "${NCURSES_TERMINFO_PKG}" \
            "${PCRE2_PKG}" "${NGINX_PKG}" "${STRACE_PKG}" "${LIBDW_PKG}" \
            "${LIBELF_PKG}" "${MUSL_FTS_PKG}" "${ZSTD_LIBS_PKG}" \

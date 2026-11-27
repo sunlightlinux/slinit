@@ -142,6 +142,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **The perf job's demo build 404ed on a removed Alpine package**
+  (unreleased, CI only): Alpine keeps only the newest build of a package,
+  and `nginx-1.28.3-r7` and `zstd-libs-1.5.7-r2` pinned in `demo/build.sh`
+  had been replaced (`-r10`, `1.6.0-r1`). The pins are bumped, and a pin
+  that is neither cached nor on the mirror now falls back to the
+  package's current build with a warning. `tests/functional/build-vm.sh`
+  pinned the same kind of dead file (`nginx-1.26.3-r4`, now `-r5`); only
+  the Actions cache kept the vm-image job green.
+
 - **`TestDo_EndToEnd` (pkg/switchroot) failed on CI** (unreleased, test
   only): Do's SIGKILL sweep is asynchronous and its reap is `WNOHANG`, so
   on a loaded 2-CPU runner the holdout was still a zombie when the test
