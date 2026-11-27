@@ -367,6 +367,7 @@ jobs:
           - pkg/process
           - pkg/service
           - pkg/timedate
+          - cmd/slinit
           - cmd/slinit-immortal-convert
           - cmd/slinit-killall5
           - cmd/slinit-openrc-convert
