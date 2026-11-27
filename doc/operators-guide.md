@@ -41,7 +41,8 @@ without starting anything, that is not what `enable` does.
 **4. There is no `.socket` / `.timer` / `.path` unit.** Those capabilities
 exist, but as directives on the service itself — socket activation, the
 `cron-calendar` / `cron-interval` family, path activation. One file per
-service, always.
+service, always. (A systemd unit's own `foo.socket` is read with
+`foo.service`, and becomes its `socket-listen`; see below.)
 
 **5. A service can be running without being "enabled".** slinit
 distinguishes *marked active* (something or someone asked for it
@@ -58,7 +59,9 @@ column](#reading-the-state-column).
 | `systemctl stop X` | `slinitctl stop X` | blocks until it has stopped; `--no-wait` to return immediately; hard dependents stop too |
 | `systemctl restart X` | `slinitctl restart X` | |
 | `systemctl status X` | `slinitctl status X` | |
-| `systemctl cat X` | `slinitctl show X` | dumps effective config as `Key=Value`, not the file text |
+| `systemctl cat X` | `slinitctl cat X` | the file, its overrides and drop-ins, and for a systemd unit what it reads as |
+| `systemctl show X` | `slinitctl show X` | dumps effective config as `Key=Value` |
+| `systemctl clean X` | `slinitctl clean X` | `--what=` as systemd's; the service must be stopped |
 | `systemctl list-units` | `slinitctl list` (`ls`) | |
 | `systemctl is-active X` | `slinitctl is-started X` | prints the state; exit 0 only when started |
 | `systemctl is-failed X` | `slinitctl is-failed X` | |
@@ -94,8 +97,13 @@ slinitctl start nginx          # finds /etc/systemd/system/nginx.service
 
 Both spellings work: `nginx` and `nginx.service`. A native description in
 `/etc/slinit.d` always wins, so migrating one service at a time is safe.
-Only `.service` loads; timers, sockets and targets are not units slinit
-pretends to understand.
+Only `.service` loads; timers and targets are not units slinit pretends
+to understand. A service's socket unit (`nginx.socket`, or what its
+`Sockets=` names) is read with it: its listeners become `socket-listen`,
+so a daemon expecting to be handed its sockets gets them. Drop-ins
+(`nginx.service.d/*.conf`) apply as in systemd. A daemon using
+`Type=notify` gets `$NOTIFY_SOCKET`, and a shell script under it can
+use `slinit-notify --ready`.
 
 To see what a unit becomes, and what did not survive:
 
@@ -107,13 +115,18 @@ It prints the slinit description on stdout and the notes on stderr. Read
 the notes. The common ones:
 
 - **`After=…​.target` dropped.** Add `depends-on:` or `waits-for:`
-  naming a real service if the ordering matters. `After=` on a service
-  becomes `waits-for:`, as `Wants=` does; a unit loaded directly leaves
-  out an `After=` or `Wants=` naming a unit that is not installed, as
-  systemd does.
-- **`ExecReload` dropped.** slinit's reload is signal-based; add
-  `reload-signal = HUP` (or whichever signal the daemon wants) to a native
-  description. A unit cannot express it.
+  naming a real service if the ordering matters. `After=` and `Before=`
+  on a service become `after:` and `before:`, ordering only, as in
+  systemd (through 4.0 `After=` was `waits-for:` and started the other
+  service); `Wants=` is `waits-for:`. A unit loaded directly leaves out
+  a reference to a unit that is not installed, as systemd does, and a
+  start-order loop between units is broken at load with a warning
+  naming it, as systemd breaks it.
+- **`ExecReload` other than a signal dropped.** slinit's reload is
+  signal-based: `ExecReload=/bin/kill -HUP $MAINPID` becomes
+  `reload-signal = HUP`; a reload *command* has no counterpart, so make
+  the daemon reload on a signal and set `reload-signal` in a native
+  description.
 - **`PrivateUsers` and a few others** have no slinit equivalent and are
   reported as warnings so you know the hardening is not there; so are
   the forms of the sandbox directives slinit cannot express (a `+` path,
