@@ -651,6 +651,19 @@ verified with `git tag -v`.
 
 ### Changed
 
+- **A rotated or filtered logfile wrote each line with its own
+  write(2)**: a service whose `logfile` goes through the log rotator
+  (`log-max-size`, filters, rate limit, alert file...) cost PID 1 one
+  write and one mutex round trip per line. The reader now writes the
+  lines of one read chunk with a single write, cut at the line where
+  rotation falls. If that write fails, each line gets what its own write
+  would have had (same bytes on disk, size accounting, min-files drain).
+  A logfile that is not a regular file (FIFO, device), an
+  `output-logger` beside it, or a syslog forwarder keeps per-line
+  writes. Benchmark: 268 to 751 MiB/s without the journal, 95 to 147
+  MiB/s with it. *Compat:* journal events for a chunk's lines are sent
+  after the chunk's file write rather than after each line's.
+
 - **A mistyped shutdown time shut the machine down at once**:
   `slinitctl reboot 10:3O`, `slinitctl poweroff +5min` or
   `slinitctl shutdown halt soon` took the word that was not a time as

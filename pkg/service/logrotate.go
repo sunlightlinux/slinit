@@ -153,7 +153,43 @@ type LogRotator struct {
 	// SLINIT_TARGET_PID string of journal line events. Under mu.
 	journalPID    int
 	journalPIDStr string
+
+	// Batched writes, used by readLoop for the lines of one read chunk
+	// (processLine called from anywhere else writes each line at once).
+	// batching is the reader goroutine's own. pend holds the bytes of
+	// accepted lines not yet written to file, pendEnds where each line
+	// ends in it; both under mu, and only ever for a regular file
+	// (fileRegular, under mu), whose O_APPEND writes do not split.
+	// Whoever takes mu to look at the file writes them first
+	// (flushPendLocked), so file, rotation and size tracking see what
+	// per-line writes left. journalQ holds the lines' journal events,
+	// sent after their file write, by the reader only.
+	batching    bool
+	fileRegular bool
+	pend        []byte
+	pendEnds    []int
+	journalQ    []journalLine
+	journalBuf  []byte
+
+	// writeFile writes to the log file; nil is (*os.File).Write. Tests
+	// set it to inject short writes and ENOSPC.
+	writeFile func(*os.File, []byte) (int, error)
 }
+
+// journalLine is one line event in LogRotator.journalQ; its message is
+// journalBuf[off:end].
+type journalLine struct {
+	level    int
+	pid      string
+	off, end int
+}
+
+// Bounds on what one batch holds before it is written out: a read
+// chunk can be up to 1MB and its lines' decoration makes it larger.
+const (
+	rotatorBatchBytes = 64 << 10
+	rotatorBatchLines = 1024
+)
 
 // LogRotatorConfig holds configuration for a LogRotator.
 type LogRotatorConfig struct {
@@ -427,6 +463,9 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 	}
 	buf := make([]byte, bufSize)
 	var lineBuf []byte
+	// A sink and a forwarder get each line as it is processed; keep
+	// the file writes in step with them by not batching at all.
+	lr.batching = lr.sink == nil && lr.forwarder == nil
 	// discarding == true means we already emitted a truncated line
 	// for the current input line and are now dropping bytes until we
 	// see the terminating '\n'. Guards against a runaway producer
@@ -484,12 +523,14 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 					discarding = true
 				}
 			}
+			lr.flushBatch()
 		}
 		if err != nil {
 			// Flush remaining partial line (unless we're in discard mode
 			// and the producer died without ever emitting '\n').
 			if !discarding && len(lineBuf) > 0 {
 				lr.processLine(lr.capLine(lineBuf))
+				lr.flushBatch()
 			}
 			return
 		}
@@ -626,8 +667,18 @@ func (lr *LogRotator) processLine(line []byte) {
 	var emitLevel int
 	var emitPID string
 	defer func() {
-		if emitLine {
+		if !emitLine {
+			return
+		}
+		if !lr.batching {
 			emitJournalLogLinePID(lr.serviceName, emitLevel, matchLine, emitPID)
+			return
+		}
+		off := len(lr.journalBuf)
+		lr.journalBuf = append(lr.journalBuf, matchLine...)
+		lr.journalQ = append(lr.journalQ, journalLine{emitLevel, emitPID, off, len(lr.journalBuf)})
+		if len(lr.journalQ) >= rotatorBatchLines || len(lr.journalBuf) >= rotatorBatchBytes {
+			lr.flushBatch()
 		}
 	}()
 
@@ -640,6 +691,7 @@ func (lr *LogRotator) processLine(line []byte) {
 	// one-shot latch (alertOpenFailed) prevents log-spam if the alert
 	// path is broken.
 	if lr.alertLevel >= 0 && lineLevel <= lr.alertLevel {
+		lr.flushPendLocked()
 		lr.writeAlertLocked(out)
 	}
 
@@ -658,9 +710,14 @@ func (lr *LogRotator) processLine(line []byte) {
 		}
 	}
 
-	// Check size-based rotation
-	if lr.maxSize > 0 && lr.currentSize+int64(len(out)) > lr.maxSize {
-		lr.rotateLocked()
+	// Check size-based rotation. Pending lines count as written; if
+	// this line would not fit, write them out first, as their size
+	// was not added for any that failed.
+	if lr.maxSize > 0 && lr.currentSize+int64(len(lr.pend)+len(out)) > lr.maxSize {
+		lr.flushPendLocked()
+		if lr.currentSize+int64(len(out)) > lr.maxSize {
+			lr.rotateLocked()
+		}
 	}
 
 	// UDP syslog forward: fire-and-forget copy to the remote receiver.
@@ -709,12 +766,82 @@ func (lr *LogRotator) processLine(line []byte) {
 		emitLine, emitLevel, emitPID = true, lineLevel, lr.journalPIDStr
 	}
 
-	n, err := lr.file.Write(out)
+	if lr.batching && lr.file != nil && lr.fileRegular {
+		lr.pend = append(lr.pend, out...)
+		lr.pendEnds = append(lr.pendEnds, len(lr.pend))
+		if len(lr.pend) >= rotatorBatchBytes {
+			lr.flushPendLocked()
+		}
+		return
+	}
+	lr.writeLineLocked(out)
+}
+
+// flushBatch writes the pending lines to file and sends their journal
+// events. Reader goroutine only, without mu.
+func (lr *LogRotator) flushBatch() {
+	lr.mu.Lock()
+	lr.flushPendLocked()
+	lr.mu.Unlock()
+	for _, e := range lr.journalQ {
+		emitJournalLogLinePID(lr.serviceName, e.level, lr.journalBuf[e.off:e.end], e.pid)
+	}
+	lr.journalQ = lr.journalQ[:0]
+	lr.journalBuf = lr.journalBuf[:0]
+}
+
+// flushPendLocked writes the pending lines with one write. If that
+// fails, each line's outcome is what its own write would have had: the
+// lines the write covered succeeded, the one it stopped in (or at the
+// start of) failed with its error, and each line after it is written on its own. Must be
+// called with mu held.
+func (lr *LogRotator) flushPendLocked() {
+	if len(lr.pend) == 0 {
+		return
+	}
+	pend, ends := lr.pend, lr.pendEnds
+	lr.pend, lr.pendEnds = pend[:0], ends[:0]
+	n, err := lr.fileWrite(pend)
 	if err == nil {
 		lr.currentSize += int64(n)
 		return
 	}
+	start := 0
+	for _, end := range ends {
+		line := pend[start:end]
+		switch {
+		case end <= n:
+			lr.currentSize += int64(len(line))
+		case start <= n: // the line whose write the error came from
+			lr.writeFailedLocked(line, err)
+		default:
+			lr.writeLineLocked(line)
+		}
+		start = end
+	}
+}
 
+func (lr *LogRotator) fileWrite(b []byte) (int, error) {
+	if lr.writeFile != nil {
+		return lr.writeFile(lr.file, b)
+	}
+	return lr.file.Write(b)
+}
+
+// writeLineLocked writes one line to the log file. Must be called with
+// mu held.
+func (lr *LogRotator) writeLineLocked(out []byte) {
+	n, err := lr.fileWrite(out)
+	if err == nil {
+		lr.currentSize += int64(n)
+		return
+	}
+	lr.writeFailedLocked(out, err)
+}
+
+// writeFailedLocked handles a line whose write failed with err. Must be
+// called with mu held.
+func (lr *LogRotator) writeFailedLocked(out []byte, err error) {
 	// svlogd Nmin analogue: if the filesystem is full and we have
 	// rotated files we can sacrifice, drain oldest ones down to
 	// minFiles and retry the write once. Better a shorter log history
@@ -724,7 +851,7 @@ func (lr *LogRotator) processLine(line []byte) {
 	// tiny partition), which retry cannot fix.
 	if lr.minFiles > 0 && errors.Is(err, syscall.ENOSPC) {
 		if lr.freeSpaceLocked() {
-			if n2, err2 := lr.file.Write(out); err2 == nil {
+			if n2, err2 := lr.fileWrite(out); err2 == nil {
 				lr.currentSize += int64(n2)
 			}
 		}
@@ -878,6 +1005,7 @@ func (lr *LogRotator) openFileLocked() error {
 	if err == nil {
 		lr.currentSize = info.Size()
 	}
+	lr.fileRegular = err == nil && info.Mode().IsRegular()
 	lr.file = f
 	lr.openFiles[0].Store(f)
 	return nil
@@ -888,6 +1016,7 @@ func (lr *LogRotator) rotateLocked() {
 	if lr.file == nil {
 		return
 	}
+	lr.flushPendLocked()
 	lr.file.Close()
 	lr.file = nil
 	lr.currentSize = 0
