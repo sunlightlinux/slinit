@@ -147,12 +147,23 @@ var KnownSettings = map[string]OperatorType{
 	"load-options": OpEquals | OpPlusEqual,
 
 	// rlimits
-	"rlimit-nofile":    OpEquals,
-	"rlimit-core":      OpEquals,
-	"rlimit-data":      OpEquals,
-	"rlimit-as":        OpEquals,
-	"rlimit-memlock":   OpEquals,
-	"rlimit-addrspace": OpEquals, // dinit compat alias for rlimit-as
+	"rlimit-nofile":     OpEquals,
+	"rlimit-core":       OpEquals,
+	"rlimit-data":       OpEquals,
+	"rlimit-as":         OpEquals,
+	"rlimit-memlock":    OpEquals,
+	"rlimit-cpu":        OpEquals,
+	"rlimit-fsize":      OpEquals,
+	"rlimit-stack":      OpEquals,
+	"rlimit-rss":        OpEquals,
+	"rlimit-nproc":      OpEquals,
+	"rlimit-locks":      OpEquals,
+	"rlimit-sigpending": OpEquals,
+	"rlimit-msgqueue":   OpEquals,
+	"rlimit-nice":       OpEquals,
+	"rlimit-rtprio":     OpEquals,
+	"rlimit-rttime":     OpEquals,
+	"rlimit-addrspace":  OpEquals, // dinit compat alias for rlimit-as
 
 	// cgroup
 	"cgroup":        OpEquals,

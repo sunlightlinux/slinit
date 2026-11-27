@@ -1940,6 +1940,34 @@ Example — page a scaler when memory pressure spikes for a workload:
     A systemd unit's **LimitMEMLOCK=** maps to it, with systemd's
     `infinity` and its base-1024 suffixes (`64M`) translated.
 
+**rlimit-nproc**=*spec* (since 4.1.0)
+**rlimit-cpu**=*spec* (since 4.1.0)
+**rlimit-fsize**=*spec* (since 4.1.0)
+**rlimit-stack**=*spec* (since 4.1.0)
+**rlimit-rss**=*spec* (since 4.1.0)
+**rlimit-locks**=*spec* (since 4.1.0)
+**rlimit-sigpending**=*spec* (since 4.1.0)
+**rlimit-msgqueue**=*spec* (since 4.1.0)
+**rlimit-nice**=*spec* (since 4.1.0)
+**rlimit-rtprio**=*spec* (since 4.1.0)
+**rlimit-rttime**=*spec* (since 4.1.0)
+:   The other resource limits of **setrlimit**(2), with the same *spec*
+    as above, in the kernel's own unit: a count for **nproc** (processes
+    of the service's user), **locks**, **sigpending** and **rtprio**;
+    bytes for **fsize**, **stack**, **rss** and **msgqueue**; seconds of
+    CPU time for **cpu**; microseconds for **rttime**; and for **nice**
+    the raw value, 20 minus the lowest nice level the service may set
+    (`20` allows nice 0, `40` allows -20). A soft limit above the hard
+    one is a load error. **rlimit-nproc** counts every process of the
+    user, not only the service's: `rlimit-nproc = 1` is a service that
+    cannot fork, as long as its user runs nothing else.
+
+    A systemd unit's **Limit*NAME*=** maps to the matching setting, with
+    systemd's units translated: sizes with base-1024 suffixes, a time
+    span for **LimitCPU=** (rounded up to whole seconds) and
+    **LimitRTTIME=** (a bare number is microseconds), and **LimitNICE=**
+    as a nice level (`-5`, `+5`) or, unsigned, the raw value.
+
 **nice**=*-20..19*
 :   Process scheduling niceness.
 

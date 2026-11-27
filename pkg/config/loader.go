@@ -2871,6 +2871,17 @@ func applyRlimits(rec *service.ServiceRecord, desc *ServiceDescription) {
 	if desc.RlimitMemlock != nil {
 		rec.AddRlimit(process.Rlimit{Resource: rlimitMemlock, Soft: desc.RlimitMemlock[0], Hard: desc.RlimitMemlock[1]})
 	}
+	// In resource order, so the list (and `slinitctl show`) is the same
+	// on every load.
+	res := make([]int, 0, len(desc.Rlimits))
+	for r := range desc.Rlimits {
+		res = append(res, r)
+	}
+	slices.Sort(res)
+	for _, r := range res {
+		lim := desc.Rlimits[r]
+		rec.AddRlimit(process.Rlimit{Resource: r, Soft: lim[0], Hard: lim[1]})
+	}
 }
 
 // calcServiceDepth computes a service's depth as max(dep.depth + 1) over all deps.

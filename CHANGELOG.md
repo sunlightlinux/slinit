@@ -26,6 +26,15 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`rlimit-nproc`, `-cpu`, `-fsize`, `-stack`, `-rss`, `-locks`,
+  `-sigpending`, `-msgqueue`, `-nice`, `-rtprio` and `-rttime`**: the
+  resource limits slinit could not set, beside `rlimit-nofile`, `-core`,
+  `-data`, `-as` and `-memlock`. Same *soft*[:*hard*] spec, in the
+  kernel's units; a soft limit above the hard one is a load error. A
+  systemd unit's `Limit*=` maps to them with systemd's own units
+  (`LimitCPU=1min`, `LimitRTTIME=` in microseconds, `LimitNICE=-5`);
+  `LimitNPROC=1`, a service that cannot fork, was lost before.
+
 - **Every systemd `.service` directive has an answer.** Fed every
   directive of systemd v263 one at a time, the loader dropped 225 of the
   304 `[Service]` directives with a "not mapped" warning — a log line

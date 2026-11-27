@@ -301,8 +301,6 @@ func TestSystemdResourceGapsAndIgnored(t *testing.T) {
 		{"BlockIOReadBandwidth=/dev/sda 1M\n", "NOTE", "removed in systemd 258"},
 		{"DeviceAllow=/dev/null rw\n", "WARN", "device cgroup"},
 		{"IPAddressDeny=any\n", "WARN", "IP filter"},
-		{"LimitNPROC=1\n", "WARN", "RLIMIT_NPROC"},
-		{"LimitCPU=10\n", "NOTE", "rlimit-nofile"},
 		{"StartupCPUWeight=20\n", "NOTE", "boots"},
 		{"MemoryPressureWatch=yes\n", "NOTE", "PRESSURE_WATCH"},
 		{"ManagedOOMSwap=kill\n", "NOTE", "OOM"},

@@ -122,16 +122,6 @@ func init() {
 		"MemoryPressureWatch", "MemoryPressureThresholdSec", "CPUPressureWatch", "CPUPressureThresholdSec",
 		"IOPressureWatch", "IOPressureThresholdSec")
 
-	// rlimits slinit does not set. The service inherits slinit's own.
-	gap(false, "slinit sets only rlimit-nofile, -core, -data, -as and -memlock; the service inherits slinit's own limit",
-		"LimitCPU", "LimitFSIZE", "LimitLOCKS", "LimitMSGQUEUE", "LimitNICE", "LimitRSS",
-		"LimitRTPRIO", "LimitRTTIME", "LimitSIGPENDING", "LimitSTACK")
-	// LimitNPROC= is the one units use as a sandbox (LimitNPROC=1: the
-	// service cannot fork), so losing it is a confinement gap.
-	gap(true, "slinit sets only rlimit-nofile, -core, -data, -as and -memlock; the service can fork as much as "+
-		"slinit's own RLIMIT_NPROC allows (cgroup-pids-max caps the service's tasks, not the user's)",
-		"LimitNPROC")
-
 	// eBPF and netfilter based confinement.
 	gap(true, "slinit has no device cgroup filter (systemd attaches an eBPF device program); "+
 		"use private-devices or a mount namespace to hide device nodes",

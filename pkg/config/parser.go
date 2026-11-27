@@ -475,6 +475,8 @@ type ServiceDescription struct {
 	RlimitCore   *[2]uint64
 	RlimitData   *[2]uint64
 	RlimitAs     *[2]uint64
+	// Rlimits holds the limits named in rlimitResources, by resource.
+	Rlimits map[int][2]uint64
 
 	// RlimitMemlock: RLIMIT_MEMLOCK. With mlockall it replaces the
 	// runner's raise to unlimited.
@@ -3431,6 +3433,23 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.RlimitMemlock = lim
 
+	case "rlimit-cpu", "rlimit-fsize", "rlimit-stack", "rlimit-rss", "rlimit-nproc",
+		"rlimit-locks", "rlimit-sigpending", "rlimit-msgqueue", "rlimit-nice",
+		"rlimit-rtprio", "rlimit-rttime":
+		lim, err := parseRlimit(value)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %v", setting, err)
+		}
+		if lim[0] > lim[1] {
+			// setrlimit(2) refuses it with EINVAL when the service starts;
+			// said here, it is a load error naming the line.
+			return fmt.Errorf("invalid %s: soft limit %d is above the hard limit %d", setting, lim[0], lim[1])
+		}
+		if desc.Rlimits == nil {
+			desc.Rlimits = map[int][2]uint64{}
+		}
+		desc.Rlimits[rlimitResources[setting]] = *lim
+
 	case "rlimit-as", "rlimit-addrspace":
 		lim, err := parseRlimit(value)
 		if err != nil {
@@ -3902,6 +3921,25 @@ func parseReadyNotification(desc *ServiceDescription, value string) error {
 
 // parseRlimit parses an rlimit value. Formats: "N" (both soft and hard),
 // "soft:hard", or "unlimited".
+// rlimitResources are the resource limits beyond the five with settings
+// of their own (nofile, core, data, as, memlock), each taking the same
+// spec in the kernel's own unit: seconds for cpu, microseconds for
+// rttime, the raw 0..40 value for nice (20 - the lowest nice level
+// allowed), counts or bytes for the rest.
+var rlimitResources = map[string]int{
+	"rlimit-cpu":        unix.RLIMIT_CPU,
+	"rlimit-fsize":      unix.RLIMIT_FSIZE,
+	"rlimit-stack":      unix.RLIMIT_STACK,
+	"rlimit-rss":        unix.RLIMIT_RSS,
+	"rlimit-nproc":      unix.RLIMIT_NPROC,
+	"rlimit-locks":      unix.RLIMIT_LOCKS,
+	"rlimit-sigpending": unix.RLIMIT_SIGPENDING,
+	"rlimit-msgqueue":   unix.RLIMIT_MSGQUEUE,
+	"rlimit-nice":       unix.RLIMIT_NICE,
+	"rlimit-rtprio":     unix.RLIMIT_RTPRIO,
+	"rlimit-rttime":     unix.RLIMIT_RTTIME,
+}
+
 func parseRlimit(value string) (*[2]uint64, error) {
 	const unlimited = ^uint64(0) // RLIM_INFINITY
 
