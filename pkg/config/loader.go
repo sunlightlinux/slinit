@@ -1045,8 +1045,25 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// dependencies, and keeping the mark made them a false cycle.
 	delete(dl.loading, name)
 
-	// Calculate dependency depth
+	// Calculate dependency depth. A before: edge sits on its target,
+	// which loaded earlier: its depth, and that of what depends on it,
+	// grows with this service's.
 	svc.Record().SetDepDepth(calcServiceDepth(svc))
+	var beforeDepth service.DepDepthUpdater
+	for _, d := range ownedDeps(svc) {
+		if d.depType == service.DepBefore {
+			beforeDepth.AddPotentialUpdate(d.to)
+		}
+	}
+	if err := beforeDepth.ProcessUpdates(); err != nil {
+		beforeDepth.Rollback()
+		for _, d := range ownedDeps(svc) {
+			rmResolvedDep(svc, d)
+		}
+		dl.set.RemoveService(svc)
+		return nil, &ServiceLoadError{ServiceName: name, Message: err.Error()}
+	}
+	beforeDepth.Commit()
 
 	// Apply settings to the service record
 	applyToService(svc, desc)
@@ -1728,10 +1745,9 @@ type depKey struct {
 // adding before removing, so a surviving edge is never taken away and no
 // target loses its last holder in passing.
 //
-// BEFORE-typed deps are excluded on both sides because
-// updateDependencies also excludes them from the tear-down (they
-// belong to whichever service originally declared `before:` on
-// this one, not to the description we're reloading).
+// Both sides compare what the description owns (ownedRecordDeps): the
+// before: edges it declared, held by their targets, and not the ones
+// other services' before: put on this record.
 func descDepsMatchCurrent(rec *service.ServiceRecord, desc *ServiceDescription) bool {
 	// Directory-based deps: any presence disables the fast-path.
 	if len(desc.DependsOnD)+len(desc.DependsMSD)+
@@ -1845,7 +1861,59 @@ func (dl *DirLoader) resolveDependencies(svc service.Service, desc *ServiceDescr
 		}
 	}
 
+	if err := checkBeforeCycles(svc, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// checkBeforeCycles refuses a before: this service could never keep:
+// one naming itself, or one whose target it already waits for, directly
+// or through the edges in the graph, as dinit refuses it
+// (load-service.cc, check_cycle(settings.depends, before_svc)). Stored on
+// its target, `a: before: x` makes x wait for a; if a waits for x, both
+// sit in STARTING for good. The load-time cycle checks pass ordering
+// edges over, which is right for after:, held by the service that waits;
+// a before: is held by the other end and so needs this.
+func checkBeforeCycles(svc service.Service, deps []resolvedDep) error {
+	var starts []service.Service
+	for _, d := range deps {
+		if d.depType != service.DepBefore {
+			starts = append(starts, d.to)
+		}
+	}
+	// The before: edges other services put on svc: svc waits for those.
+	for _, e := range svc.Record().Dependencies() {
+		if e.DepType == service.DepBefore {
+			starts = append(starts, e.To)
+		}
+	}
+	for _, d := range deps {
+		if d.depType != service.DepBefore {
+			continue
+		}
+		if d.to == svc {
+			return &ServiceLoadError{ServiceName: svc.Name(), Message: "before: names the service itself"}
+		}
+		seen := map[service.Service]bool{svc: true}
+		queue := slices.Clone(starts)
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			if cur == d.to {
+				return &ServiceLoadError{ServiceName: svc.Name(), Message: fmt.Sprintf(
+					"cyclic dependency: before: %s, but this service already waits for %s", d.to.Name(), d.to.Name())}
+			}
+			if seen[cur] {
+				continue
+			}
+			seen[cur] = true
+			for _, e := range cur.Record().Dependencies() {
+				queue = append(queue, e.To)
+			}
+		}
+	}
+	return nil
 }
 
 // checkLoadingCycle refuses a dependency on a service that is still being
