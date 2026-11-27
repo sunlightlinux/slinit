@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -1042,7 +1043,20 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading service description for %s: %w", name, err)
+		// Reported like any other error in the file, with its name and
+		// the line it stopped at: "bufio.Scanner: token too long" alone
+		// did not say which of the service directories held the file,
+		// nor where in it the problem was.
+		msg := err.Error()
+		if errors.Is(err, bufio.ErrTooLong) {
+			msg = fmt.Sprintf("line too long (over %d bytes)", bufio.MaxScanTokenSize)
+		}
+		return nil, &ParseError{
+			ServiceName: name,
+			FileName:    fileName,
+			Line:        lineNum + 1,
+			Message:     msg,
+		}
 	}
 
 	resolveLogDestinations(desc)

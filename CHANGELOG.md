@@ -149,6 +149,12 @@ verified with `git tag -v`.
   start process ran on, untracked. Only dependents still waiting for
   the service are failed now.
 
+- **A service file with a line over 64 KiB failed without saying
+  where**: "reading service description for svc: bufio.Scanner: token
+  too long", with no file name and no line. It is now reported as a
+  description error naming the file and line, like any other.
+  *Compat:* `slinitctl` reports such a service as having a description
+  error instead of a load error.
 - **The boot-failure menu said "No service files found" for every
   load failure.** A boot file with a syntax error, or a dependency
   missing or broken, was headed by a claim that no file existed, with
