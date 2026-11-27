@@ -2196,7 +2196,12 @@ func main() {
 			if kOpts.Mode == bootmode.Rescue {
 				mountLocalFsBestEffort(logger)
 			}
-			logger.Notice("bootmode=%s: shell active on /dev/console (exit shell or `slinitctl shutdown` to reboot)", kOpts.Mode)
+			// Warn, not Notice: the boot console shows warnings and
+			// errors only, and this line is the operator's one hint at
+			// why there is a bare shell prompt and that leaving it
+			// reboots. At Notice an operator who booted `single` got
+			// "slinit booting..." and a prompt, nothing else.
+			logger.Warn("bootmode=%s: shell active on /dev/console (exit shell or `slinitctl shutdown` to reboot)", kOpts.Mode)
 			label := fmt.Sprintf("bootmode=%s", kOpts.Mode)
 			go func() {
 				// Wrap panics so a bug in runRescueShell (e.g. a

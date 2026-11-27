@@ -149,6 +149,11 @@ verified with `git tag -v`.
   start process ran on, untracked. Only dependents still waiting for
   the service are failed now.
 
+- **A rescue or emergency boot gave a bare shell prompt with no word
+  of why.** The line saying the shell is up, and that leaving it
+  reboots, was a notice, and the boot console shows warnings and
+  errors only: booting with `single` showed "slinit booting..." and
+  `~ #`. It is now a warning, so it reaches the console.
 - **A stray word on the kernel command line hid every slinit option
   after it**, `-t` included, which slinit(8) says is always honoured.
   As PID 1, option parsing stopped at the first word that was not an
