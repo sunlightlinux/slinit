@@ -661,6 +661,38 @@ In container mode (**-o**) the same supervision logic runs but
 shutdown is replaced with a clean process exit, leaving teardown to
 the container runtime.
 
+**Task limits.** slinit waits for its children without an OS thread
+per child, so its thread count does not grow with the number of
+services, output loggers or on-demand sockets (since 4.1.0). The Go
+runtime ends the whole process when the kernel refuses it a thread — a
+kernel panic for PID 1 — so slinit creates the threads it will need
+later at start-up and keeps them idle: GOMAXPROCS + 16, but at most a
+quarter of the tasks its pids cgroup still allows (*pids.max* minus
+*pids.current*, the tightest from its own cgroup up to the root, on
+cgroup v2 or through the v1 *pids* controller) and an eighth of
+**RLIMIT_NPROC** when that limit applies (it does not to root of the
+initial user namespace; it does to root in a rootless container). When
+the reserve is cut that far, GOMAXPROCS is lowered to half of it, so the
+runtime never wants more threads at once than it holds. When no limit
+can be read at all and slinit is not PID 1 of a machine (a container
+whose cgroup is not visible), it reserves 8. A container started with a
+small **\--pids-limit** therefore still boots; give it room for the
+services as well as for slinit's few threads.
+
+**Machine ID and hostname.** Every journal event carries the machine
+ID from */etc/machine-id*. An empty file, or one holding
+`uninitialized`, is treated as no ID at all, as systemd does, and one
+that is not 32 hexadecimal digits is reported; in both cases a
+transient ID is used for the boot and slinit starts normally (since
+4.0.4; before, such a file stopped slinit at its first service event,
+which as PID 1 was a kernel panic and in a container an exit at
+start). As PID 1, slinit sets the kernel hostname from the first line
+of */etc/hostname* that is neither empty nor a comment, cleaned as
+systemd's **hostname_cleanup** does (a trailing dot is dropped, so
+`host.example.com.` becomes `host.example.com`); a name still invalid
+after that is not set (since 4.0.4). If the kernel already has the
+file's line verbatim (a container runtime sets it), it is left alone.
+
 ## LOGGING
 
 slinit logs to two facilities: the *console* (standard output, which
