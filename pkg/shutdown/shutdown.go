@@ -8,8 +8,12 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -172,6 +176,7 @@ var (
 	getpidFunc         = os.Getpid
 	syncFunc           = syscall.Sync
 	rebootFunc         = syscall.Reboot
+	restart2Func       = restart2
 	runHookFunc        = runShutdownHook
 	logoutAllUsersFunc = utmp.LogoutAllUsers
 	logShutdownFunc    = utmp.LogShutdown
@@ -657,10 +662,50 @@ func statNeedsWait(stat string) bool {
 	return err != nil || flags&pfKthread == 0
 }
 
+// rebootArgument is the argument a reboot passes to the kernel
+// (SetRebootArgument), empty for a plain reboot.
+var rebootArgument atomic.Pointer[string]
+
+// SetRebootArgument sets the argument the next reboot hands the kernel
+// through LINUX_REBOOT_CMD_RESTART2, as systemd's RebootArgument= does:
+// the boot loader or firmware reads it (a recovery mode, a slot to boot).
+// It comes from the failure-action or success-action of a service with
+// reboot-argument set; "" clears it.
+func SetRebootArgument(arg string) { rebootArgument.Store(&arg) }
+
+func rebootArg() string {
+	if p := rebootArgument.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// restart2 is reboot(2) with LINUX_REBOOT_CMD_RESTART2 and arg, which
+// syscall.Reboot cannot pass.
+func restart2(arg string) error {
+	b, err := unix.BytePtrFromString(arg)
+	if err != nil {
+		return err
+	}
+	_, _, errno := unix.Syscall6(unix.SYS_REBOOT, unix.LINUX_REBOOT_MAGIC1, unix.LINUX_REBOOT_MAGIC2,
+		unix.LINUX_REBOOT_CMD_RESTART2, uintptr(unsafe.Pointer(b)), 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 // rebootSystem maps a ShutdownType to the appropriate Linux reboot command
-// and issues the syscall.
+// and issues the syscall. A reboot with an argument set goes through
+// RESTART2; a kernel that refuses it (an architecture or firmware without
+// support) still gets the plain reboot the operator asked for.
 func rebootSystem(shutdownType service.ShutdownType) error {
 	cmd, _ := KernelShutdownCmd(shutdownType)
+	if arg := rebootArg(); shutdownType == service.ShutdownReboot && arg != "" {
+		if err := restart2Func(arg); err == nil {
+			return nil
+		}
+	}
 	return rebootFunc(cmd)
 }
 

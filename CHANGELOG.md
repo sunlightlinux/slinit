@@ -38,6 +38,12 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`reboot-argument` reaches the kernel.** A `failure-action` or
+  `success-action` that reboots now passes the service's
+  `reboot-argument` to `reboot(2)` through `LINUX_REBOOT_CMD_RESTART2`,
+  as systemd's `RebootArgument=` does; it was only logged. A kernel that
+  refuses RESTART2 gets a plain reboot.
+
 - **`log-type = journal`**: a process service's output goes to the
   journal, where `slinit-journalctl -u NAME` shows it, with no logfile.
   Output reached the journal only through a logfile's rotator, so a

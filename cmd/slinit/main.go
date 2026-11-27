@@ -2053,11 +2053,12 @@ func main() {
 		// slinit itself — only sensible in user/container mode where
 		// PID 1 abandonment isn't a kernel panic; in PID1 mode we
 		// downgrade it to a warning to keep the system bootable.
-		// rebootArg is parsed and stored per service for diagnostics;
-		// wiring it through LINUX_REBOOT_CMD_RESTART2 is a follow-up.
+		// rebootArg (the service's reboot-argument) goes to the kernel
+		// with the reboot, through LINUX_REBOOT_CMD_RESTART2.
 		serviceSet.OnSystemAction = func(act service.SystemAction, rebootArg string) {
-			if rebootArg != "" {
-				logger.Info("system-action reboot-argument=%q (not yet forwarded to reboot(2))", rebootArg)
+			if rebootArg != "" && act.AsShutdownType() == service.ShutdownReboot {
+				logger.Info("system-action reboot with argument %q", rebootArg)
+				shutdown.SetRebootArgument(rebootArg)
 			}
 			if act == service.ActionExit {
 				if isPID1 {

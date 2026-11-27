@@ -1004,15 +1004,19 @@ trigger either action.
     transition the operator wants the whole system to follow.
 
 **reboot-argument**=*string*
-:   Argument forwarded to **reboot**(2) when the chosen action is
-    *reboot*. Currently parsed and logged; kernel handoff via
-    LINUX_REBOOT_CMD_RESTART2 is a follow-up.
+:   Argument handed to the kernel when **failure-action** or
+    **success-action** reboots the machine, through **reboot**(2)'s
+    LINUX_REBOOT_CMD_RESTART2, as systemd's **RebootArgument=** is; the
+    boot loader or firmware may read it (a recovery mode, a slot). A
+    kernel that refuses RESTART2 gets a plain reboot (since 4.1.0;
+    before, the argument was only logged).
 
 **runtime-max-sec**=*duration*
 :   Hard cap on the total time the service may stay in STARTED.
-    When the timer fires the service is asked to stop via the same
-    path an operator stop uses (so **stop-command** runs and
-    **stop-timeout** / SIGKILL escalation still apply). Useful for
+    When the timer fires the service is stopped (**stop-command**
+    runs and **stop-timeout** / SIGKILL escalation still apply) and
+    the run ends as a timeout, a failure: **restart** decides whether
+    it comes back (see above). Useful for
     self-terminating workloads and for mitigating slow leaks
     without an external supervisor. The clock starts when the
     service enters STARTED; restarts reset it.
