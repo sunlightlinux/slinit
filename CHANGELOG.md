@@ -229,6 +229,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A prepared-by dependency was restarted twice for one crash.** When
+  the dependency crashed and restarted itself, the dependent its crash
+  stopped then restarted it again on the way back up: the fresh run was
+  SIGTERMed a moment after its exec (a prepare step killed part-way)
+  and one more spawn ran past restart-limit-count, uncounted. The
+  dependent now restarts it only if it has not started again since the
+  dependent came up. Present in 4.0.x; it made
+  TestCrashLoopTopologiesSettle fail one run in three or four.
+
 - **`condition-security = audit` never held.** It looked for "audit" in
   `/sys/kernel/security/lsm`, but audit is not an LSM and never appears
   there. It now holds when the kernel's audit netlink socket opens and

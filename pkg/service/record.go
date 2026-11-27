@@ -508,6 +508,12 @@ type ServiceRecord struct {
 	startedTime      time.Time // when Started() was called (reached STARTED)
 	stoppedTime      time.Time // when Stopped() was called (reached STOPPED)
 
+	// startGen counts initiateStart calls: a PREPARED_BY dependent
+	// compares it across its stop (see ServiceDep.toStartGen).
+	// Atomic: AddDep reads it for the dependent's note, and add-dep
+	// runs under the graph lock rather than queueMu.
+	startGen atomic.Uint64
+
 	// Pre-start fail-fast path checks (OpenRC-inspired):
 	// BringUp refuses to start the service if any of these paths is missing.
 	requiredFiles []string
@@ -3437,6 +3443,7 @@ func (sr *ServiceRecord) initiateStart() {
 	sr.restartPending = false
 	sr.stopRestartAsked = false
 	sr.startFailed = false
+	sr.startGen.Add(1)
 	// Clear the per-session Started()-emitted flag so the next
 	// successful start emits its own boot-console line.
 	sr.startedEmitted = false
@@ -3646,6 +3653,14 @@ func (sr *ServiceRecord) Started() {
 		return
 	}
 	sr.startedEmitted = true
+
+	// The run of each PREPARED_BY dependency this start came up with:
+	// see the restart of them in Stopped.
+	for _, dep := range sr.dependsOn {
+		if dep.DepType == DepPreparedBy {
+			dep.toStartGen = dep.To.Record().startGen.Load()
+		}
+	}
 
 	// Job completed in time — disarm the whole-job timer so a late
 	// AfterFunc firing can't fail an already-STARTED service.
@@ -3921,8 +3936,13 @@ func (sr *ServiceRecord) Stopped() {
 		// (IsHard returns true), so startCheckDependencies in initiateStart
 		// below will see them in non-STARTED state and make us wait until
 		// they reach STARTED again.
+		//
+		// One that started again since this service came up (its own
+		// restart after the crash that stopped this one) is already
+		// the fresh run: restarting it again killed that run
+		// part-way, and spawned once more past the restart limit.
 		for _, dep := range sr.dependsOn {
-			if dep.DepType == DepPreparedBy {
+			if dep.DepType == DepPreparedBy && dep.To.Record().startGen.Load() == dep.toStartGen {
 				dep.To.Record().Restart()
 			}
 		}
@@ -4455,6 +4475,12 @@ func (sr *ServiceRecord) AddDep(to Service, depType DependencyType) *ServiceDep 
 		toRec.dependents = make([]*ServiceDep, 0, 4)
 	}
 	toRec.dependents = append(toRec.dependents, dep)
+	// The run of a PREPARED_BY dependency that is current when the edge
+	// comes, so a dependent already up (add-dep, a reload) still has
+	// it restarted at its own next restart: see Started and Stopped.
+	if depType == DepPreparedBy {
+		dep.toStartGen = toRec.startGen.Load()
+	}
 
 	if depType != DepBefore && depType != DepAfter {
 		if depType == DepRegular || depType == DepPreparedBy ||

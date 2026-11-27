@@ -39,6 +39,11 @@ type ServiceDep struct {
 	HoldingAcq bool
 
 	DepType DependencyType
+
+	// toStartGen is To's start count when From last reached STARTED
+	// (PREPARED_BY only): a To that has started since needs no restart
+	// when From comes back.
+	toStartGen uint64
 }
 
 // NewServiceDep creates a new dependency from one service to another.

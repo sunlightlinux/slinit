@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -263,4 +264,84 @@ func TestAddDepToParkedServiceStartsIt(t *testing.T) {
 		t.Fatalf("s %v (failed %v), d %v after its restart", got, s.Record().DidStartFail(), d.State())
 	}
 	set.StopService(s)
+}
+
+type startCounter struct{ n *atomic.Int32 }
+
+func (c startCounter) ServiceEvent(_ Service, ev ServiceEvent) {
+	if ev == EventStarted {
+		c.n.Add(1)
+	}
+}
+
+// A prepared-by dependency that crashed restarts on its own; its
+// dependent, stopped by that crash, then restarted it again when it came
+// back, killing the run just started for the same failure. That run was
+// a spawn the restart limit never counted, and a prepare step killed
+// part-way. One crash, one restart.
+func TestPreparedByDependencyRestartedOncePerFailure(t *testing.T) {
+	set, _ := newTestSet()
+	mark := filepath.Join(t.TempDir(), "m")
+	app := NewProcessService(set, "app")
+	app.SetCommand([]string{"/bin/sh", "-c", "if [ -e " + mark + " ]; then while :; do sleep 60; done; fi; touch " + mark + "; sleep 0.05; exit 3"})
+	app.SetAutoRestart(RestartAlways)
+	// Shorter than the run: the restart is immediate, so app is up
+	// again before dept has finished stopping.
+	app.SetRestartDelay(20 * time.Millisecond)
+	set.AddService(app)
+	var starts atomic.Int32
+	app.AddListener(startCounter{&starts})
+
+	dept := NewProcessService(set, "dept")
+	dept.SetCommand([]string{"/bin/sh", "-c", "while :; do sleep 60; done"})
+	dept.SetAutoRestart(RestartAlways)
+	dept.Record().AddDep(app, DepPreparedBy)
+	set.AddService(dept)
+	defer set.StopService(dept)
+
+	set.StartService(dept)
+	if got := waitState(t, dept, StateStarted, 3*time.Second); got != StateStarted {
+		t.Fatalf("setup: dept %v", got)
+	}
+	// app crashes once, comes back; dept goes down with it and back up.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && dept.Record().restarts.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+	set.queueMu.Lock()
+	as, ds := app.State(), dept.State()
+	set.queueMu.Unlock()
+	if as != StateStarted || ds != StateStarted {
+		t.Fatalf("not settled: app %v, dept %v", as, ds)
+	}
+	if n := starts.Load(); n != 2 {
+		t.Fatalf("app started %d times for one crash, want 2", n)
+	}
+}
+
+// A prepared-by edge added to a dependent already up (add-dep, a
+// reload) still restarts its dependency at the dependent's next restart.
+func TestPreparedByAddedToRunningDependentRestartsIt(t *testing.T) {
+	set, _ := newTestSet()
+	prep := sleeper(set, "prep")
+	d := sleeper(set, "d")
+	defer func() { set.StopService(d); set.StopService(prep) }()
+	set.StartService(prep)
+	set.StartService(d)
+	waitState(t, prep, StateStarted, 3*time.Second)
+	waitState(t, d, StateStarted, 3*time.Second)
+	pid := prep.PID()
+	set.queueMu.Lock()
+	d.Record().AddDep(prep, DepPreparedBy)
+	d.Record().Restart()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+	deadline := time.Now().Add(3 * time.Second)
+	for (prep.PID() == pid || prep.State() != StateStarted) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if prep.PID() == pid {
+		t.Fatal("the dependent's restart left its new prepared-by dependency's run alone")
+	}
 }
