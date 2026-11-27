@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (301 cases)
+# Run all tests (314 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -432,6 +432,19 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 300 | kcmdline-dash-s-around-word | `-s auto -s`: boots normally to boot; `auto` is not a service |
 | 301 | kcmdline-m-after-word | `splash -m kcmd-target`: as dinit, only the words after -m are services |
 | 302 | kcmdline-oddities | unknown options, a bad `-F` value, `-s`, stray words, a KEY=VALUE word and a ~1.6 KB line: `-t no-such-svc -t boot` after them are both honoured, boot starts, the KEY=VALUE reaches services |
+| 303 | stop-in-restart-delay | `stop` (plain and `--force`) while a crashed service waits out its restart delay stops it for good: no further run, target `stop` |
+| 304 | shutdown-unpins-starting | a nested instance's poweroff with a triggered service pinned while STARTING finishes in seconds instead of waiting out the emergency timeout |
+| 305 | add-dep-hard-needs-started-target | a hard `add-dep` from a running service to a stopped one is refused and leaves no edge; `waits-for`, and a hard edge to a started service, are still accepted |
+| 306 | logbuffer-after-restart | a `log-type = buffer` service restarted while a setsid'd child holds its old stdout: the new run's 100 KB reach catlog, the run does not block |
+| 307 | reload-drops-logfile | reloading a stopped service whose file lost `logfile` and `stderr-logfile` stops its output going to the old files |
+| 308 | shutdown-time-typo | `reboot 10:3O`, `poweroff +5min`, `halt now-ish` exit 2 and shut nothing down; a valid time still schedules |
+| 309 | fifo-does-not-freeze-pid1 | an env-file FIFO and a log-file FIFO with nobody on the other end leave PID 1 answering; the log FIFO fails the start; `/dev/null` is still an env-file |
+| 310 | hostname-comment-fqdn | `/etc/hostname` with a comment, a blank line and `node-310.example.com.`: the hostname is the name line, without the trailing dot |
+| 311 | ondemand-trigger-limit | an on-demand process that exits without accepting its client: clean exits are held to the trigger window's rate and the service stays up, failed ones stop at the limit of 20 and fail it (v4.0.3: ~4000 launches in 3 s) |
+| 312 | pidfile-foreign-pid-refused | a `run-as = nobody` bgprocess whose pid file names a root process: not adopted, and the root process survives the stop; one naming its own daemon is adopted and stopped |
+| 313 | pin-leftovers | a start pin is not left on a dependency after `rm-dep` of the edge that carried it, nor on a `depends-ms` dependency pinned while it was starting; a nested instance's poweroff then finishes at once |
+| 314 | supervise-daemon-respawn-leak | a crash-looping daemon under `slinit-supervise-daemon` with a `--stdout-logger`: the supervisor's descriptors stay flat and old loggers exit (v4.0.3: +5 descriptors and one stray logger per respawn) |
+| 315 | add-dep-prepared-by | `add-dep`/`rm-dep ... prepared-by` succeed and the edge really comes and goes (v4.0.3: always "reply 52") |
 
 ## How It Works
 

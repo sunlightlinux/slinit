@@ -16,7 +16,18 @@ wait_for_service "$SVC" STARTED 10
 assert_service_state "$SVC" "STARTED" "service reached STARTED"
 
 _pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/PID:/ { print $2; exit }')
-sleep 0.3
+
+# A process service is STARTED once forked. protect-control-groups goes
+# through slinit-runner, which makes the ro remount itself just before
+# it execs the command, so right after STARTED the pid can still be the
+# runner with /sys/fs/cgroup rw. Poll (as 281 does since f33eb27) rather
+# than read once after a fixed 0.3 s, which a slow emulated runner can
+# outlast.
+_e=0
+until grep -qE '/sys/fs/cgroup [^-]*\bro\b' "/proc/$_pid/mountinfo" 2>/dev/null ||
+      [ "$_e" -ge 50 ]; do
+    sleep 0.2; _e=$((_e + 1))
+done
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if grep -qE '/sys/fs/cgroup [^-]*\bro\b' "/proc/$_pid/mountinfo" 2>/dev/null; then
