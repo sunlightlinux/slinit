@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -850,50 +851,84 @@ func byteSize(n int64) string {
 // end while their entries belong to this boot and are not older than the
 // oldest backlog event; an entry matches a backlog event with the same
 // wall-clock and monotonic time (to the microsecond the format keeps),
-// unit and message, each entry standing for one event. Anything that
-// cannot be read leaves the backlog whole: a duplicate is better than a
-// lost event.
+// unit and message, each entry standing for one event. Only entries
+// whose times some backlog event has are decoded, and the walk ends once
+// every backlog event is found, so startup does not grow with the size
+// of the journal. Anything that cannot be read leaves the backlog whole,
+// and says so: a duplicate is better than a lost event.
 func dedupAgainstDisk(dir, boot string) func([]*journal.Event) []*journal.Event {
 	type key struct {
 		ts, mts   int64
 		unit, msg string
 	}
+	type when struct{ ts, mts int64 }
 	keyOf := func(e *journal.Event) key { return key{e.Ts / 1000, e.Mts / 1000, e.Unit, e.Msg} }
 	return func(ring []*journal.Event) []*journal.Event {
+		if boot == "" {
+			return ring
+		}
+		// What to look for: this boot's backlog events, by time first
+		// (cheap to read from an entry) and then by full key.
+		want := map[key]int{}
+		times := map[when]bool{}
 		minMts, ours := int64(0), 0
 		for _, e := range ring {
-			if e.BootID == boot {
-				if ours == 0 || e.Mts < minMts {
-					minMts = e.Mts
-				}
-				ours++
+			if e.BootID != boot {
+				continue
 			}
+			if ours == 0 || e.Mts < minMts {
+				minMts = e.Mts
+			}
+			ours++
+			want[keyOf(e)]++
+			times[when{e.Ts / 1000, e.Mts / 1000}] = true
 		}
-		if ours == 0 || boot == "" {
+		if ours == 0 {
+			return ring
+		}
+		giveUp := func(err error) []*journal.Event {
+			fmt.Fprintf(os.Stderr, "slinit-journald: replay: cannot read %s to skip what is already there (%v); writing the whole backlog\n", dir, err)
 			return ring
 		}
 		mr, err := journalbin.OpenDir(dir)
 		if err != nil {
-			return ring
+			if errors.Is(err, os.ErrNotExist) {
+				return ring
+			}
+			return giveUp(err)
 		}
 		defer mr.Close()
 		have := map[key]int{}
+		found := 0
+	files:
 		for _, r := range mr.Readers() {
 			offs, err := r.EntryOffsets()
 			if err != nil {
-				return ring
+				return giveUp(err)
 			}
 			for i := len(offs) - 1; i >= 0; i-- {
-				e, err := r.ReadEntryAt(offs[i])
+				rt, mono, b, err := r.EntryKey(offs[i])
 				if err != nil {
-					return ring
+					return giveUp(err)
 				}
 				// Appends are in arrival order: past an earlier boot, or
 				// before the oldest backlog event, nothing can match.
-				if e.BootID != boot || e.Mts/1000 < minMts/1000 {
+				if b != boot || int64(mono) < minMts/1000 {
 					break
 				}
-				have[keyOf(e)]++
+				if !times[when{int64(rt), int64(mono)}] {
+					continue // not a time any backlog event has
+				}
+				e, err := r.ReadEntryAt(offs[i])
+				if err != nil {
+					return giveUp(err)
+				}
+				if k := keyOf(e); have[k] < want[k] {
+					have[k]++
+					if found++; found == ours {
+						break files // every backlog event of this boot is on disk
+					}
+				}
 			}
 		}
 		out := make([]*journal.Event, 0, len(ring))
