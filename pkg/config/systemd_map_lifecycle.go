@@ -245,6 +245,7 @@ func lcFinish(cfg *SystemdConfig) []SystemdWarning {
 	warns = append(warns, lcFinishRuntimeMax(cfg, st)...)
 	warns = append(warns, lcFinishBusName(cfg, st)...)
 	warns = append(warns, lcFinishRestartSteps(cfg, st)...)
+	warns = append(warns, lcFinishOneshotRestart(cfg)...)
 	return warns
 }
 
@@ -272,6 +273,25 @@ func lcSuccessWarning(cfg *SystemdConfig, raw string) SystemdWarning {
 	return SystemdWarning{"NOTE", "SuccessExitStatus=" + raw + " → normal-exit, which only keeps slinit from " +
 		"restarting the service on these: unlike systemd it does so under restart = yes and on-success as well, " +
 		"and the exit still counts as a failure, for failure-action and for a oneshot's start"}
+}
+
+// lcFinishOneshotRestart: systemd refuses Restart=always and
+// Restart=on-success on Type=oneshot (service_verify), and slinit does
+// too. The other Restart= values re-run a failed oneshot in systemd;
+// slinit never re-runs a scripted service's command, so the value is
+// reported rather than kept with no effect.
+func lcFinishOneshotRestart(cfg *SystemdConfig) []SystemdWarning {
+	if cfg.svcType != "scripted" || cfg.restart == "no" {
+		return nil
+	}
+	switch cfg.restart {
+	case "yes", "on-success":
+		cfg.errs = append(cfg.errs, "Restart="+cfg.restartRaw+" is not allowed for Type=oneshot; systemd refuses the unit too")
+		return nil
+	}
+	cfg.restart = "no"
+	return []SystemdWarning{{"WARN", "Restart=" + cfg.restartRaw + " not carried: slinit does not run a Type=oneshot " +
+		"(scripted) service's command again when it fails"}}
 }
 
 // lcFinishRestartSteps maps RestartSteps= and RestartMaxDelaySec= onto

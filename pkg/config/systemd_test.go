@@ -132,11 +132,17 @@ func TestTypeMapping(t *testing.T) {
 			}
 		})
 	}
-	// oneshot should also force restart=no
-	cfg := &SystemdConfig{svcType: "process", restart: "yes"}
+	// A oneshot is not restarted: Restart=always on one is refused, as
+	// systemd refuses it (lcFinishOneshotRestart has the rest).
+	cfg := &SystemdConfig{svcType: "process", restart: "no"}
 	parseSystemdUnit(cfg, "[Service]\nType=oneshot\nExecStart=/x\n")
 	if cfg.restart != "no" {
-		t.Errorf("Type=oneshot should force restart=no, got %q", cfg.restart)
+		t.Errorf("Type=oneshot: restart %q, want no", cfg.restart)
+	}
+	cfg = &SystemdConfig{svcType: "process", restart: "no"}
+	parseSystemdUnit(cfg, "[Service]\nRestart=always\nType=oneshot\nExecStart=/x\n")
+	if len(cfg.errs) == 0 {
+		t.Errorf("Restart=always on a oneshot was accepted")
 	}
 }
 

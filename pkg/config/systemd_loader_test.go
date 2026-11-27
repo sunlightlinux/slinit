@@ -423,7 +423,8 @@ ExecStart=/bin/true
 //   - Group= before User= made run-as "user::group", a group named
 //     ":group"; systemd does not care about the order.
 //   - Restart=on-success became restart = yes, so a service that failed
-//     was restarted; slinit has had on-success since 3.x.
+//     was restarted; slinit has had on-success since 3.x. (On a simple
+//     service: systemd refuses it on a oneshot, and so does slinit.)
 //   - A oneshot runs every ExecStart= in turn; slinit runs one command,
 //     and the others were dropped without a word.
 func TestSystemdUserGroupRestartExecStart(t *testing.T) {
@@ -433,7 +434,6 @@ func TestSystemdUserGroupRestartExecStart(t *testing.T) {
 Type=oneshot
 Group=wheel
 User=nobody
-Restart=on-success
 ExecStart=/usr/bin/first
 ExecStart=/usr/bin/second
 `)
@@ -451,8 +451,9 @@ ExecStart=/usr/bin/second
 	if desc.RunAs != "nobody:wheel" {
 		t.Errorf("run-as = %q, want nobody:wheel", desc.RunAs)
 	}
-	if desc.AutoRestart != service.RestartOnSuccess {
-		t.Errorf("restart = %v, want on-success", desc.AutoRestart)
+	writeUnit(t, units, "s.service", "[Service]\nRestart=on-success\nExecStart=/usr/bin/s\n")
+	if sd, _, err := dl.findAndParse("s"); err != nil || sd.AutoRestart != service.RestartOnSuccess {
+		t.Errorf("Restart=on-success: restart = %v (err %v), want on-success", sd.AutoRestart, err)
 	}
 	found := false
 	for _, g := range got {

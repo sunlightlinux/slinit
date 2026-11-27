@@ -26,6 +26,13 @@ verified with `git tag -v`.
 
 ### Changed
 
+- **A unit with `Type=oneshot` and `Restart=always` or `on-success` is
+  refused**, as systemd refuses it; `Restart=on-failure` and the like on
+  one are reported as not carried (slinit never runs a scripted
+  service's command again), whichever line comes first. *Compat:*
+  before, such a unit loaded with a restart setting that did nothing,
+  or lost it, depending on whether `Restart=` came before `Type=`.
+
 - **A systemd unit's `After=` orders only, as in systemd.** A `.service`
   unit, loaded directly or converted, turned `After=X` into
   `waits-for: X`, which also started X, and dropped `Before=`. They are

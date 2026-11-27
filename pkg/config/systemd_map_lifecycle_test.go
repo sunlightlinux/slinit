@@ -503,3 +503,18 @@ func TestSystemdRestartSteps(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemdOneshotRestart(t *testing.T) {
+	for _, order := range []string{"Type=oneshot\nRestart=on-failure", "Restart=on-failure\nType=oneshot"} {
+		_, warns, desc := lcConvert(t, order)
+		if desc.AutoRestart != service.RestartNever || !lcWarned(warns, "WARN", "not carried") {
+			t.Errorf("%q: restart %v, warnings %v", order, desc.AutoRestart, warns)
+		}
+	}
+	for _, v := range []string{"always", "on-success"} {
+		p := writeUnit(t, t.TempDir(), "o.service", "[Service]\nType=oneshot\nExecStart=/bin/true\nRestart="+v+"\n")
+		if _, _, err := ConvertSystemdUnit(p); err == nil || !strings.Contains(err.Error(), "not allowed for Type=oneshot") {
+			t.Errorf("Restart=%s on a oneshot: err %v, want refused", v, err)
+		}
+	}
+}

@@ -123,6 +123,7 @@ type SystemdConfig struct {
 	waitsFor    []string // waits-for: X
 	after       []string // after: X (ordering only)
 	partOf      []string // part-of: X
+	restartRaw  string   // Restart= as written, for lcFinishOneshotRestart
 	conflicts   []string // conflicts: X
 	onFailure   []string // on-failure: X
 	socketUnits []string // Sockets=: the socket units to read (systemd_socket.go)
@@ -746,9 +747,9 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			cfg.svcType = "bgprocess"
 		case "oneshot":
 			cfg.svcType = "scripted"
-			// Oneshots don't auto-respawn; systemd defaults
-			// Restart=no here too.
-			cfg.restart = "no"
+			// Restart= on a oneshot is decided once the unit is read
+			// (lcFinishOneshotRestart): a Restart= line before Type=
+			// used to survive, one after it was reset.
 		case "notify", "notify-reload":
 			// ready-notification = sd-notify, once the whole unit is read
 			// (systemd_map_notify.go).
@@ -799,6 +800,7 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	case "Environment":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Environment=%s inline — slinit has env-file only; consolidate into a KEY=VAL file", val)})
 	case "Restart":
+		cfg.restartRaw = val
 		switch val {
 		case "no":
 			cfg.restart = "no"
