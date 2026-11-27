@@ -3830,6 +3830,7 @@ func (s *ProcessService) handleUnexpectedTerminationLocked() {
 }
 
 func (s *ProcessService) handleTerminationLocked(reason StoppedReason) {
+	s.services.ClearOperatorStop()
 	s.stopReason = reason
 	s.forceStop = true
 

@@ -31,10 +31,10 @@ verified with `git tag -v`.
   a stop which cascades until nothing is left ends the container with
   exit 0 rather than "boot failure"; the mark never cleared, so
   stopping a side service and later losing the workload to a crash also
-  ended with exit 0 (a Succeeded pod in Kubernetes). A service that
-  stops on its own (killed, failed, timed out, failed with its
-  dependency) now takes the mark back; stopping the workload itself
-  still exits 0.
+  ended with exit 0 (a Succeeded pod in Kubernetes). A started process
+  or bgprocess service whose process dies or fails on its own now takes
+  the mark back; stopping the workload itself, directly, through its
+  dependency or with `--force`, still exits 0.
 
 - **`slinitctl restart` no longer ends a container.** slinitctl
   restarts a service as two requests, a stop and then a start. In

@@ -1623,6 +1623,7 @@ func (s *BGProcessService) daemonDiedLocked() {
 // handleUnexpectedTerminationLocked handles when a started daemon dies
 // unexpectedly. Caller must hold queueMu.
 func (s *BGProcessService) handleUnexpectedTerminationLocked() {
+	s.services.ClearOperatorStop()
 	s.stopReason = ReasonTerminated
 	s.forceStop = true
 
