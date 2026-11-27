@@ -62,7 +62,11 @@ func TestInhibitFollowsPolkitDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inhibit delay from a user: %v", err)
 	}
-	syscall.Close(int(fd))
+	// fd is the reply's own descriptor, which replyFD closes by number
+	// after fdSendGrace; closing it here as well let that timer close
+	// whatever reused the number two seconds later - the pipe of a
+	// later test's inhibitor, whose release then never came.
+	_ = fd
 	if _, err := w.m.Inhibit(remote, "shutdown", "x", "y", "block"); !denied(err) {
 		t.Errorf("Inhibit block from a remote user: got %v, want AccessDenied", err)
 	}
