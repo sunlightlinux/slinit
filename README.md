@@ -117,9 +117,12 @@ summarises them by topic.
 | **Control** | binary protocol over a Unix socket, goroutine per connection, push notifications for state and environment changes, runtime env and dependency edits, Prometheus metrics endpoint |
 | **PID 1 duties** | console setup, Ctrl+Alt+Del, child subreaper and orphan reaping, four degrees of shutdown haste, soft-reboot, kexec, `switch-root`, hardware watchdog, UPS power events, boot-failure recovery with an interactive rescue prompt |
 
-systemd `.service` units load directly (96 of their keys are read), and
-most of the sandbox, hardening, resource and timer directives mirror
-systemd's under kebab-case names. Every upstart stanza that fits a
+systemd `.service` units load directly, with their drop-ins and their
+`.socket` unit; every one of the 437 directives systemd defines for
+them is either read or reported with the reason slinit does without
+it, and a test fails the build on one that is neither. Most of the
+sandbox, hardening, resource and timer directives mirror systemd's
+under kebab-case names. Every upstart stanza that fits a
 dependency graph (its event-driven `start on` / `stop on` model does
 not), and the runit, s6, OpenRC, finit, sysvinit, launchd and immortal
 feature sets are covered;
