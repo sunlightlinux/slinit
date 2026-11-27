@@ -115,7 +115,7 @@ For multi-step tasks, state a brief plan:
 - `./tests/performance/ssh/run.sh` — 93 SSH-driven perf cases (comprehensive
   CLI + IPC + journal + lifecycle-scaling coverage). Env-var contract
   identical to the acceptance suite.
-- `./tests/container/run.sh` — 33 cases running slinit as real PID 1 under
+- `./tests/container/run.sh` — 34 cases running slinit as real PID 1 under
   Docker, or `CONTAINER_RUNTIME=podman` (22/23 before cases 24-28; the memory-limit case skips
   where the runtime cannot apply a cap); `./tests/container/soak.sh` loops
   spawn+shutdown to catch the races a single run misses.

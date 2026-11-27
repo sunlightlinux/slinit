@@ -34,6 +34,18 @@ verified with `git tag -v`.
   now runs N+1 times inside the interval before it is marked failed,
   as the man page says.
 
+- **A service coming back to a dependency it no longer holds starts it,
+  or fails, instead of waiting for good.** Two ways led there. A
+  dependent with `restart = yes` parked on its restart delay while its
+  dependency gave up (restart limit used up, a failed start, a stop
+  pin) came back after the delay and waited in STARTING for it, also
+  one level further up a chain. And `slinitctl --no-wait restart`,
+  whose start lands while the service is still stopping, after it had
+  let go of its dependencies, waited for a dependency nothing started
+  any more. A dependency that failed or is pinned or marked down now
+  fails the start as a dependency failure; one that was only let go of
+  is required again and started.
+
 - **A dependent no longer waits for good on a service that used up its
   restart limit.** When a crash-looping service's last exit stopped a
   dependent with `restart = yes`, the dependent came back at once and

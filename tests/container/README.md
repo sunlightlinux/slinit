@@ -28,7 +28,7 @@ is `busybox:1.37-musl` plus statically built `slinit`, `slinitctl` and
 the working tree on every run unless `KEEP_IMAGE=1`.
 
 `CONTAINER_RUNTIME=podman` selects Podman, and both runtimes are
-exercised: 33/33 under Docker (2026-11-27), 22/23 under rootless Podman 6.0 (before cases 24-33 existed), where
+exercised: 34/34 under Docker (2026-11-27), 22/23 under rootless Podman 6.0 (before cases 24-34 existed), where
 `17-memory-limit` skips itself. Rootless is the more searching of the two,
 because the container's root is a mapped uid with no real CAP_SYS_ADMIN.
 
@@ -81,6 +81,7 @@ against the same PID 1 contract these cases pin.
 | 31-console-service | `options = runs-on-console`: with `-t` the service's terminal is /dev/console; without a tty there is no /dev/console, and the service still starts with its output in `docker logs` (fails if a console that cannot be opened fails the start, or if the option is ignored) |
 | 32-crash-loop | a workload crash-looping with `restart-delay` and `restart-limit-count = 3`, its boot target `restart = yes`: the container stays up through the delays and `docker stop` exits 0 in the middle; once the limit is used up (3 restarts, 4 runs) the container ends as a failure (4.0.3 never ended it: boot waited in STARTING for good; and it counted each exit twice, 3 runs) |
 | 33-other-failure-loops | a bgprocess daemon crash-looping (boot `restart = yes`), a process with `smooth-recovery`, and a failed scripted setup step: each ends the container as a failure after the runs it is allowed (4, 4, 1) and the workload never starts after the failed setup (4.0.3 hung on the bgprocess loop after 3 runs) |
+| 34-no-wait-restart-keeps-dependency | eight `slinitctl --no-wait restart app` with app the only holder of dep: app and dep are STARTED after each (4.0.3: app waited in STARTING for a stopped dep at the first) |
 
 `soak.sh` runs the lifecycle over and over against a tree with a
 worker, an orphan generator and a SIGTERM-ignoring service. It rotates

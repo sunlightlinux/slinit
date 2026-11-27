@@ -3334,6 +3334,32 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 			dep.WaitingOn = true
 			allStarted = false
 		}
+		// A hard dependency this start neither holds nor is about to
+		// require (propRequire) would be waited on with nothing to start
+		// it, for good. Two ways to get there: a restart coming back
+		// from its restart delay after the dependency gave up and let go
+		// of it (cancelDependentsStart), and a start that lands on this
+		// service while it is STOPPING after its release already ran
+		// (slinitctl --no-wait restart: doStart's STOPPING branch takes
+		// no hold). A dependency that gave up for good (its start
+		// failed, its restart limit is used up, an operator pinned it
+		// stopped or marked it down) fails this start, as the
+		// dependents already STARTING are failed then; one that was only
+		// let go of is required again.
+		if (dep.DepType == DepRegular || dep.DepType == DepPreparedBy) &&
+			!dep.HoldingAcq && !sr.propRequire {
+			dr := to.Record()
+			if dr.state.Load() == StateStopped && dr.desired.Load() == StateStopped &&
+				(dr.startFailed || dr.pinnedStopped || dr.markedDown) {
+				sr.services.logger.Error("Service '%s': its dependency '%s' has failed or is held down, not starting",
+					sr.serviceName, dr.serviceName)
+				sr.propFailure = true
+				sr.services.AddPropQueue(sr.self)
+			} else {
+				dr.Require()
+				dep.HoldingAcq = true
+			}
+		}
 	}
 
 	for _, dept := range sr.dependents {
@@ -3656,7 +3682,9 @@ func (sr *ServiceRecord) Stopped() {
 		// A dependent may already be waiting for this start: one with
 		// restart = yes that this service's last exit stopped comes back
 		// at once and asks for it again. Fail it, as a failed start
-		// would; left alone it waited for good.
+		// would; left alone it waited for good. (One still parked on
+		// its restart delay fails when it comes back: see
+		// startCheckDependencies.)
 		sr.cancelDependentsStart(true)
 		// systemd StartLimitAction=: escalate a rate-limit failure into a
 		// system-level action (reboot/kexec/etc). Fires here — not from
