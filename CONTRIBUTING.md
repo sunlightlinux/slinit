@@ -63,7 +63,7 @@ go test ./...
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (218 SSH-driven cases against a live VM)
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (93 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint,softreboot-cycle}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
 - **Fuzz targets**: 54 repo-wide — 29 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 25 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the runit, openrc, sysvinit and immortal converters, the sysusers/tmpfiles/killall5 parsers, `pkg/timedate`, `pkg/hostname`, `pkg/journal`, `pkg/process`, `pkg/config`, the `pkg/control` server and its shutdown-time parser, the PID-1 kernel command-line scan in `cmd/slinit`, journalctl's rendering of sender-chosen fields). CI fuzzes each package listed in `.github/workflows/tests.yml`; `go test ./tools/stats` fails if one with a target is missing. `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
-- **Container**: `./tests/container/run.sh` (23 cases with slinit as real PID 1 under Docker or `CONTAINER_RUNTIME=podman`) + `./tests/container/soak.sh` (spawn+shutdown loop; `SOAK_BUDGET_SEC` bounds it by wall time)
+- **Container**: `./tests/container/run.sh` (24 cases with slinit as real PID 1 under Docker or `CONTAINER_RUNTIME=podman`) + `./tests/container/soak.sh` (spawn+shutdown loop; `SOAK_BUDGET_SEC` bounds it by wall time)
 - **Kubernetes**: `./tests/k8s/run.sh` (10 cases against a local `kind` cluster)
 - Requires `qemu-system-x86_64` for functional tests, Docker for the container suite, `kind` + `kubectl` for the Kubernetes one
 - A functional case whose precondition is missing calls `skip_case` and is counted as SKIPPED, not passed (since v2.7.1) — read all three numbers, since roughly one case in ten skips for want of cgroup v2, `chrt`, a machine-id, a TPM or NUMA (see `tests/functional/README.md`)
@@ -105,7 +105,7 @@ go test ./...
 - `tests/acceptance/ssh/` - SSH-driven live-VM cases (218)
 - `tests/performance/` - performance harnesses (93 SSH + 5 QEMU harnesses + runtime microbenchmarks)
 - `tests/fuzz/` - Fuzz targets (27)
-- `tests/container/` - slinit as PID 1 under Docker or Podman (23 cases + soak loop)
+- `tests/container/` - slinit as PID 1 under Docker or Podman (24 cases + soak loop)
 - `tests/k8s/` - the same image as a pod on a `kind` cluster (10 cases)
 - `demo/` - QEMU demo environment
 - `doc/man/` - pandoc-flavored markdown → roff via `go tool md2man`

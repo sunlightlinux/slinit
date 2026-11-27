@@ -328,7 +328,7 @@ it escalates the shutdown instead.
 go test ./...                             # ~2900 unit tests and benchmarks
 ./tests/functional/run-tests.sh           # 268 cases, each in its own QEMU VM
 ./tests/functional/selftest.sh            # checks the harness can still fail a case
-./tests/container/run.sh                  # 23 cases with slinit as a container's PID 1
+./tests/container/run.sh                  # 24 cases with slinit as a container's PID 1
 go test -fuzz=FuzzConfigParse ./tests/fuzz
 ```
 
