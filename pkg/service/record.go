@@ -247,7 +247,7 @@ type ServiceRecord struct {
 
 	// Process settings (shared across service types)
 	termSignal      syscall.Signal
-	sendSIGHUP      bool // send-sighup: SIGHUP right after the stop signal
+	sendSIGHUP      bool           // send-sighup: SIGHUP right after the stop signal
 	reloadSignal    syscall.Signal // 0 = unset; sent by `slinitctl reload-signal`
 	socketPath      string         // primary socket path (for backwards compat)
 	socketPaths     []string       // all socket-listen paths (for multiple sockets)
