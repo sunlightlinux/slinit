@@ -6,7 +6,9 @@
 # container's slinit ends when nothing is active: on 4.0.3 about half of
 # such restarts ended the container (slinitctl: "Error: EOF"). Five in a
 # row here, each followed by a check that the container still runs and
-# app is up again.
+# app is up again; then app crashes, and the container must end as a
+# failure (a restart once counted as a stop on request, so that crash
+# exited 0).
 
 N=slinit-ct-restart-$$
 SVC=$(new_svcdir)
@@ -35,5 +37,19 @@ for i in 1 2 3 4 5; do
 done
 [ "$ok" = 5 ]
 check $? "five restarts of app, the container up and app STARTED after each ($ok done)"
+
+# A restart is not a stop on request: if app now crashes, with nothing
+# else running, the container ends as a failure, not with exit 0 as if
+# someone had stopped it.
+pid=$("$RUNTIME" exec $N slinitctl status app 2>/dev/null | awk '/PID:/ {print $2}')
+if [ -n "$pid" ]; then
+    "$RUNTIME" exec $N kill -9 "$pid" >/dev/null 2>&1
+    ct_wait_exit $N 10
+    ec=$(ct_exit_code $N)
+    [ "$ec" != "0" ]
+    check $? "a crash after the restarts ends the container as a failure (exit $ec)"
+else
+    fail "no PID for app after the restarts"
+fi
 
 summary

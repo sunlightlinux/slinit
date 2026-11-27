@@ -23,17 +23,19 @@ import (
 // host) and, when RLIMIT_NPROC binds, an eighth of it or a quarter of
 // what it leaves the uid, whichever is less (the uid's tasks this /proc
 // shows can be fewer than the kernel counts).
-// When it is cut
-// that far, GOMAXPROCS is lowered with it, to half the reserve: the
-// runtime wants a thread per P running at once (GC workers, a burst of
-// work), and Ps it cannot back with reserved threads would bring the
-// pthread_create back at the moment the limit is reached.
+// When a limit that was read cuts the reserve, GOMAXPROCS comes down by
+// as many as the reserve lost, at most to half of it: the runtime wants
+// a thread per P running at once (GC workers, a burst of work), and Ps
+// it cannot back with reserved threads would bring the pthread_create
+// back at the moment the limit is reached.
 //
 // Limits that cannot be read do not cap the reserve for PID 1 of a
 // machine, which runs this before /sys is mounted and has no task limit
 // to fit. Anywhere else, when nothing at all can be read (a container
-// whose cgroup is not visible), a small fixed reserve is made instead; a
-// pids.max that reads "max" is a known absence of a limit, not that.
+// whose cgroup is not visible), a small fixed reserve is made instead,
+// and GOMAXPROCS is left alone: most such cases (a root manager outside
+// PID 1 in a cgroup without the pids controller) have no limit at all.
+// A pids.max that reads "max" is a known absence of a limit.
 
 // threadReserveUnknown is the reserve when no task limit can be read and
 // slinit is not PID 1 of a machine.

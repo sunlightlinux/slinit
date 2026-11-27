@@ -63,12 +63,34 @@ func TestClientRestartPendingBetweenStopAndStart(t *testing.T) {
 	waitPending(true)
 	send(conn, CmdStartService, EncodeHandle(h))
 	waitPending(false)
+	// A restart is not a stop on request: a crash after it must still
+	// read as a failure in a container.
+	if server.services.OperatorStopRequested() {
+		t.Error("the stop half of a restart counted as a stop on request")
+	}
 
 	// A plain stop holds nothing.
 	send(conn, CmdStopService, append(EncodeHandle(h), 0))
 	if server.services.ClientRestartPending() {
 		t.Fatal("a plain stop left a restart pending")
 	}
+
+	// The start that ends a restart need not name the same service, and
+	// a doubled restarting stop holds once (the second review found a
+	// hold per service could be left open by either).
+	other := service.NewInternalService(server.services, "other")
+	server.services.AddService(other)
+	if err := WritePacket(conn, CmdFindService, EncodeServiceName("other")); err != nil {
+		t.Fatal(err)
+	}
+	_, op := readReply(t, conn)
+	ho := binary.LittleEndian.Uint32(op[1:5])
+	send(conn, CmdStartService, EncodeHandle(h))
+	send(conn, CmdStopService, append(EncodeHandle(h), StopFlagRestarting))
+	send(conn, CmdStopService, append(EncodeHandle(h), StopFlagRestarting))
+	waitPending(true)
+	send(conn, CmdStartService, EncodeHandle(ho))
+	waitPending(false)
 
 	// A client that goes away between the halves releases its restart.
 	send(conn, CmdStartService, EncodeHandle(h))

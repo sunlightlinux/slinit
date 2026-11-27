@@ -34,7 +34,11 @@ verified with `git tag -v`.
   slinitctl restart app` stopped the container about half the time on
   4.0.3 (more often on this branch, whose stops are quicker) and the
   command failed with EOF. The stop half of a restart now holds that
-  exit until the start comes or the client goes away.
+  exit until the client's next start, the client going away, or five
+  minutes, and is no longer counted as a stop on request (a crash after
+  a restart reads as a failure, not exit 0). Only this slinitctl sends
+  the restart marker; an older one, or dinitctl, still can end the
+  container this way.
 
 ## [4.0.4] — 2026-11-27
 
