@@ -239,6 +239,9 @@ type NotifyMessage struct {
 	FDName         string
 	Watchdog       bool
 	Status         string
+	// SenderPID is the sending process, from the SCM_CREDENTIALS the
+	// kernel attaches (SO_PASSCRED); 0 when the message carried none.
+	SenderPID int
 }
 
 // ParseNotifyMessage parses the text portion of a sd_notify datagram.

@@ -3300,6 +3300,11 @@ func (s *ProcessService) startProcess() error {
 			notifyPipeWrite.Close()
 			s.readyPipeRead.Close()
 			s.readyPipeRead = nil
+		} else if s.readySD {
+			// sd-notify kept the write end itself (setSDPipe): both ends
+			// go, or every failed start (an on-demand launch of a missing
+			// binary, per connection) leaks a pipe until a GC.
+			s.closeReadyPipe()
 		}
 		if csClientFD != nil {
 			csClientFD.Close()
@@ -3646,9 +3651,9 @@ func (s *ProcessService) closeReadyPipe() {
 		s.readyPipeRead.Close()
 		s.readyPipeRead = nil
 	}
-	if s.readySD {
-		s.setSDPipe(nil)
-	}
+	// Whatever readySD says now: a reload may have changed it while the
+	// pipe of the old setting was open.
+	s.setSDPipe(nil)
 }
 
 // handleChildExit processes a child process termination.

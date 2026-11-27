@@ -49,8 +49,10 @@ func TestNewNotifySocketListener(t *testing.T) {
 	if fi.Mode().Type() != os.ModeSocket {
 		t.Errorf("%s is %v, want a socket (the stale file was not replaced)", path, fi.Mode().Type())
 	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
-		t.Errorf("socket mode %#o, want 0600", perm)
+	// Writable by anyone, as systemd's: who may send is checked per
+	// message from its credentials (SenderPID).
+	if perm := fi.Mode().Perm(); perm != 0o666 {
+		t.Errorf("socket mode %#o, want 0666", perm)
 	}
 	st := fi.Sys().(*syscall.Stat_t)
 	if st.Uid != 0 || st.Gid != 0 {

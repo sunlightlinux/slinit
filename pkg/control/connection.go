@@ -1546,7 +1546,9 @@ func (c *Connection) handleCatLog(payload []byte) error {
 		// already emptied the buffer.
 		return c.writePacket(RplySvcLog, EncodeSvcLog(lastBytes(data, maxSvcLogData)))
 
-	case service.LogToFile:
+	case service.LogToFile, service.LogToJournal:
+		// log-type = journal with a logfile writes the file too; without
+		// one there is nothing to tail here (slinit-journalctl -u has it).
 		// --clear has no sensible semantic for a tail read; refuse.
 		if flags&CatLogFlagClear != 0 {
 			return c.writePacket(RplyNAK, nil)

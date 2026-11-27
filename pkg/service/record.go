@@ -1,8 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -619,6 +621,8 @@ type ServiceRecord struct {
 	fdStore         *process.FDStore
 	fdStorePreserve string // "" | "no" | "yes" | "on-success" (systemd v261)
 	notifySock      *process.NotifySocketListener
+	// lastNotifyStatus is the last STATUS= logged (OnNotify).
+	lastNotifyStatus string
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -882,6 +886,23 @@ func (sr *ServiceRecord) FDStore() *process.FDStore { return sr.fdStore }
 // else FDSTORE=1 adds. Descriptors attached to a removal are not
 // stored, and are closed below with the rest.
 func (sr *ServiceRecord) OnNotify(msg process.NotifyMessage, fds []*os.File) {
+	// The socket is writable by anyone (NewNotifySocketListener): a
+	// message counts only from the service's own processes, as
+	// NotifyAccess= decides in systemd. Without the check any process of
+	// any user could declare the service ready or keep its watchdog fed,
+	// and a READY=1 the previous process queued before it died could
+	// mark a smooth-recovery relaunch ready at once.
+	if !sr.notifySenderAllowed(msg.SenderPID) {
+		for _, f := range fds {
+			_ = f.Close()
+		}
+		return
+	}
+	sr.handleNotify(msg, fds)
+}
+
+// handleNotify acts on a notify message from an allowed sender.
+func (sr *ServiceRecord) handleNotify(msg process.NotifyMessage, fds []*os.File) {
 	if msg.Ready || msg.Watchdog {
 		if n, ok := sr.self.(interface{ sdNotify(ready, watchdog bool) }); ok {
 			n.sdNotify(msg.Ready, msg.Watchdog)
@@ -945,9 +966,65 @@ func (sr *ServiceRecord) OnNotify(msg process.NotifyMessage, fds []*os.File) {
 		_ = f.Close()
 	}
 
-	if msg.Status != "" {
+	// Logged when it changes: a daemon may resend the same STATUS= every
+	// few seconds (php-fpm does), and each would be a line in PID 1's log.
+	if msg.Status != "" && msg.Status != sr.lastNotifyStatus {
+		sr.lastNotifyStatus = msg.Status
 		sr.services.logger.Info("Service '%s': status %q", sr.serviceName, msg.Status)
 	}
+}
+
+// notifySenderAllowed reports whether a notify message from pid counts:
+// it must come from the service's main process, or, unless
+// notify-access = main is set, from a process descended from it (a
+// shell script's slinit-notify, a daemon's worker). The descent is read
+// from /proc, at most 64 generations up; a process re-parented away from
+// the main process (a double fork) is no longer its descendant.
+func (sr *ServiceRecord) notifySenderAllowed(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, ok := sr.self.(interface{ PID() int })
+	if !ok {
+		return false
+	}
+	main := p.PID()
+	if main <= 0 {
+		return false
+	}
+	if pid == main {
+		return true
+	}
+	if sr.notifyAccessSet && sr.notifyAccess == NotifyAccessMain {
+		return false
+	}
+	for i := 0; i < 64 && pid > 1; i++ {
+		pid = parentPID(pid)
+		if pid == main {
+			return true
+		}
+	}
+	return false
+}
+
+// parentPID is pid's parent from /proc/PID/stat, 0 when it cannot be
+// read. The fields after the command name, which may hold spaces and
+// parentheses, are read from the last ')'.
+func parentPID(pid int) int {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0
+	}
+	i := bytes.LastIndexByte(b, ')')
+	if i < 0 {
+		return 0
+	}
+	f := bytes.Fields(b[i+1:])
+	if len(f) < 2 {
+		return 0
+	}
+	ppid, _ := strconv.Atoi(string(f[1]))
+	return ppid
 }
 
 // setupNotifySocket creates the per-service $NOTIFY_SOCKET and starts

@@ -2061,10 +2061,6 @@ func main() {
 		// rebootArg (the service's reboot-argument) goes to the kernel
 		// with the reboot, through LINUX_REBOOT_CMD_RESTART2.
 		serviceSet.OnSystemAction = func(act service.SystemAction, rebootArg string) {
-			if rebootArg != "" && act.AsShutdownType() == service.ShutdownReboot {
-				logger.Info("system-action reboot with argument %q", rebootArg)
-				shutdown.SetRebootArgument(rebootArg)
-			}
 			if act == service.ActionExit {
 				if isPID1 {
 					logger.Error("ignoring failure-action=exit: cannot exit as PID 1")
@@ -2074,7 +2070,17 @@ func main() {
 				loop.InitiateShutdown(service.ShutdownRemain)
 				return
 			}
-			loop.InitiateShutdown(act.AsShutdownType())
+			// The argument goes with this action's shutdown only: set
+			// when this request is the one that starts it, so a failing
+			// service cannot turn a shutdown already under way into a
+			// reboot with its own argument.
+			st := act.AsShutdownType()
+			loop.InitiateShutdownWith(st, func() {
+				if rebootArg != "" && st == service.ShutdownReboot {
+					logger.Info("system-action reboot with argument %q", rebootArg)
+					shutdown.SetRebootArgument(rebootArg)
+				}
+			})
 		}
 		loop.OnReopenSocket = func() {
 			if err := ctrlServer.Reopen(); err != nil {

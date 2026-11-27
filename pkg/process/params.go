@@ -569,9 +569,14 @@ type OpenFileEntry struct {
 // itself rather than from outside. The runner is a Go program, and the Go
 // runtime cannot start or run under a modest address-space or data
 // limit: prlimit'ed onto the runner, rlimit-as or rlimit-data made it
-// die in runtime init before the service ever ran.
+// die in runtime init before the service ever ran. RLIMIT_NPROC counts
+// threads against the user: once the runner drops to the service's user,
+// a limit below the threads it has (rlimit-nproc = 1, a service that
+// must not fork) refuses the next thread the runtime makes. Set just
+// before the runner's exec, it binds the single-threaded service alone,
+// as it does under systemd.
 func runnerRlimit(resource int) bool {
-	return resource == unix.RLIMIT_AS || resource == unix.RLIMIT_DATA
+	return resource == unix.RLIMIT_AS || resource == unix.RLIMIT_DATA || resource == unix.RLIMIT_NPROC
 }
 
 type Rlimit struct {

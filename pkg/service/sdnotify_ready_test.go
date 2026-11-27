@@ -104,3 +104,64 @@ func TestSDNotifyWatchdogMiss(t *testing.T) {
 		t.Fatalf("state %v after the pings stopped, want the watchdog to have stopped it", st)
 	}
 }
+
+// A process that is neither the service's main process nor descended
+// from it cannot make it ready, though the socket accepts its datagram.
+func TestSDNotifyIgnoresStrangers(t *testing.T) {
+	set, _ := newTestSet()
+	process.SetNotifySocketRoot(t.TempDir())
+	svc := NewProcessService(set, "sdstranger")
+	svc.SetCommand([]string{"/bin/sleep", "60"})
+	svc.SetReadyNotificationSD(true)
+	set.AddService(svc)
+	set.StartService(svc)
+	defer func() {
+		set.StopService(svc)
+		waitForState(t, svc, StateStopped, 5*time.Second)
+	}()
+	var sock string
+	for deadline := time.Now().Add(2 * time.Second); sock == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		sock = svc.notifySocketPath()
+	}
+	c, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: sock, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Write([]byte("READY=1"))
+	time.Sleep(300 * time.Millisecond)
+	if st := svc.State(); st != StateStarting {
+		t.Fatalf("a READY=1 from the test process (pid %d, not the service's) made it %v", os.Getpid(), st)
+	}
+}
+
+func openFDs(t *testing.T) int {
+	t.Helper()
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skip("no /proc/self/fd")
+	}
+	return len(ents)
+}
+
+// A start that fails at the fork closes the readiness pipe slinit kept
+// for sd-notify; it used to stay open, a pipe per failed start (per
+// connection for an on-demand service).
+func TestSDNotifyFailedStartLeaksNothing(t *testing.T) {
+	set, _ := newTestSet()
+	process.SetNotifySocketRoot(t.TempDir())
+	svc := NewProcessService(set, "sdmissing")
+	svc.SetCommand([]string{"/nonexistent/binary"})
+	svc.SetReadyNotificationSD(true)
+	set.AddService(svc)
+	set.StartService(svc)
+	waitForState(t, svc, StateStopped, 2*time.Second)
+	before := openFDs(t)
+	for i := 0; i < 5; i++ {
+		set.StartService(svc)
+		waitForState(t, svc, StateStopped, 2*time.Second)
+	}
+	if after := openFDs(t); after > before {
+		t.Errorf("open descriptors %d -> %d after five failed starts", before, after)
+	}
+}

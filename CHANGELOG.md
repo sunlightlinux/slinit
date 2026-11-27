@@ -53,7 +53,14 @@ verified with `git tag -v`.
   systemd unit's `Type=notify` / `notify-reload` now maps to it, and its
   `WatchdogSec=` to `watchdog-timeout` (a gap for other types, which
   have no keepalive channel). A user instance creates the socket under
-  `$XDG_RUNTIME_DIR/slinit/notify`, where it can write.
+  `$XDG_RUNTIME_DIR/slinit/notify`, where it can write. The socket is
+  writable by anyone, as systemd's is, so a daemon that drops from root
+  to its own user can still send `READY=1`; a message counts only from
+  the service's main process or a process descended from it (only the
+  main process with `notify-access = main`), read from the credentials
+  the kernel attaches, so another process cannot make the service ready
+  or feed its watchdog. This applies to the fd store's messages as well,
+  whose socket was writable by the service's user only.
 
 - **`slinit-notify`**, the counterpart of `systemd-notify`: a shell
   script run as a `sd-notify` service sends `READY=1`, `STATUS=`,

@@ -42,9 +42,14 @@ type NotifySocketListener struct {
 }
 
 // NewNotifySocketListener creates a Unix datagram socket at
-// /run/slinit/notify/<service>.sock with mode 0600 (only writable by
-// the service's run-as user once chowned). The returned listener is
-// inactive until Start is called.
+// /run/slinit/notify/<service>.sock. The socket is writable by anyone,
+// as systemd's notify socket is: a daemon that starts as root and drops
+// to its own user (unbound, rsyslog) sends READY=1 as that user, and a
+// socket only the run-as user could write refused it, so the service
+// never became ready. Who may send is decided per message instead, from
+// the sender's credentials, which SO_PASSCRED makes the kernel attach
+// (NotifyMessage.SenderPID). The returned listener is inactive until
+// Start is called.
 func NewNotifySocketListener(serviceName string, uid, gid uint32) (*NotifySocketListener, error) {
 	if err := os.MkdirAll(notifySocketRoot, 0755); err != nil {
 		return nil, fmt.Errorf("notify socket dir: %w", err)
@@ -57,7 +62,22 @@ func NewNotifySocketListener(serviceName string, uid, gid uint32) (*NotifySocket
 	if err != nil {
 		return nil, fmt.Errorf("notify socket bind %s: %w", path, err)
 	}
-	if err := os.Chmod(path, 0600); err != nil {
+	rc, err := conn.SyscallConn()
+	if err == nil {
+		var serr error
+		err = rc.Control(func(fd uintptr) {
+			serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PASSCRED, 1)
+		})
+		if err == nil {
+			err = serr
+		}
+	}
+	if err != nil {
+		conn.Close()
+		os.Remove(path)
+		return nil, fmt.Errorf("notify socket SO_PASSCRED: %w", err)
+	}
+	if err := os.Chmod(path, 0666); err != nil {
 		conn.Close()
 		os.Remove(path)
 		return nil, fmt.Errorf("notify socket chmod: %w", err)
@@ -108,7 +128,7 @@ func (l *NotifySocketListener) readLoop(handler NotifySocketHandler) {
 		return
 	}
 	bodyBuf := make([]byte, 4096)
-	oobBuf := make([]byte, unix.CmsgSpace(32*4))
+	oobBuf := make([]byte, unix.CmsgSpace(32*4)+unix.CmsgSpace(unix.SizeofUcred))
 
 	for {
 		select {
@@ -143,6 +163,12 @@ func (l *NotifySocketListener) readLoop(handler NotifySocketHandler) {
 		if oobn > 0 {
 			if cmsgs, err := unix.ParseSocketControlMessage(oobBuf[:oobn]); err == nil {
 				for _, cm := range cmsgs {
+					if cm.Header.Level == unix.SOL_SOCKET && cm.Header.Type == unix.SCM_CREDENTIALS {
+						if cred, err := unix.ParseUnixCredentials(&cm); err == nil {
+							msg.SenderPID = int(cred.Pid)
+						}
+						continue
+					}
 					if cm.Header.Level != unix.SOL_SOCKET || cm.Header.Type != unix.SCM_RIGHTS {
 						continue
 					}

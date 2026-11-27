@@ -64,6 +64,11 @@ func rlimitConv(parse rlimitParse) func(string) (string, []SystemdWarning, error
 		if err != nil {
 			return "", nil, err
 		}
+		// systemd ignores the line (config_parse_rlimit); slinit would
+		// refuse the whole unit over it.
+		if rlimitNum(s) > rlimitNum(h) {
+			return "", nil, fmt.Errorf("the soft limit %s is above the hard limit %s", s, h)
+		}
 		return s + ":" + h, nil, nil
 	}
 }
@@ -145,4 +150,12 @@ func rlimitNice(v string) (uint64, error) {
 		return 0, bad
 	}
 	return n, nil
+}
+
+func rlimitNum(s string) uint64 {
+	if s == "unlimited" {
+		return ^uint64(0)
+	}
+	n, _ := strconv.ParseUint(s, 10, 64)
+	return n
 }

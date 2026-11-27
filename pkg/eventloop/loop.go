@@ -708,13 +708,29 @@ func (el *EventLoop) InitiateShutdownKill(shutdownType service.ShutdownType) {
 	el.services.KillActiveServices()
 }
 
+// InitiateShutdownWith is InitiateShutdown that runs onStart first when,
+// and only when, this call is the one that starts the shutdown: a
+// request arriving during a shutdown already under way is ignored, and
+// so must be whatever it carried (a service's reboot-argument, which
+// would otherwise turn an operator's plain reboot into its own).
+func (el *EventLoop) InitiateShutdownWith(shutdownType service.ShutdownType, onStart func()) {
+	el.initiateShutdownWith(shutdownType, onStart)
+}
+
 func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
+	el.initiateShutdownWith(shutdownType, nil)
+}
+
+func (el *EventLoop) initiateShutdownWith(shutdownType service.ShutdownType, onStart func()) {
 	el.mu.Lock()
 	if el.shutdownInitiated {
 		el.mu.Unlock()
 		return
 	}
 	el.shutdownInitiated = true
+	if onStart != nil {
+		onStart()
+	}
 	el.shutdownType = shutdownType
 	el.shutdownSignals.Store(1)
 	// Call the "shutdown announced" hook FIRST, before the WARN log

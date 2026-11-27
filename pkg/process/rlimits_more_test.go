@@ -47,3 +47,17 @@ func TestMoreRlimitsReachTheService(t *testing.T) {
 		}
 	}
 }
+
+// RLIMIT_NPROC is set by the runner just before its exec, as AS and DATA
+// are: prlimit'ed onto the multi-threaded runner after it drops to the
+// service's user, a small limit would refuse the runtime its next thread.
+func TestNprocIsARunnerRlimit(t *testing.T) {
+	for _, r := range []int{unix.RLIMIT_AS, unix.RLIMIT_DATA, unix.RLIMIT_NPROC} {
+		if !runnerRlimit(r) {
+			t.Errorf("resource %d is not set by the runner", r)
+		}
+	}
+	if runnerRlimit(unix.RLIMIT_NOFILE) {
+		t.Error("RLIMIT_NOFILE moved to the runner")
+	}
+}

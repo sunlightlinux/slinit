@@ -36,7 +36,7 @@ func TestOnNotifyClosesDescriptorsItDoesNotStore(t *testing.T) {
 			}
 			defer w.Close()
 
-			rec.OnNotify(tc.msg, []*os.File{r})
+			rec.handleNotify(tc.msg, []*os.File{r})
 
 			// A second Close reports ErrClosed only if the first one
 			// happened. Reading would also fail, but this says which.
@@ -63,7 +63,7 @@ func TestOnNotifyKeepsStoredDescriptorsOpen(t *testing.T) {
 	}
 	defer w.Close()
 
-	rec.OnNotify(process.NotifyMessage{FDStore: true, FDName: "listener"}, []*os.File{r})
+	rec.handleNotify(process.NotifyMessage{FDStore: true, FDName: "listener"}, []*os.File{r})
 
 	if err := r.Close(); errors.Is(err, os.ErrClosed) {
 		t.Error("a stored descriptor was closed — the store replays these " +
@@ -88,7 +88,7 @@ func TestOnNotifyFDStoreRemoval(t *testing.T) {
 			}
 			t.Cleanup(func() { w.Close() })
 			files[n] = r
-			rec.OnNotify(process.NotifyMessage{FDStore: true, FDName: n}, []*os.File{r})
+			rec.handleNotify(process.NotifyMessage{FDStore: true, FDName: n}, []*os.File{r})
 		}
 		return rec, files
 	}
@@ -104,7 +104,7 @@ func TestOnNotifyFDStoreRemoval(t *testing.T) {
 
 	t.Run("wipe by glob", func(t *testing.T) {
 		rec, files := setup(t, "conn-1", "conn-2", "listener")
-		rec.OnNotify(process.NotifyMessage{HasFDStoreWipe: true, FDStoreWipe: "conn-*"}, nil)
+		rec.handleNotify(process.NotifyMessage{HasFDStoreWipe: true, FDStoreWipe: "conn-*"}, nil)
 		if got := rec.FDStore().Len(); got != 1 {
 			t.Fatalf("store has %d after FDSTOREWIPE=conn-*, want 1", got)
 		}
@@ -116,7 +116,7 @@ func TestOnNotifyFDStoreRemoval(t *testing.T) {
 	t.Run("wipe takes precedence over FDSTORE=1", func(t *testing.T) {
 		rec, _ := setup(t, "a")
 		extra := pipe(t)
-		rec.OnNotify(process.NotifyMessage{HasFDStoreWipe: true, FDStoreWipe: "*", FDStore: true, FDName: "b"},
+		rec.handleNotify(process.NotifyMessage{HasFDStoreWipe: true, FDStoreWipe: "*", FDStore: true, FDName: "b"},
 			[]*os.File{extra})
 		if got := rec.FDStore().Len(); got != 0 {
 			t.Errorf("store has %d, want 0: the attached fd must not be stored", got)
@@ -129,7 +129,7 @@ func TestOnNotifyFDStoreRemoval(t *testing.T) {
 	t.Run("invalid wipe pattern is ignored", func(t *testing.T) {
 		rec, _ := setup(t, "a")
 		for _, p := range []string{"", "has:colon"} {
-			rec.OnNotify(process.NotifyMessage{HasFDStoreWipe: true, FDStoreWipe: p}, nil)
+			rec.handleNotify(process.NotifyMessage{HasFDStoreWipe: true, FDStoreWipe: p}, nil)
 		}
 		if got := rec.FDStore().Len(); got != 1 {
 			t.Errorf("store has %d after invalid wipes, want 1", got)
@@ -139,7 +139,7 @@ func TestOnNotifyFDStoreRemoval(t *testing.T) {
 	t.Run("remove by exact name", func(t *testing.T) {
 		rec, files := setup(t, "conn-1", "conn-*")
 		// FDSTOREREMOVE matches literally: "conn-*" is a name here.
-		rec.OnNotify(process.NotifyMessage{FDStoreRemove: true, FDName: "conn-*"}, nil)
+		rec.handleNotify(process.NotifyMessage{FDStoreRemove: true, FDName: "conn-*"}, nil)
 		if got := rec.FDStore().Len(); got != 1 || !closed(files["conn-*"]) || closed(files["conn-1"]) {
 			t.Errorf("FDSTOREREMOVE=1 FDNAME=conn-*: store %d, want only conn-1 left", got)
 		}
@@ -148,7 +148,7 @@ func TestOnNotifyFDStoreRemoval(t *testing.T) {
 	t.Run("remove without a name is ignored", func(t *testing.T) {
 		rec, _ := setup(t, "stored")
 		extra := pipe(t)
-		rec.OnNotify(process.NotifyMessage{FDStoreRemove: true, FDStore: true}, []*os.File{extra})
+		rec.handleNotify(process.NotifyMessage{FDStoreRemove: true, FDStore: true}, []*os.File{extra})
 		if got := rec.FDStore().Len(); got != 1 {
 			t.Errorf("store has %d, want 1: no FDNAME= means nothing to remove, and nothing added", got)
 		}
