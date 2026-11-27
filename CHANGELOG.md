@@ -149,6 +149,13 @@ verified with `git tag -v`.
   start process ran on, untracked. Only dependents still waiting for
   the service are failed now.
 
+- **Why a service could not be loaded over the control socket was
+  logged nowhere.** The reply is an opcode, so `slinitctl start svc`
+  could only print "could not be loaded" or "load error", and the
+  reason (file and line, the missing or broken dependency) was lost.
+  slinit now logs "Could not load service 'svc': <reason>" at error
+  level, as dinit does; a name that simply does not exist is not
+  logged, its reply already says so.
 - **A service file with a line over 64 KiB failed without saying
   where**: "reading service description for svc: bufio.Scanner: token
   too long", with no file name and no line. It is now reported as a

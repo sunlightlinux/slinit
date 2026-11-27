@@ -720,6 +720,19 @@ func (c *Connection) handleFindService(payload []byte) error {
 	return err
 }
 
+// loadNotFoundSelf reports whether err says that name itself has no
+// description, rather than that it failed to parse or that one of its
+// dependencies is missing or broken.
+func loadNotFoundSelf(name string, err error) bool {
+	var notFound *service.ServiceNotFound
+	if errors.As(err, &notFound) {
+		return notFound.Name == name
+	}
+	var le *config.ServiceLoadError
+	return errors.As(err, &le) && le.ServiceName == name &&
+		errors.Is(le.Err, config.ErrServiceNotFound)
+}
+
 func (c *Connection) handleLoadService(payload []byte) error {
 	name, _, err := DecodeServiceName(payload)
 	if err != nil {
@@ -740,6 +753,15 @@ func (c *Connection) handleLoadService(payload []byte) error {
 		svc, loadErr = c.server.services.LoadService(name)
 	})
 	if err := loadErr; err != nil {
+		// The reply is only an opcode, so the reason — file and line,
+		// the missing dependency — is logged here or is lost: slinitctl
+		// can say no more than "could not be loaded". dinit logs it the
+		// same way ("Could not load service ..."). A request for a name
+		// that simply does not exist is the one failure the reply
+		// already describes in full, and is left out.
+		if !loadNotFoundSelf(name, err) {
+			c.server.logger.Error("Could not load service '%s': %v", name, err)
+		}
 		// Use typed error checks instead of fragile string matching
 		var notFound *service.ServiceNotFound
 		var loadErr *config.ServiceLoadError
