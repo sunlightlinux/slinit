@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stand-in /sbin/init: makes the root filesystem read-only, as a root
+# mounted ro by the kernel (and not yet remounted rw) is, then execs
+# slinit as PID 1. /proc is mounted only for the remount and taken down
+# again so slinit finds the state it expects.
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+mount -t proc proc /proc
+mount -o remount,ro /
+umount /proc
+exec /sbin/slinit "$@"

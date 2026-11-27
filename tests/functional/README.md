@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (284 cases)
+# Run all tests (297 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -415,6 +415,19 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 275 | ssd-exec-symlink | slinit-start-stop-daemon `--exec` through a symlinked dir (merged /usr) finds the daemon; an `--exec` busybox applet link matches no other busybox process |
 | 276 | systemd-exec-comment-continuation | a `#`/`;` comment line inside a backslash-continued `ExecStart=` is skipped for a directly loaded `.service` unit |
 | 277 | slinit-mount-bind-flags | an autofs `bind,ro,noexec` unit from slinit-mount gives a read-only, noexec bind (mountinfo, write and exec refused); skips without `autofs4.ko` |
+| 285 | boot-missing | no boot service file: PID 1 survives, logs the load failure, parks at the recovery menu with the control socket answering (runner outside the graph, see `rootfs/sbin/init` below) |
+| 286 | boot-unparseable | a syntax error in the boot file: the error names `/etc/slinit.d/boot:3`, never "not found"; recovery menu, socket answers |
+| 287 | boot-dep-broken | boot's hard dependency does not parse (soft one absent): the error names it; a `start` sent while the menu is up returns instead of hanging |
+| 288 | boot-dep-cycle | a cycle reachable from boot (through a `waits-for` edge too) is refused at load as a cyclic dependency |
+| 289 | boot-hang | a boot dependency that never becomes ready (no start timeout): boot stays STARTING, `list`/`status`/`boot-time` answer, Ctrl-Alt-Del (SIGINT to PID 1) stops the hung service at once |
+| 290 | svcdir-oddities | a FIFO, a dangling symlink, a directory, a 10 MiB one-line file in `/etc/slinit.d`: each start fails at once with the reason in slinit's log; 10 MiB of comments then a description loads |
+| 291 | svcdir-missing | `/etc/slinit.d` absent: PID 1 survives at the recovery menu, socket answers, a start reports not found |
+| 292 | kcmdline-oddities | stray words, unknown and valueless options, a ~1.6 KB kernel command line: boot goes on, `-t` after a stray word is honoured, KEY=VALUE reaches services |
+| 293 | bootmode-emergency | `emergency`: no service graph, a shell under PID 1, the console says so and how to leave, socket answers |
+| 294 | bootmode-single | `single`: rescue mode, as 293 |
+| 295 | ro-root | read-only root at boot: /var writers (scripted write, `state-directory`, `logfile`) fail on their own and promptly, a /run writer works, boot completes |
+| 296 | hostname-machineid-garbage | garbage `/etc/machine-id` (was a kernel panic) and `/etc/hostname`: boot completes, events are emitted, the hostname is sane |
+| 297 | confd-overlay-bad | a `/etc/slinit.conf.d` overlay with a syntax error, or a directory in its place, fails only its service, naming the overlay file and line |
 
 ## How It Works
 
@@ -490,6 +503,18 @@ A few names inside the `.d/` directory are not services:
 - `firmware` is `bios` (the default, SeaBIOS) or `efi` (OVMF; 222).
   Not the default for everything: per case it was 2.4 s faster under
   KVM but 1.7 s slower under TCG, which CI runs.
+- `rootfs/sbin/init` replaces the `/sbin/init -> slinit` link with a
+  shell script that ends in `exec /sbin/slinit "$@"`. It can break the
+  system before slinit sees it (remove or rewrite `/etc/slinit.d`,
+  remount `/` read-only, plant a FIFO), and it can start the test runner
+  itself, in the background, for a case where nothing in the service
+  graph will run: a boot that cannot load, rescue/emergency mode, or a
+  shutdown that would stop the test-runner service. 290 and 295 only
+  break things; 285-289, 291, 293 and 294 also start the runner.
+  Such a runner must `mknod /dev/null` first (a background job's stdin
+  is /dev/null and /dev is not mounted yet), redirect inside the
+  subshell, and remove `/etc/slinit.d/test-runner` so it does not run
+  twice. PID 1's `comm` is then `slinit`, not `init`.
 - `system-init` replaces the base one. The cgroup cases (135, 141, 160,
   164, 180, 184, 199, 221) use it to mount cgroup2 and delegate
   controllers at the root, which the base VM does not do.

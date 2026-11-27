@@ -1,0 +1,4 @@
+type = internal
+depends-on: system-init
+depends-on: hang-proc
+waits-for: hang-script
