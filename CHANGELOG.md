@@ -142,6 +142,17 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`slinit-logind` held an OS thread per session, and kept watching
+  sessions that had ended.** Each session's leader was watched by a
+  goroutine in poll(2) on its pidfd, which holds an OS thread: 300 SSH
+  logins added 303 threads to logind, every one a task counted against
+  RLIMIT_NPROC and `pids.max`, and at that limit the Go runtime aborts
+  on `pthread_create failed`, taking logins down with it. And
+  `ReleaseSession` did not end the watch, so a leader outliving its
+  session (a daemonised or nohup'd process) kept a goroutine and a
+  pidfd for good. The pidfd is now waited on in the Go netpoller (300
+  sessions: 1 extra thread) and closed by `ReleaseSession`.
+
 - **A stray word on the kernel command line hid every slinit option
   after it**, `-t` included, which slinit(8) says is always honoured:
   as PID 1, option parsing stopped at the first word that was not an

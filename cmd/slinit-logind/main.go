@@ -120,6 +120,11 @@ type manager struct {
 	mu   sync.RWMutex
 	conn *dbus.Conn
 
+	// leaderWatches holds each session's leader pidfd while
+	// watchSessionLeader waits on it; releaseSession closes it.
+	leaderMu      sync.Mutex
+	leaderWatches map[string]*os.File
+
 	// Manager.WallMessage / EnableWallMessages are writable properties
 	// (see managerprops.go). We store what a client sets so the value
 	// round-trips through `loginctl` the way it does under elogind;

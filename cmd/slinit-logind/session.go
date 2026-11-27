@@ -588,6 +588,7 @@ func (m *manager) releaseSession(id string) *dbus.Error {
 	}
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
+	m.stopLeaderWatch(id)
 
 	var rec SessionRecord
 	if !readJSON(sessionFile(id), &rec) {
@@ -700,26 +701,58 @@ func isMountPoint(path string) bool {
 // records are deleted by hand. elogind watches the leader's pidfd for
 // exactly this reason.
 //
-// One goroutine per session, parked in poll() on a pidfd, costs nothing
-// while the session lives and needs no timer.
+// One goroutine per session, parked in the netpoller on the leader's
+// pidfd (openPidWatch), so the watches cost no OS thread each. The pidfd
+// is kept in m.leaderWatches until releaseSession closes it, which ends
+// the wait: a session released while its leader lives on (a daemonised
+// or nohup'd process) leaves nothing behind.
 func (m *manager) watchSessionLeader(id string, leader uint32) {
 	if leader == 0 {
 		return
 	}
+	f, err := openPidWatch(leader)
+	if err != nil {
+		// ESRCH means the leader was already gone when we looked,
+		// which is a session to reap right now, not one to skip.
+		// Anything else means we can't watch it; say so rather
+		// than silently leaving a session unreaped.
+		if err != unix.ESRCH {
+			m.dbgf("session %s: cannot watch leader %d: %v", id, leader, err)
+			return
+		}
+		go func() {
+			m.dbgf("session %s: leader %d exited, releasing", id, leader)
+			_ = m.releaseSession(id)
+		}()
+		return
+	}
+	m.leaderMu.Lock()
+	if m.leaderWatches == nil {
+		m.leaderWatches = make(map[string]*os.File)
+	}
+	if old := m.leaderWatches[id]; old != nil {
+		old.Close()
+	}
+	m.leaderWatches[id] = f
+	m.leaderMu.Unlock()
 	go func() {
-		if err := waitForPidExit(leader); err != nil {
-			// ESRCH means the leader was already gone when we looked,
-			// which is a session to reap right now, not one to skip.
-			// Anything else means we can't watch it; say so rather
-			// than silently leaving a session unreaped.
-			if err != unix.ESRCH {
-				m.dbgf("session %s: cannot watch leader %d: %v", id, leader, err)
-				return
-			}
+		if err := waitPidWatch(f); err != nil {
+			return // released: releaseSession closed the watch
 		}
 		m.dbgf("session %s: leader %d exited, releasing", id, leader)
 		_ = m.releaseSession(id)
 	}()
+}
+
+// stopLeaderWatch closes the session's leader watch, ending its wait.
+func (m *manager) stopLeaderWatch(id string) {
+	m.leaderMu.Lock()
+	f := m.leaderWatches[id]
+	delete(m.leaderWatches, id)
+	m.leaderMu.Unlock()
+	if f != nil {
+		f.Close()
+	}
 }
 
 // reapDeadSessions drops any session whose leader is already gone, then
