@@ -99,3 +99,52 @@ func TestClientRestartPendingBetweenStopAndStart(t *testing.T) {
 	conn.Close()
 	waitPending(false)
 }
+
+// A service waiting out its restart delay is STOPPED but counted active;
+// the stop half of a restart sent then drops that, and was answered
+// "already stopped" without a hold, so a container exited before the
+// start came (the holistic review's F1). It holds now too.
+func TestRestartDuringRestartDelayHolds(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	svc := service.NewProcessService(server.services, "app")
+	svc.SetCommand([]string{"/bin/sh", "-c", "sleep 0.2; exit 1"})
+	svc.SetAutoRestart(service.RestartAlways)
+	svc.SetRestartDelay(5 * time.Second)
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	if err := WritePacket(conn, CmdFindService, EncodeServiceName("app")); err != nil {
+		t.Fatal(err)
+	}
+	_, payload := readReply(t, conn)
+	h := binary.LittleEndian.Uint32(payload[1:5])
+	if err := WritePacket(conn, CmdStartService, EncodeHandle(h)); err != nil {
+		t.Fatal(err)
+	}
+	readReply(t, conn)
+
+	// Wait for the crash: STOPPED, inside the 5 s delay, still active.
+	deadline := time.Now().Add(3 * time.Second)
+	for svc.State() != service.StateStopped || server.services.CountActiveServices() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("never in the restart delay: state %v active %d", svc.State(), server.services.CountActiveServices())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := WritePacket(conn, CmdStopService, append(EncodeHandle(h), StopFlagRestarting)); err != nil {
+		t.Fatal(err)
+	}
+	readReply(t, conn)
+	if !server.services.ClientRestartPending() {
+		t.Fatalf("no restart hold for a restart in the restart delay (active %d)", server.services.CountActiveServices())
+	}
+	if err := WritePacket(conn, CmdStartService, EncodeHandle(h)); err != nil {
+		t.Fatal(err)
+	}
+	readReply(t, conn)
+	if server.services.ClientRestartPending() {
+		t.Fatal("the start did not end the hold")
+	}
+}

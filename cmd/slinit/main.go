@@ -345,7 +345,7 @@ func main() {
 	// this is a container, and after --wait-fd, once the container manager
 	// has put slinit in its final cgroup; before anything that starts
 	// goroutines in numbers.
-	applyThreadReserve(os.Getpid() == 1 && !containerMode && !looksLikeContainer())
+	applyThreadReserve(os.Getpid() == 1 && !containerMode && !looksLikeContainer(sysOverride))
 
 	// Determine mode
 	isPID1 := os.Getpid() == 1

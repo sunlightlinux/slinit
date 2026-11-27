@@ -68,3 +68,25 @@ func TestUnrequestedStopClearsOperatorStop(t *testing.T) {
 		}
 	})
 }
+
+// A start that fails on its own is a failure too: a restart whose start
+// failed after an earlier, unrelated stop request exited 0 (the holistic
+// review's F2).
+func TestFailedStartClearsOperatorStop(t *testing.T) {
+	set, _ := newTestSet()
+	app := NewProcessService(set, "app")
+	app.SetCommand([]string{"/nonexistent/binary"})
+	set.AddService(app)
+	set.MarkOperatorStop()
+	set.StartService(app)
+	deadline := time.Now().Add(5 * time.Second)
+	for app.State() != StateStopped {
+		if time.Now().After(deadline) {
+			t.Fatalf("app still %v", app.State())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if set.OperatorStopRequested() {
+		t.Fatal("a failed start left an earlier stop request standing")
+	}
+}

@@ -3816,6 +3816,14 @@ func (sr *ServiceRecord) cancelDependentsStart(onlyWaiting bool) {
 
 // failedToStart handles start failure.
 func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
+	// A start that failed on its own is a failure, not a stop on
+	// request: a container that ends now must not report an operator's
+	// earlier stop (a restart whose start failed after an upgrade
+	// removed the binary exited 0). A dependent failing with it changes
+	// nothing more.
+	if !depFailed {
+		sr.services.ClearOperatorStop()
+	}
 	// Release start limiter slot or cancel waiting
 	sr.dropStartSlot()
 

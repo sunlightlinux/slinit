@@ -321,26 +321,6 @@ func (el *EventLoop) checkInactive() bool {
 		return true
 	}
 
-	// A client between the stop and the start of a restart: what it
-	// stopped is about to be started again, so nothing being active now
-	// is not the end (a container's slinit used to exit here). The
-	// start, or the client going away, brings the check back. The wait
-	// is counted from here, when nothing is active, not from the stop
-	// request (a stop can take longer than any fixed bound), and is
-	// bounded, so a client that never sends the start does not keep a
-	// finished container running.
-	if el.services.ClientRestartPending() {
-		now := time.Now()
-		if el.restartWaitUntil.IsZero() {
-			el.restartWaitUntil = now.Add(clientRestartWait)
-			time.AfterFunc(clientRestartWait, el.services.PokeInactive)
-		}
-		if now.Before(el.restartWaitUntil) {
-			return false
-		}
-		el.logger.Notice("A client restart left nothing active for %v without its start; exiting", clientRestartWait)
-	}
-
 	// Rescue/emergency: an empty service set is the whole point of the
 	// mode, so this is not a collapse. Returning true here exited the
 	// loop the moment rescue mode started, which closed the signal
@@ -352,6 +332,26 @@ func (el *EventLoop) checkInactive() bool {
 
 	// Boot failure: all services stopped without explicit shutdown (PID 1 only)
 	if el.isPID1 {
+		// A client between the stop and the start of a restart: what it
+		// stopped is about to be started again, so nothing being active now
+		// is not the end (a container's slinit used to exit here). The
+		// start, or the client going away, brings the check back. The wait
+		// is counted from here, when nothing is active, not from the stop
+		// request (a stop can take longer than any fixed bound), and is
+		// bounded, so a client that never sends the start does not keep a
+		// finished container running.
+		if el.services.ClientRestartPending() {
+			now := time.Now()
+			if el.restartWaitUntil.IsZero() {
+				el.restartWaitUntil = now.Add(clientRestartWait)
+				time.AfterFunc(clientRestartWait, el.services.PokeInactive)
+			}
+			if now.Before(el.restartWaitUntil) {
+				return false
+			}
+			el.logger.Notice("A client restart left nothing active for %v without its start; exiting", clientRestartWait)
+		}
+
 		// In a container this is also how a finished workload looks —
 		// the job ran, exited, and left nothing active. main decides
 		// which it was and logs that; calling it a failure here

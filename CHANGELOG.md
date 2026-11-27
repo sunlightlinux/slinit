@@ -32,8 +32,8 @@ verified with `git tag -v`.
   exit 0 rather than "boot failure"; the mark never cleared, so
   stopping a side service and later losing the workload to a crash also
   ended with exit 0 (a Succeeded pod in Kubernetes). A started process
-  or bgprocess service whose process dies or fails on its own now takes
-  the mark back; stopping the workload itself, directly, through its
+  or bgprocess service whose process dies or fails on its own, or a
+  start that fails, now takes the mark back; stopping the workload itself, directly, through its
   dependency or with `--force`, still exits 0.
 
 - **`slinitctl restart` no longer ends a container.** slinitctl
@@ -43,8 +43,9 @@ verified with `git tag -v`.
   which ends when nothing is active, ended there: `docker exec CT
   slinitctl restart app` stopped the container about half the time on
   4.0.3 (more often on this branch, whose stops are quicker) and the
-  command failed with EOF. The stop half of a restart now holds that
-  exit until the client's next start or the client going away, for at
+  command failed with EOF. The stop half of a restart (also one sent
+  while the service waits out its restart delay) now holds that exit
+  until the client's next start or the client going away, for at
   most 60 seconds once nothing is active (a stop may take as long as it
   needs), and is no longer counted as a stop on request (a crash after
   a restart reads as a failure, not exit 0). Only this slinitctl sends

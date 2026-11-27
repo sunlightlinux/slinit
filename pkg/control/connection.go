@@ -956,6 +956,17 @@ func (c *Connection) handleStopService(payload []byte) error {
 	}
 
 	if svc.State() == service.StateStopped {
+		// A service waiting out its restart delay is STOPPED but still
+		// counted active, and the stop below drops that: for a restart,
+		// hold the "nothing active" exit until the client's start, as
+		// on the main path below (a container exited here, between the
+		// halves of `slinitctl restart` of a crash-looping workload);
+		// otherwise the stop is one an operator asked for.
+		if flags&StopFlagRestarting != 0 && !restart {
+			c.holdRestart()
+		} else if !restart {
+			c.server.services.MarkOperatorStop()
+		}
 		// Drop its activation anyway, as dinit's stop always does: a
 		// service waiting out its restart delay (after a crash, or in
 		// the middle of a restart) is STOPPED but still wanted, and
