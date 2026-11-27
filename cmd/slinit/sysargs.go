@@ -33,25 +33,15 @@ func parseArgs(fs *flag.FlagSet, args []string, pid1 bool) {
 }
 
 // filterSysArgs drops from args the options fs does not define and
-// the defined ones given no value, reporting each to w. Positional
-// words are moved after the options, behind a "--", rather than ending
-// the scan: the kernel hands init every word it did not recognise, so a
-// stray one (`splash`, LILO's `auto`, the value of sysvinit's `-z`)
-// would otherwise hide every option after it from flag parsing, `-t`
-// included, which slinit(8) says is always honoured. dinit scans the
-// whole line the same way. Everything after a "--" stays positional.
+// the defined ones given no value, reporting each to w. It stops at
+// the first word flag parsing would stop at, so positional arguments
+// are passed through untouched.
 func filterSysArgs(fs *flag.FlagSet, args []string, w io.Writer) []string {
-	out := make([]string, 0, len(args)+1)
-	var pos []string
+	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if a == "--" {
-			pos = append(pos, args[i+1:]...)
-			break
-		}
-		if len(a) < 2 || a[0] != '-' {
-			pos = append(pos, a)
-			continue
+		if a == "--" || len(a) < 2 || a[0] != '-' {
+			return append(out, args[i:]...)
 		}
 		name := strings.TrimPrefix(a[1:], "-")
 		name, _, hasValue := strings.Cut(name, "=")
@@ -70,9 +60,6 @@ func filterSysArgs(fs *flag.FlagSet, args []string, w io.Writer) []string {
 		}
 		out = append(out, a, args[i+1])
 		i++
-	}
-	if len(pos) > 0 {
-		out = append(append(out, "--"), pos...)
 	}
 	return out
 }

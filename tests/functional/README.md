@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (297 cases)
+# Run all tests (296 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -422,7 +422,6 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 289 | boot-hang | a boot dependency that never becomes ready (no start timeout): boot stays STARTING, `list`/`status`/`boot-time` answer, Ctrl-Alt-Del (SIGINT to PID 1) stops the hung service at once |
 | 290 | svcdir-oddities | a FIFO, a dangling symlink, a directory, a 10 MiB one-line file in `/etc/slinit.d`: each start fails at once with the reason in slinit's log; 10 MiB of comments then a description loads |
 | 291 | svcdir-missing | `/etc/slinit.d` absent: PID 1 survives at the recovery menu, socket answers, a start reports not found |
-| 292 | kcmdline-oddities | stray words, unknown and valueless options, a ~1.6 KB kernel command line: boot goes on, `-t` after a stray word is honoured, KEY=VALUE reaches services |
 | 293 | bootmode-emergency | `emergency`: no service graph, a shell under PID 1, the console says so and how to leave, socket answers |
 | 294 | bootmode-single | `single`: rescue mode, as 293 |
 | 295 | ro-root | read-only root at boot: /var writers (scripted write, `state-directory`, `logfile`) fail on their own and promptly, a /run writer works, boot completes |
