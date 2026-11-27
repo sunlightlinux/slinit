@@ -4,7 +4,7 @@ Go native fuzz tests (`testing.F`) for slinit's input parsing surfaces.
 
 ## This directory is not all of them
 
-29 targets live here. Another 22 sit beside the code they exercise,
+29 targets live here. Another 23 sit beside the code they exercise,
 because a fuzz target for an unexported parser has to live in its own
 package:
 
@@ -163,6 +163,7 @@ via `./tests/fuzz/`.
 | cmd/slinit-openrc-convert | FuzzParseOpenrcScript | /etc/init.d/`<svc>` openrc-run script parser |
 | cmd/slinit-openrc-convert | FuzzParseDepend | `depend()` body mini-DSL parser |
 | cmd/slinit-sysvinit-convert | FuzzParseInittab | `/etc/inittab` reader (truncated lines, DOS line endings, stray colons) |
+| pkg/control | FuzzParseShutdownTime | shutdown's time operand: refused, or a delay in 0..MaxShutdownDelay, and zero (an immediate shutdown) only from a spelling of "now" or zero minutes |
 | cmd/slinit | FuzzScanSysArgs | the PID-1 kernel command-line scan: no stray word becomes a boot service unless an `-m`/`-o` is on the line (a `-s` that did so caused a reboot loop), no returned word is an option or an invalid name |
 | cmd/slinit-journalctl | FuzzRenderSenderFields | every sender-chosen field (message, identifier, `_COMM`, hostname, unit) in each terminal format: no control character, DEL, C1 or invalid UTF-8 reaches the terminal; a newline cannot start an unindented line (short) or forge a field line (verbose) |
 | cmd/slinit-killall5 | FuzzParseStat | `/proc/<pid>/stat` reader; a crafted process name must not shift the field indexing |
