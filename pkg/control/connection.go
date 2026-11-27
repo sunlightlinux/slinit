@@ -81,6 +81,11 @@ type Connection struct {
 	// Never hold it across AddListener/RemoveListener or a write: the
 	// state machine calls ServiceEvent with its own locks held.
 	handlesMu sync.RWMutex
+	// restartHolds counts, per service, the restarts this client has
+	// begun (a stop with StopFlagRestarting) and not yet finished with
+	// a start; released on that start or when the connection closes.
+	restartMu    sync.Mutex
+	restartHolds map[service.Service]int
 	// closing is set, under handlesMu, when close() starts. After it,
 	// nothing subscribes this connection to a service again: close()
 	// has taken its snapshot of the services to unsubscribe from, so a
@@ -205,6 +210,17 @@ func (c *Connection) close() {
 		c.handlesMu.Unlock()
 		for _, svc := range svcs {
 			svc.Record().RemoveListener(c)
+		}
+		// A client that went away between the halves of a restart will
+		// not send the start.
+		c.restartMu.Lock()
+		holds := c.restartHolds
+		c.restartHolds = nil
+		c.restartMu.Unlock()
+		for _, n := range holds {
+			for ; n > 0; n-- {
+				c.server.services.EndClientRestart()
+			}
 		}
 		// Unregister env listener
 		if listenEnv {
@@ -822,6 +838,10 @@ func (c *Connection) handleStartService(payload []byte) error {
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
+	// The second half of a restart this client began: once this start
+	// has been handled, whatever its answer, the restart is no longer
+	// pending.
+	defer c.releaseRestart(svc)
 
 	if c.server.services.IsShuttingDown() {
 		return c.writePacket(RplyShuttingDown, nil)
@@ -979,6 +999,10 @@ func (c *Connection) handleStopService(payload []byte) error {
 
 	if flags&StopFlagRestarting != 0 || restart {
 		c.server.services.MarkRestartingService(svc)
+	}
+	if flags&StopFlagRestarting != 0 && !restart {
+		// The client sends the start itself once the stop is over.
+		c.holdRestart(svc)
 	}
 
 	if force {
@@ -2657,4 +2681,33 @@ func (c *Connection) handleListActions(payload []byte) error {
 	actions := svc.Record().ListExtraActions()
 	result := strings.Join(actions, "\n")
 	return c.writePacket(RplyActionList, []byte(result))
+}
+
+// holdRestart records a restart this client began on svc (see
+// ServiceSet.BeginClientRestart).
+func (c *Connection) holdRestart(svc service.Service) {
+	c.restartMu.Lock()
+	if c.restartHolds == nil {
+		c.restartHolds = map[service.Service]int{}
+	}
+	c.restartHolds[svc]++
+	c.restartMu.Unlock()
+	c.server.services.BeginClientRestart()
+}
+
+// releaseRestart ends one restart this client began on svc, if any.
+func (c *Connection) releaseRestart(svc service.Service) {
+	c.restartMu.Lock()
+	n := c.restartHolds[svc]
+	if n > 0 {
+		if n == 1 {
+			delete(c.restartHolds, svc)
+		} else {
+			c.restartHolds[svc] = n - 1
+		}
+	}
+	c.restartMu.Unlock()
+	if n > 0 {
+		c.server.services.EndClientRestart()
+	}
 }

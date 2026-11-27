@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`slinitctl restart` no longer ends a container.** slinitctl
+  restarts a service as two requests, a stop and then a start. In
+  between, the service and what it took down with it (a boot target
+  that depends on it) could all be stopped, and a container's slinit,
+  which ends when nothing is active, ended there: `docker exec CT
+  slinitctl restart app` stopped the container about half the time on
+  4.0.3 (more often on this branch, whose stops are quicker) and the
+  command failed with EOF. The stop half of a restart now holds that
+  exit until the start comes or the client goes away.
+
 ## [4.0.4] — 2026-11-27
 
 **A fix release on the 4.0 long-term-support line, and the same

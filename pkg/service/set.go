@@ -47,6 +47,11 @@ type ServiceSet struct {
 	records        map[string]Service
 	aliases        map[string]Service // provides → service mapping
 	activeServices int
+
+	// clientRestarts counts restarts a client is in the middle of: it
+	// has sent the stop (with StopFlagRestarting) and not yet the start.
+	// See BeginClientRestart.
+	clientRestarts atomic.Int32
 	// restartEnabled and shutdownType (a ShutdownType) are set under
 	// queueMu by StopAllServices but read without it, by control
 	// connections through IsShuttingDown.
@@ -911,6 +916,35 @@ func (ss *ServiceSet) ServiceInactive(svc Service) {
 		}
 	}
 }
+
+// BeginClientRestart records that a client has sent the stop half of a
+// restart and will send the start next. slinitctl restart stops, waits
+// for the stop, then starts, as two requests; in between, the service
+// and whatever it took down with it (a boot target that depends on it)
+// can all be stopped, and a container's slinit, which ends when nothing
+// is active, ended there: `docker exec ... slinitctl restart app` killed
+// the container about half the time. While a restart is pending the
+// "nothing is active" exit waits (ClientRestartPending).
+func (ss *ServiceSet) BeginClientRestart() { ss.clientRestarts.Add(1) }
+
+// EndClientRestart ends what BeginClientRestart began: the start came,
+// was refused, or the client went away. The event loop looks again at
+// whether anything is active, as it would after a service stopped.
+func (ss *ServiceSet) EndClientRestart() {
+	if ss.clientRestarts.Add(-1) < 0 {
+		ss.clientRestarts.Store(0)
+	}
+	if ss.inactiveCh != nil {
+		select {
+		case ss.inactiveCh <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// ClientRestartPending reports whether a client is between the stop and
+// the start of a restart.
+func (ss *ServiceSet) ClientRestartPending() bool { return ss.clientRestarts.Load() > 0 }
 
 // CountActiveServices returns the number of active services.
 func (ss *ServiceSet) CountActiveServices() int {

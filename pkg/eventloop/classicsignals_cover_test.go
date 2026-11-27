@@ -93,3 +93,23 @@ func TestCheckInactiveByMode(t *testing.T) {
 		t.Errorf("after a shutdown with nothing active: exit=%v OnAllStopped=%v, want both", sd.checkInactive(), called)
 	}
 }
+
+// A container's PID 1 with nothing active does not end while a client is
+// between the stop and the start of a restart (slinitctl restart sends
+// them as two requests); once the restart is over it does.
+func TestCheckInactiveWaitsForClientRestart(t *testing.T) {
+	logger := logging.New(logging.LevelError)
+	ss := service.NewServiceSet(logger)
+	el := New(ss, logger)
+	el.SetPID1Mode(true)
+	el.SetContainerMode(true)
+
+	ss.BeginClientRestart()
+	if el.checkInactive() {
+		t.Fatal("container PID 1 exited between the halves of a client restart")
+	}
+	ss.EndClientRestart()
+	if !el.checkInactive() {
+		t.Fatal("container PID 1 kept running with nothing active once the restart was over")
+	}
+}

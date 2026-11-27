@@ -311,6 +311,14 @@ func (el *EventLoop) checkInactive() bool {
 		return true
 	}
 
+	// A client between the stop and the start of a restart: what it
+	// stopped is about to be started again, so nothing being active now
+	// is not the end (a container's slinit used to exit here). The
+	// start, or the client going away, brings the check back.
+	if el.services.ClientRestartPending() {
+		return false
+	}
+
 	// Rescue/emergency: an empty service set is the whole point of the
 	// mode, so this is not a collapse. Returning true here exited the
 	// loop the moment rescue mode started, which closed the signal

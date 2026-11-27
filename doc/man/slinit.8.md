@@ -659,7 +659,9 @@ syncs and makes the reboot, power-off, halt or kexec system call.
 
 In container mode (**-o**) the same supervision logic runs but
 shutdown is replaced with a clean process exit, leaving teardown to
-the container runtime.
+the container runtime. slinit then also exits when nothing is active any
+more (see **EXIT STATUS**), but not while a **slinitctl restart** is
+between its stop and its start (since 4.0.4).
 
 **Task limits.** slinit waits for its children without an OS thread
 per child, so its thread count does not grow with the number of
