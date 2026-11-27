@@ -92,20 +92,34 @@ func capThreadReserve(want, procs int, known bool, pidsMax, pidsCur int64, pidsO
 			reserve = int(c)
 		}
 	}
-	if !known && reserve > threadReserveUnknown {
-		reserve = threadReserveUnknown
-	}
 	if reserve < 0 {
 		reserve = 0
 	}
+	// GOMAXPROCS comes down only when a limit that was read cut the
+	// reserve: there is a limit then, and the runtime must not want a
+	// thread per P beyond the reserve when it is reached. It loses no
+	// more than the reserve did (one thread short of the want costs one
+	// P, not half of them), and at worst half the reserve.
 	newProcs = procs
 	if reserve < want {
-		if p := reserve / 2; p < newProcs {
+		p := reserve - threadReserveExtra
+		if h := reserve / 2; h > p {
+			p = h
+		}
+		if p < 1 {
+			p = 1
+		}
+		if p < newProcs {
 			newProcs = p
 		}
-		if newProcs < 1 {
-			newProcs = 1
-		}
+	}
+	// When nothing could be read the reserve is only kept small, for the
+	// container whose limit is hidden: GOMAXPROCS stays, so slinit runs at
+	// full speed where nothing limits it (a root slinit outside PID 1 in
+	// a cgroup without the pids controller, a machine whose image left a
+	// /.dockerenv behind), as before the reserve existed.
+	if !known && reserve > threadReserveUnknown {
+		reserve = threadReserveUnknown
 	}
 	return reserve, newProcs
 }

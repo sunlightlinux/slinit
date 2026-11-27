@@ -677,13 +677,15 @@ than
   counts against it; it does not apply to root of the initial user
   namespace, and does to root in a rootless container).
 
-When the reserve is cut that far, GOMAXPROCS is lowered to half of it,
-so the runtime never wants more threads at once than it holds. When no
-limit can be read at all and slinit is not PID 1 of a machine — a
-container whose cgroup is not visible; a process started with the
-*container* environment variable, or beside */.dockerenv* or
-*/run/.containerenv*, counts as a container even without **-o** — it
-reserves 8. A container started with a small **\--pids-limit**
+When a limit that could be read cuts the reserve, GOMAXPROCS is lowered
+by as much as the reserve lost, and at most to half the reserve, so the
+runtime never wants more threads at once than it holds. When no limit
+can be read at all and slinit is not PID 1 of a machine — a container
+whose cgroup is not visible; a process started with the *container*
+environment variable, or beside */.dockerenv* or */run/.containerenv*,
+counts as a container even without **-o** — it reserves only 8 threads
+and leaves GOMAXPROCS as it is. The reserve is made after **\--wait-fd**
+returns, in the cgroup the container manager has put slinit in. A container started with a small **\--pids-limit**
 therefore still boots; give it room for the services as well as for
 slinit's few threads.
 

@@ -326,13 +326,6 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Make the threads the runtime will want later while the kernel still
-	// gives them out (see threadreserve.go), as many as the task limits
-	// leave room for (threadbudget.go). After the flags, which say whether
-	// this is a container; before anything that starts goroutines in
-	// numbers.
-	applyThreadReserve(os.Getpid() == 1 && !containerMode && !looksLikeContainer())
-
 	// Container-manager entrypoint synchronization (s6-linux-init -W).
 	// Runs BEFORE any other setup: the container manager may still be
 	// injecting mounts, joining namespaces, or writing files under
@@ -345,6 +338,14 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// Make the threads the runtime will want later while the kernel still
+	// gives them out (see threadreserve.go), as many as the task limits
+	// leave room for (threadbudget.go). After the flags, which say whether
+	// this is a container, and after --wait-fd, once the container manager
+	// has put slinit in its final cgroup; before anything that starts
+	// goroutines in numbers.
+	applyThreadReserve(os.Getpid() == 1 && !containerMode && !looksLikeContainer())
 
 	// Determine mode
 	isPID1 := os.Getpid() == 1

@@ -28,7 +28,7 @@ func TestCapThreadReserve(t *testing.T) {
 		reserve, procs   int
 	}{
 		{"PID 1 of a machine, no limits readable", want, true, 0, 0, false, 0, false, 0, false, want, procs},
-		{"container, nothing readable", want, false, 0, 0, false, 0, false, 0, false, threadReserveUnknown, threadReserveUnknown / 2},
+		{"nothing readable (hidden cgroup, or a root manager with no pids controller)", want, false, 0, 0, false, 0, false, 0, false, threadReserveUnknown, procs},
 		{"roomy pids cgroup", want, true, 4096, 10, true, 0, false, 0, false, want, procs},
 		{"docker --pids-limit 25", want, true, 25, 6, true, 0, false, 0, false, 4, 2},
 		{"pids cgroup already full", want, true, 25, 25, true, 0, false, 0, false, 0, 1},
@@ -143,5 +143,24 @@ func TestUIDTasksCountsThisProcess(t *testing.T) {
 	n, ok := uidTasks(os.Getuid())
 	if !ok || n < 1 {
 		t.Fatalf("uidTasks = %d, %v", n, ok)
+	}
+}
+
+// One thread short of the want costs one P, not half of them (64 CPUs:
+// the old cut gave 39); a deep cut still halves the reserve at most.
+func TestReserveCutLowersGOMAXPROCSGradually(t *testing.T) {
+	for _, c := range []struct {
+		free         int64
+		reserve, gmp int
+	}{
+		{316, 79, 63}, // (320-4)/4 = 79 of 80 wanted
+		{200, 50, 34},
+		{40, 10, 5},
+		{4, 1, 1},
+	} {
+		r, p := capThreadReserve(80, 64, true, c.free, 0, true, 0, false, 0, false)
+		if r != c.reserve || p != c.gmp {
+			t.Errorf("free %d: reserve %d GOMAXPROCS %d, want %d and %d", c.free, r, p, c.reserve, c.gmp)
+		}
 	}
 }
