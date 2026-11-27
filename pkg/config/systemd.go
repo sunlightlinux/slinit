@@ -126,6 +126,10 @@ type SystemdConfig struct {
 	// res holds the systemd state of the resource-control directives that
 	// share slinit settings (systemd_map_resources.go).
 	res *sdResState
+
+	// state is the per-unit state of the other mapping files, read by
+	// their finishers (sdState, registerFinisher).
+	state map[string]any
 }
 
 // kvPair is one emitted "key = value" line, kept ordered so the output
@@ -442,7 +446,11 @@ func parseSystemdFile(cfg *SystemdConfig, content string, preStartCount, postSta
 // included: capability and address-family sets, the syscall filter, and
 // the settings that depend on Type=.
 func finishSystemdUnit(cfg *SystemdConfig) []SystemdWarning {
-	warns := cgroupWarning(cfg)
+	var warns []SystemdWarning
+	for _, f := range sdFinishers {
+		warns = append(warns, f(cfg)...)
+	}
+	warns = append(warns, cgroupWarning(cfg)...)
 	if cfg.capBounding.set {
 		switch cfg.capBounding.mask {
 		case allCaps:

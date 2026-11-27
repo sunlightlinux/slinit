@@ -86,6 +86,42 @@ var (
 	sdUnitIgnored    = map[string]string{}
 )
 
+// sdFinishers run once the whole unit and its drop-ins are read, before
+// the folds of finishSystemdUnit. A mapping whose meaning depends on
+// other directives (Type=, a later reset, RootDirectory=, an implied
+// setting a later line overrides) records what it saw in the unit's
+// state (sdState) and decides here, so the order of lines and drop-ins
+// does not change the result, as it does not in systemd.
+var sdFinishers []func(cfg *SystemdConfig) []SystemdWarning
+
+func registerFinisher(f func(cfg *SystemdConfig) []SystemdWarning) {
+	sdFinishers = append(sdFinishers, f)
+}
+
+// sdState returns the unit's state under key, made by mk on first use.
+// Each mapping file keeps its own typed struct under its own key.
+func sdState[T any](cfg *SystemdConfig, key string, mk func() *T) *T {
+	if cfg.state == nil {
+		cfg.state = map[string]any{}
+	}
+	if v, ok := cfg.state[key]; ok {
+		return v.(*T)
+	}
+	v := mk()
+	cfg.state[key] = v
+	return v
+}
+
+// hasMapped reports whether key has been emitted.
+func (cfg *SystemdConfig) hasMapped(key string) (string, bool) {
+	for _, kv := range cfg.mapped {
+		if kv.key == key {
+			return kv.value, true
+		}
+	}
+	return "", false
+}
+
 // registerService / registerUnit add rules at package init. A directive
 // registered twice is a programming error caught at start-up, not a
 // silent override.
