@@ -22,7 +22,7 @@ assert_service_state "$SVC" "STARTED" "service reached STARTED"
 # runner's install. Poll for up to 2s (same shape as 116-lock-personality).
 _pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/PID:/ { print $2; exit }')
 _seccomp=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq 50); do   # up to 10 s: TCG can be slow to exec past the runner
     _seccomp=$(awk '/^Seccomp:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
     [ "$_seccomp" = "2" ] && break
     sleep 0.2

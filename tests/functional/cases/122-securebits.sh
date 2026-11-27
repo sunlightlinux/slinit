@@ -37,7 +37,7 @@ fi
 # then execs the command — poll until the pid is the command (CapEff of
 # the runner itself is still the full set).
 _capeff=""
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq 50); do   # up to 10 s: TCG can be slow to exec past the runner
     _capeff=$(awk '/^CapEff:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
     [ "$_capeff" = "0000000000000000" ] && break
     sleep 0.2

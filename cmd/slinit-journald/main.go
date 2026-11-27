@@ -17,11 +17,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -542,7 +544,11 @@ Flags:
 	// via slinit-journalctl (no --file). Accepting the tradeoff over
 	// the more elaborate seq-based dedup design.
 	if *controlSock != "" && !*dryRun {
-		if n, err := replayBacklog(*controlSock, sink); err != nil {
+		var dedup func([]*journal.Event) []*journal.Event
+		if guarded != nil && guarded.format == "binary" {
+			dedup = dedupAgainstDisk(guarded.currentDir, journal.BootID())
+		}
+		if n, err := replayBacklog(*controlSock, sink, dedup); err != nil {
 			fmt.Fprintf(os.Stderr,
 				"slinit-journald: WARN backlog replay from %s failed (%v) — pre-daemon events not persisted\n",
 				*controlSock, err)
@@ -752,7 +758,7 @@ func adminSenderAllowed(uid uint32) bool {
 	return uid == 0 || uid == uint32(os.Geteuid())
 }
 
-func replayBacklog(sockPath string, sink journald.Sink) (int, error) {
+func replayBacklog(sockPath string, sink journald.Sink, dedup func([]*journal.Event) []*journal.Event) (int, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		return 0, fmt.Errorf("dial %s: %w", sockPath, err)
@@ -767,11 +773,26 @@ func replayBacklog(sockPath string, sink journald.Sink) (int, error) {
 		return 0, fmt.Errorf("send query: %w", err)
 	}
 
-	replayed := 0
+	// The whole backlog is read first, so that what an earlier run of
+	// this daemon already wrote can be told apart (dedupAgainstDisk).
+	// Whatever arrived is persisted even when the transfer breaks off.
+	var evts []*journal.Event
+	persist := func() int {
+		if dedup != nil {
+			evts = dedup(evts)
+		}
+		n := 0
+		for _, evt := range evts {
+			if sink.Handle(evt) == nil {
+				n++
+			}
+		}
+		return n
+	}
 	for {
 		typ, body, err := control.ReadPacket(conn)
 		if err != nil {
-			return replayed, fmt.Errorf("read reply: %w", err)
+			return persist(), fmt.Errorf("read reply: %w", err)
 		}
 		switch typ {
 		case control.RplyJournalEntry:
@@ -779,18 +800,15 @@ func replayBacklog(sockPath string, sink journald.Sink) (int, error) {
 			if err != nil {
 				continue // one bad entry doesn't sink the whole replay
 			}
-			if err := sink.Handle(evt); err != nil {
-				continue
-			}
-			replayed++
+			evts = append(evts, evt)
 		case control.RplyJournalDone:
-			return replayed, nil
+			return persist(), nil
 		case control.RplyJournalErr:
-			return replayed, fmt.Errorf("server: %s", string(body))
+			return persist(), fmt.Errorf("server: %s", string(body))
 		case control.RplyBadReq:
-			return replayed, fmt.Errorf("server rejected CmdJournalQuery (protocol mismatch?)")
+			return persist(), fmt.Errorf("server rejected CmdJournalQuery (protocol mismatch?)")
 		default:
-			return replayed, fmt.Errorf("unexpected reply type %d during replay", typ)
+			return persist(), fmt.Errorf("unexpected reply type %d during replay", typ)
 		}
 	}
 }
@@ -814,5 +832,152 @@ func byteSize(n int64) string {
 		return fmt.Sprintf("%dKiB", n/KiB)
 	default:
 		return fmt.Sprintf("%dB", n)
+	}
+}
+
+// dedupAgainstDisk returns the filter that keeps a restarted daemon from
+// writing PID 1's backlog a second time: it drops the backlog events of
+// this boot that are already in the binary journal in dir.
+//
+// The backlog is PID 1's whole event ring, and every start replayed all
+// of it: a clean restart doubled the journal (442 entries became 884, the
+// same events with new sequence numbers), and a daemon that crashes and
+// is restarted added up to 4096 duplicates each time.
+//
+// What is skipped is decided by what is on disk, not by a high-water
+// mark: an event that never reached the journal (emitted between the
+// backlog query and the socket bind, dropped while the listener was down
+// or stalled, refused by the sink) must still be replayed, and only the
+// journal itself knows which those are. The files are walked from their
+// end while their entries belong to this boot and are not older than the
+// oldest backlog event; an entry matches a backlog event with the same
+// wall-clock and monotonic time (to the microsecond the format keeps),
+// unit and message, each entry standing for one event. Only entries
+// whose times some backlog event has are decoded, and the walk ends once
+// every backlog event is found, so startup does not grow with the size
+// of the journal. Anything that cannot be read leaves the backlog whole,
+// and says so: a duplicate is better than a lost event.
+func dedupAgainstDisk(dir, boot string) func([]*journal.Event) []*journal.Event {
+	type key struct {
+		ts, mts           int64
+		prio, pid         int
+		unit, msg, fields string
+	}
+	type when struct{ ts, mts int64 }
+	// The sender's own fields belong in the key (two lines in the same
+	// microsecond, one on stdout and one on stderr, differ only there);
+	// the "_" ones the journal adds on the way to disk (_SEQNUM) do not.
+	senderFields := func(e *journal.Event) string {
+		var ks []string
+		for k := range e.Fields {
+			if !strings.HasPrefix(k, "_") {
+				ks = append(ks, k)
+			}
+		}
+		sort.Strings(ks)
+		var b strings.Builder
+		for _, k := range ks {
+			b.WriteString(k)
+			b.WriteByte('=')
+			b.WriteString(e.Fields[k])
+			b.WriteByte(0)
+		}
+		return b.String()
+	}
+	keyOf := func(e *journal.Event) key {
+		return key{e.Ts / 1000, e.Mts / 1000, int(e.Prio), e.Pid, e.Unit, e.Msg, senderFields(e)}
+	}
+	return func(ring []*journal.Event) []*journal.Event {
+		if boot == "" {
+			return ring
+		}
+		// What to look for: this boot's backlog events, by time first
+		// (cheap to read from an entry) and then by full key.
+		want := map[key]int{}
+		times := map[when]bool{}
+		minMts, minTs, ours := int64(0), int64(0), 0
+		for _, e := range ring {
+			if e.BootID != boot {
+				continue
+			}
+			if ours == 0 || e.Mts < minMts {
+				minMts = e.Mts
+			}
+			if ours == 0 || e.Ts < minTs {
+				minTs = e.Ts
+			}
+			ours++
+			want[keyOf(e)]++
+			times[when{e.Ts / 1000, e.Mts / 1000}] = true
+		}
+		if ours == 0 {
+			return ring
+		}
+		giveUp := func(err error) []*journal.Event {
+			fmt.Fprintf(os.Stderr, "slinit-journald: replay: cannot read %s to skip what is already there (%v); writing the whole backlog\n", dir, err)
+			return ring
+		}
+		mr, err := journalbin.OpenDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return ring
+			}
+			return giveUp(err)
+		}
+		defer mr.Close()
+		have := map[key]int{}
+		found := 0
+		// Newest file first, and none whose last entry is older than the
+		// oldest backlog event: rotated files of earlier days would
+		// otherwise each be listed in full to read one entry.
+		readers := append([]*journalbin.Reader(nil), mr.Readers()...)
+		sort.Slice(readers, func(i, j int) bool {
+			return readers[i].Header().TailEntryRealtime > readers[j].Header().TailEntryRealtime
+		})
+	files:
+		for _, r := range readers {
+			if int64(r.Header().TailEntryRealtime) < minTs/1000 {
+				break
+			}
+			offs, err := r.EntryOffsets()
+			if err != nil {
+				return giveUp(err)
+			}
+			for i := len(offs) - 1; i >= 0; i-- {
+				rt, mono, b, err := r.EntryKey(offs[i])
+				if err != nil {
+					return giveUp(err)
+				}
+				// Appends are in arrival order: past an earlier boot, or
+				// before the oldest backlog event, nothing can match.
+				if b != boot || int64(mono) < minMts/1000 {
+					break
+				}
+				if !times[when{int64(rt), int64(mono)}] {
+					continue // not a time any backlog event has
+				}
+				e, err := r.ReadEntryAt(offs[i])
+				if err != nil {
+					return giveUp(err)
+				}
+				if k := keyOf(e); have[k] < want[k] {
+					have[k]++
+					if found++; found == ours {
+						break files // every backlog event of this boot is on disk
+					}
+				}
+			}
+		}
+		out := make([]*journal.Event, 0, len(ring))
+		for _, e := range ring {
+			if e.BootID == boot {
+				if k := keyOf(e); have[k] > 0 {
+					have[k]--
+					continue
+				}
+			}
+			out = append(out, e)
+		}
+		return out
 	}
 }

@@ -313,6 +313,33 @@ tmpfs, so a directory you created by hand is gone after a reboot. Use
 `runtime-directory = name` and slinit creates `/run/name` before the
 service starts.
 
+If the log says *refusing PID N: the file, or a directory above it, is
+writable by another user than root, and the process neither runs as
+that user nor is in the service's cgroup*, slinit read a PID it will
+not trust. A pid file that a non-root user can write could name any
+process — sshd, another service — and slinit would later send it the
+stop signals, so such a PID is accepted only when the process runs as
+that user or sits in the service's `cgroup =`. A root daemon writing
+its pid file into its own user's directory (`/run/nginx`) is fine as
+long as no symlink is on the path: point `pid-file` at the real
+directory, not through `/var/run`, or give the service a `cgroup =`.
+
+### slinit exits at start inside a container
+
+Two causes, both fixed (see slinit(8), *Task limits* and *Machine ID
+and hostname*); on an older slinit work around them:
+
+- `runtime: failed to create new OS thread` in the container log: the
+  container's pids limit (`docker run --pids-limit`, the kubelet's
+  pod pids limit) left no room for the threads slinit makes at start.
+  Raise the limit; slinit itself needs about ten tasks besides the
+  services.
+- A warning about `/etc/machine-id` (`malformed ID ""`) just before the
+  exit: the image ships the file empty or with `uninitialized`, as
+  images should, so that every container gets its own ID. Do not bake
+  an ID into the image (every container would share it); remove the
+  file instead, and slinit uses a transient ID for each start.
+
 ### `stop command failed (exit code 5)`
 
 Exit 5 from `slinit-start-stop-daemon` or `slinit-supervise-daemon` means

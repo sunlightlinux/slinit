@@ -1163,7 +1163,7 @@ func (s *ProcessService) fireWatchdogStop(stop chan struct{}) {
 	withRestart := false
 	switch s.autoRestartThisRun() {
 	case RestartAlways, RestartOnFailure, RestartOnSuccess:
-		withRestart = s.CheckRestart()
+		withRestart = s.checkRestartOnce()
 	}
 
 	s.doStop(withRestart)
@@ -1195,7 +1195,7 @@ func (s *ProcessService) fireHealthCheckStop(pid int) {
 	withRestart := false
 	switch s.autoRestartThisRun() {
 	case RestartAlways, RestartOnFailure, RestartOnSuccess:
-		withRestart = s.CheckRestart()
+		withRestart = s.checkRestartOnce()
 	}
 
 	s.doStop(withRestart)
@@ -3830,6 +3830,7 @@ func (s *ProcessService) handleUnexpectedTerminationLocked() {
 }
 
 func (s *ProcessService) handleTerminationLocked(reason StoppedReason) {
+	s.services.ClearOperatorStop()
 	s.stopReason = reason
 	s.forceStop = true
 

@@ -3,20 +3,23 @@
 # Validates: restart-limit-count, restart-limit-interval, failed state transition.
 
 # ratelimit-svc exits immediately with code 1, restart-delay=0.
-# After 3 failures within 30s, it should enter STOPPED/failed state.
+# After 3 restarts within 30s, its 4th failure puts it into the failed state.
 sleep 10
 
 # Service should have failed (exceeded restart limit)
 assert_exit_code "slinitctl --system is-failed ratelimit-svc" 0 \
     "ratelimit-svc is-failed after exceeding restart limit"
 
-# Verify it attempted at least 3 starts
+# restart-limit-count = 3 allows 3 restarts: 4 starts in all. Each exit
+# used to be counted twice against the limit (once for the service's own
+# restart, once on behalf of its dependents), so it allowed 2 and the
+# service ran 3 times; ">= 3" let that pass.
 starts=$(wc -l < /tmp/ratelimit-starts 2>/dev/null || echo 0)
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ "$starts" -ge 3 ]; then
-    echo "OK: service attempted $starts starts (>= 3)"
+if [ "$starts" -eq 4 ]; then
+    echo "OK: service started 4 times (3 restarts allowed)"
 else
-    echo "FAIL: service only attempted $starts starts (expected >= 3)"
+    echo "FAIL: service started $starts times, expected 4 (3 restarts allowed)"
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
 fi
 

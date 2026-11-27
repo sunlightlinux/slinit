@@ -24,6 +24,91 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Restarting slinit-journald no longer writes PID 1's backlog
+  again.** At every start the daemon replays PID 1's event ring so that
+  events from before it listened are persisted, and it replayed all of
+  it: a clean restart doubled the journal (442 entries became 884, the
+  same events with new sequence numbers), and a daemon restarted after a
+  crash added up to 4096 duplicates each time. The binary journal is
+  now read first, and the backlog events of this boot already in it
+  (same time to the microsecond, priority, pid, unit, message and
+  sender fields) are skipped; any other is replayed, so an event that
+  never reached the journal (lost while the daemon was down or
+  starting) still is. A journal that
+  cannot be read, and the jsonl format, replay the whole backlog as
+  before.
+
+- **4.0.4 died at start in a container with a small pids limit.** The
+  thread reserve that 4.0.4 makes at start-up (GOMAXPROCS+16 threads,
+  28 on 12 CPUs, 80 on 64) was sized by the host's CPUs alone: under
+  `docker run --pids-limit 25` slinit stopped before its first service
+  with `failed to create new OS thread`, exit 2 after about 12 ms. The
+  reserve now takes at most a quarter of the tasks the pids cgroup still
+  allows (cgroup v2, or the v1 pids controller) and, where
+  `RLIMIT_NPROC` binds (also for root in a rootless container), an
+  eighth of it or a quarter of what it leaves the uid, whichever is
+  less, with GOMAXPROCS lowered by what such a limit cut (at most to
+  half the reserve); when no limit can be read outside PID 1 of a
+  machine it is 8 threads and GOMAXPROCS is left unchanged. A limit set
+  above the container's cgroup namespace (Kubernetes podPidsLimit) is
+  not visible and cannot be taken into account.
+
+- **`restart-limit-count = N` allows N restarts again, not about half
+  as many.** Each exit of a service was counted twice against its
+  restart limit (once for its own restart, once on behalf of the
+  dependents it takes down, since 3.14.0), so N allowed N/2 restarts,
+  rounded up: the default of 3 allowed 2, and 10 allowed 5. A service
+  now runs N+1 times inside the interval before it is marked failed,
+  as the man page says.
+
+- **A service coming back to a dependency it no longer holds starts it,
+  or fails, instead of waiting for good.** Two ways led there. A
+  dependent with `restart = yes` parked on its restart delay while its
+  dependency gave up (restart limit used up, a failed start, a stop
+  pin) came back after the delay and waited in STARTING for it, also
+  one level further up a chain. And `slinitctl --no-wait restart`,
+  whose start lands while the service is still stopping, after it had
+  let go of its dependencies, waited for a dependency nothing started
+  any more. A dependency that failed or is pinned or marked down now
+  fails the start as a dependency failure; one that was only let go of
+  is required again and started.
+
+- **A dependent no longer waits for good on a service that used up its
+  restart limit.** When a crash-looping service's last exit stopped a
+  dependent with `restart = yes`, the dependent came back at once and
+  waited for it; the service then settled into the failed state without
+  telling it. The dependent stayed STARTING for good, and a container
+  whose boot target depended on such a workload never exited. It now
+  fails to start, and the container ends as a failure.
+
+- **A crash after an unrelated `slinitctl stop` ends a container as a
+  failure again.** A stop request marks the stop as requested, so that
+  a stop which cascades until nothing is left ends the container with
+  exit 0 rather than "boot failure"; the mark never cleared, so
+  stopping a side service and later losing the workload to a crash also
+  ended with exit 0 (a Succeeded pod in Kubernetes). A started process
+  or bgprocess service whose process dies or fails on its own, or a
+  start that fails, now takes the mark back; stopping the workload itself, directly, through its
+  dependency or with `--force`, still exits 0.
+
+- **`slinitctl restart` no longer ends a container.** slinitctl
+  restarts a service as two requests, a stop and then a start. In
+  between, the service and what it took down with it (a boot target
+  that depends on it) could all be stopped, and a container's slinit,
+  which ends when nothing is active, ended there: `docker exec CT
+  slinitctl restart app` stopped the container about half the time on
+  4.0.3 (more often on this branch, whose stops are quicker) and the
+  command failed with EOF. The stop half of a restart (also one sent
+  while the service waits out its restart delay) now holds that exit
+  until the client's next start or the client going away, for at
+  most 60 seconds once nothing is active (a stop may take as long as it
+  needs), and is no longer counted as a stop on request (a crash after
+  a restart reads as a failure, not exit 0). Only this slinitctl sends
+  the restart marker; an older one, or dinitctl, still can end the
+  container this way.
+
 ## [4.0.4] — 2026-11-27
 
 **A fix release on the 4.0 long-term-support line, and the same

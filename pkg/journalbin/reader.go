@@ -182,6 +182,21 @@ func (r *Reader) entryKeyAt(off uint64) (realtime, monotonic uint64, boot [16]by
 	return binary.LittleEndian.Uint64(buf[0:8]), binary.LittleEndian.Uint64(buf[8:16]), boot, nil
 }
 
+// EntryKey reads the realtime and monotonic times (µs) and the boot ID
+// (32 hex digits) of the ENTRY at off, without resolving its data: what
+// a caller looking for particular entries reads before deciding to
+// decode one with ReadEntryAt.
+func (r *Reader) EntryKey(off uint64) (realtime, monotonic uint64, boot string, err error) {
+	if err := r.checkBounds(off, ObjectHeaderSize+8+8+8+16); err != nil {
+		return 0, 0, "", err
+	}
+	rt, mono, b, err := r.entryKeyAt(off)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	return rt, mono, encodeUUIDHex(b[:]), nil
+}
+
 // ReadEntryAt is the public counterpart to readEntryAt — resolves
 // the ENTRY at `off` back into a journal.Event. Used by sd_journal
 // API callers that already have offsets from SeekRealtime /

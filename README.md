@@ -326,9 +326,9 @@ it escalates the shutdown instead.
 
 ```bash
 go test ./...                             # ~2900 unit tests and benchmarks
-./tests/functional/run-tests.sh           # 268 cases, each in its own QEMU VM
+./tests/functional/run-tests.sh           # 331 cases, each in its own QEMU VM
 ./tests/functional/selftest.sh            # checks the harness can still fail a case
-./tests/container/run.sh                  # 23 cases with slinit as a container's PID 1
+./tests/container/run.sh                  # 34 cases with slinit as a container's PID 1
 go test -fuzz=FuzzConfigParse ./tests/fuzz
 ```
 
@@ -341,7 +341,7 @@ ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/performance/ssh/run.sh          # 93 cases; see tests/performance/README.md
 ```
 
-49 fuzz targets in all: 29 under `tests/fuzz`, the rest beside the code
+54 fuzz targets in all: 29 under `tests/fuzz`, the rest beside the code
 they exercise, so `./tests/fuzz` alone does not reach them —
 `grep -rl '^func Fuzz' --include='*_test.go' .` finds every one. CI runs
 the unit, functional, fuzz and performance suites plus a nightly

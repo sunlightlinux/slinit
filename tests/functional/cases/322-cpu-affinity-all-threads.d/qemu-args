@@ -1,0 +1,2 @@
+# Two CPUs, so a mask of CPU 0 is not every CPU.
+-smp 2

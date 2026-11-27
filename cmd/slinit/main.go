@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -132,10 +131,6 @@ func main() {
 	// rebooting it. Signals that arrive before the loop starts queue on
 	// this channel and are acted on as soon as it turns.
 	earlySignals := eventloop.SetupEarlySignals()
-
-	// Make the threads the runtime will want later while the kernel still
-	// gives them out: see threadreserve.go.
-	reserveThreads(runtime.GOMAXPROCS(0) + threadReserveExtra)
 
 	// Whether our output is a terminal, decided here because the
 	// catch-all logger later points fd 1 at a pipe: asking afterwards
@@ -343,6 +338,14 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// Make the threads the runtime will want later while the kernel still
+	// gives them out (see threadreserve.go), as many as the task limits
+	// leave room for (threadbudget.go). After the flags, which say whether
+	// this is a container, and after --wait-fd, once the container manager
+	// has put slinit in its final cgroup; before anything that starts
+	// goroutines in numbers.
+	applyThreadReserve(os.Getpid() == 1 && !containerMode && !looksLikeContainer(sysOverride))
 
 	// Determine mode
 	isPID1 := os.Getpid() == 1

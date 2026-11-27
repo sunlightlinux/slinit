@@ -4,7 +4,7 @@ Go native fuzz tests (`testing.F`) for slinit's input parsing surfaces.
 
 ## This directory is not all of them
 
-29 targets live here. Another 20 sit beside the code they exercise,
+29 targets live here. Another 25 sit beside the code they exercise,
 because a fuzz target for an unexported parser has to live in its own
 package:
 
@@ -20,10 +20,12 @@ package:
 | `cmd/slinit-tmpfiles` | `FuzzTmpfilesParseLine` |
 | `cmd/slinit-immortal-convert` | `FuzzParseImmortalYAML` |
 | `pkg/timedate` | `FuzzReadZoneTab`, `FuzzValidateZone` |
-| `pkg/hostname` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease` |
-| `pkg/journal` | `FuzzParseSyslog`, `FuzzAppendJSONMatchesMarshal` |
+| `pkg/hostname` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease`, `FuzzReadStatic` |
+| `pkg/journal` | `FuzzParseSyslog`, `FuzzAppendJSONMatchesMarshal`, `FuzzUIDLimiter` |
 | `pkg/process` | `FuzzMatchFDName` |
-| `pkg/control` | `FuzzControlServer` |
+| `pkg/control` | `FuzzControlServer`, `FuzzParseShutdownTime` |
+| `cmd/slinit` | `FuzzScanSysArgs` |
+| `cmd/slinit-journalctl` | `FuzzRenderSenderFields` |
 
 So `go test -fuzz=... ./tests/fuzz/` reaches about three fifths of the
 fuzzing surface. CI fuzzes every package in its matrix
@@ -150,8 +152,10 @@ via `./tests/fuzz/`.
 | pkg/hostname | FuzzDecodeValue | machine-info/os-release value decoder + round-trip through the encoder |
 | pkg/hostname | FuzzLoadMachineInfo | Full load → save → reload round-trip on /etc/machine-info |
 | pkg/hostname | FuzzParseOSRelease | /etc/os-release parser |
+| pkg/hostname | FuzzReadStatic | /etc/hostname as PID 1 reads it: the static name is none or valid; Cleanup is idempotent, leaves a valid name unchanged and never returns an invalid one (wildcards aside) |
 | pkg/timedate | FuzzReadZoneTab | /usr/share/zoneinfo/zone.tab enumeration; asserts no NUL / no path-escape zones surface to caller |
 | pkg/timedate | FuzzValidateZone | Zone-name validator (last line of defense before filepath.Join with the zoneinfo dir) |
+| pkg/journal | FuzzUIDLimiter | the per-uid limit of /dev/log and events.sock under arbitrary senders (up to 65535 subordinate uids) and windows: root's first messages always pass, no uid passes its limit, the table and the notices per window stay bounded |
 | pkg/journal | FuzzParseSyslog | syslog(3) datagrams PID 1 reads from /dev/log: priority, timestamp, `IDENT[PID]:` |
 | pkg/process | FuzzMatchFDName | fd-store name glob, linear-time `*` matching |
 | cmd/slinit-immortal-convert | FuzzParseImmortalYAML | immortal run.yml reader; must return, with an error if need be, on any input |
@@ -163,6 +167,9 @@ via `./tests/fuzz/`.
 | cmd/slinit-openrc-convert | FuzzParseOpenrcScript | /etc/init.d/`<svc>` openrc-run script parser |
 | cmd/slinit-openrc-convert | FuzzParseDepend | `depend()` body mini-DSL parser |
 | cmd/slinit-sysvinit-convert | FuzzParseInittab | `/etc/inittab` reader (truncated lines, DOS line endings, stray colons) |
+| pkg/control | FuzzParseShutdownTime | shutdown's time operand: refused, or a delay in 0..MaxShutdownDelay, and zero (an immediate shutdown) only from a spelling of "now" or zero minutes |
+| cmd/slinit | FuzzScanSysArgs | the PID-1 kernel command-line scan: no stray word becomes a boot service unless an `-m`/`-o` is on the line (a `-s` that did so caused a reboot loop), no returned word is an option or an invalid name |
+| cmd/slinit-journalctl | FuzzRenderSenderFields | every sender-chosen field (message, identifier, `_COMM`, hostname, unit) in each terminal format: no control character, DEL, C1 or invalid UTF-8 reaches the terminal; a newline cannot start an unindented line (short) or forge a field line (verbose) |
 | cmd/slinit-killall5 | FuzzParseStat | `/proc/<pid>/stat` reader; a crafted process name must not shift the field indexing |
 
 Run per-package:

@@ -659,7 +659,58 @@ syncs and makes the reboot, power-off, halt or kexec system call.
 
 In container mode (**-o**) the same supervision logic runs but
 shutdown is replaced with a clean process exit, leaving teardown to
-the container runtime.
+the container runtime. slinit then also exits when nothing is active any
+more (see **EXIT STATUS**), but not while a **slinitctl restart** is
+between its stop and its start (since 4.0.5).
+
+A container that runs as a non-root user (**docker run \--user**,
+Kubernetes *runAsNonRoot*) usually cannot write under */run*: slinit
+then logs that it could not create its control socket, its catch-all
+log and */dev/log*, and runs the services without them. Give the
+control socket a writable path with **-p** (for example
+*/tmp/slinit.socket*) and pass the same path to **slinitctl -p**.
+
+**Task limits.** slinit waits for its children without an OS thread
+per child, so its thread count does not grow with the number of
+services, output loggers or on-demand sockets (since 4.1.0). The Go
+runtime ends the whole process when the kernel refuses it a thread — a
+kernel panic for PID 1 — so slinit creates the threads it will need
+later at start-up and keeps them idle: GOMAXPROCS + 16, but no more
+than
+
+* a quarter of the tasks its pids cgroup still allows (*pids.max*
+  minus *pids.current*, the tightest level from its own cgroup up to
+  the root, on cgroup v2 or through the v1 *pids* controller), and
+* when **RLIMIT_NPROC** applies, an eighth of that limit or a quarter
+  of what it leaves the user, whichever is less (every task of the user
+  counts against it; it does not apply to root of the initial user
+  namespace, and does to root in a rootless container).
+
+When a limit that could be read cuts the reserve, GOMAXPROCS is lowered
+by as much as the reserve lost, and at most to half the reserve, so the
+runtime never wants more threads at once than it holds. When no limit
+can be read at all and slinit is not PID 1 of a machine — a container
+whose cgroup is not visible; a process started with the *container*
+environment variable, or beside */.dockerenv* or */run/.containerenv*,
+counts as a container even without **-o** — it reserves only 8 threads
+and leaves GOMAXPROCS as it is. The reserve is made after **\--wait-fd**
+returns, in the cgroup the container manager has put slinit in. A container started with a small **\--pids-limit**
+therefore still boots; give it room for the services as well as for
+slinit's few threads.
+
+**Machine ID and hostname.** Every journal event carries the machine
+ID from */etc/machine-id*. An empty file, or one holding
+`uninitialized`, is treated as no ID at all, as systemd does, and one
+that is not 32 hexadecimal digits is reported; in both cases a
+transient ID is used for the boot and slinit starts normally (since
+4.0.4; before, such a file stopped slinit at its first service event,
+which as PID 1 was a kernel panic and in a container an exit at
+start). As PID 1, slinit sets the kernel hostname from the first line
+of */etc/hostname* that is neither empty nor a comment, cleaned as
+systemd's **hostname_cleanup** does (a trailing dot is dropped, so
+`host.example.com.` becomes `host.example.com`); a name still invalid
+after that is not set (since 4.0.4). If the kernel already has the
+file's line verbatim (a container runtime sets it), it is left alone.
 
 ## LOGGING
 

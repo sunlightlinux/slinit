@@ -109,20 +109,20 @@ For multi-step tasks, state a brief plan:
 - `go test ./...` — ~2900 unit tests across the Go tree (42 pkg/ + cmd/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
-- `./tests/functional/run-tests.sh` — 268 QEMU-based integration tests
+- `./tests/functional/run-tests.sh` — 331 QEMU-based integration tests
   (requires `qemu-system-x86_64`).
 - `./tests/acceptance/ssh/run.sh` — 218 SSH-driven cases against a live VM.
 - `./tests/performance/ssh/run.sh` — 93 SSH-driven perf cases (comprehensive
   CLI + IPC + journal + lifecycle-scaling coverage). Env-var contract
   identical to the acceptance suite.
-- `./tests/container/run.sh` — 23 cases running slinit as real PID 1 under
-  Docker, or `CONTAINER_RUNTIME=podman` (22/23; the memory-limit case skips
+- `./tests/container/run.sh` — 34 cases running slinit as real PID 1 under
+  Docker, or `CONTAINER_RUNTIME=podman` (22/23 before cases 24-28; the memory-limit case skips
   where the runtime cannot apply a cap); `./tests/container/soak.sh` loops
   spawn+shutdown to catch the races a single run misses.
 - `./tests/k8s/run.sh` — 10 cases running the same image as a pod on a local
   `kind` cluster.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
-  single target. 49 repo-wide: 29 in `tests/fuzz/`, 20 beside the code
+  single target. 54 repo-wide: 29 in `tests/fuzz/`, 25 beside the code
   they exercise (converters, killall5, sysusers/tmpfiles, the
   `pkg/timedate` and `pkg/hostname` parsers, the syslog parser, the
   fd-store glob, `pkg/config`, `pkg/service` state machine, the

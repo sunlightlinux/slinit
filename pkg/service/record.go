@@ -518,6 +518,12 @@ type ServiceRecord struct {
 	// service has used up its restart limit, so this restart is refused too.
 	depRestartDenied bool
 
+	// stopRestartAsked and stopRestartOK hold the restart limit's answer
+	// for the stop under way (checkRestartOnce): a stop is one failure,
+	// however many places want to know whether it may restart.
+	stopRestartAsked bool
+	stopRestartOK    bool
+
 	// restarting says this stop is the first half of a client-side restart.
 	restarting bool
 
@@ -3218,7 +3224,7 @@ func (sr *ServiceRecord) doStart() {
 
 	if sr.pinnedStopped {
 		if !wasActive {
-			sr.failedToStart(false, false)
+			sr.refuseStart(false)
 		}
 		return
 	}
@@ -3280,6 +3286,7 @@ func (sr *ServiceRecord) initiateStart() {
 	// it over. The state leaves STOPPED just below, which is also what
 	// makes a timer that still fires bow out harmlessly.
 	sr.restartPending = false
+	sr.stopRestartAsked = false
 	sr.startFailed = false
 	// Clear the per-session Started()-emitted flag so the next
 	// successful start emits its own boot-console line.
@@ -3326,6 +3333,32 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 		if to.Record().state.Load() != StateStarted {
 			dep.WaitingOn = true
 			allStarted = false
+		}
+		// A hard dependency this start neither holds nor is about to
+		// require (propRequire) would be waited on with nothing to start
+		// it, for good. Two ways to get there: a restart coming back
+		// from its restart delay after the dependency gave up and let go
+		// of it (cancelDependentsStart), and a start that lands on this
+		// service while it is STOPPING after its release already ran
+		// (slinitctl --no-wait restart: doStart's STOPPING branch takes
+		// no hold). A dependency that gave up for good (its start
+		// failed, its restart limit is used up, an operator pinned it
+		// stopped or marked it down) fails this start, as the
+		// dependents already STARTING are failed then; one that was only
+		// let go of is required again.
+		if (dep.DepType == DepRegular || dep.DepType == DepPreparedBy) &&
+			!dep.HoldingAcq && !sr.propRequire {
+			dr := to.Record()
+			if dr.state.Load() == StateStopped && dr.desired.Load() == StateStopped &&
+				(dr.startFailed || dr.pinnedStopped || dr.markedDown) {
+				sr.services.logger.Error("Service '%s': its dependency '%s' has failed or is held down, not starting",
+					sr.serviceName, dr.serviceName)
+				sr.propFailure = true
+				sr.services.AddPropQueue(sr.self)
+			} else {
+				dr.Require()
+				dep.HoldingAcq = true
+			}
 		}
 	}
 
@@ -3443,7 +3476,7 @@ func (sr *ServiceRecord) callBringUp() {
 	if sr.services.OnConfirmSpawn != nil && !sr.services.OnConfirmSpawn(sr.serviceName) {
 		sr.services.logger.Info("Service '%s': skipped by confirm-spawn", sr.serviceName)
 		sr.state.Store(StateStopping)
-		sr.failedToStart(false, true)
+		sr.refuseStart(true)
 		return
 	}
 	if !sr.self.BringUp() {
@@ -3622,6 +3655,9 @@ func (sr *ServiceRecord) Stopped() {
 
 	sr.forceStop = false
 
+	// The next stop is a new failure for the restart limit.
+	sr.stopRestartAsked = false
+
 	willRestart := sr.desired.Load() == StateStarted && !sr.pinnedStopped
 	if sr.desired.Load() == StateStarted && sr.pinnedStopped {
 		// A dependent asked for a start while this service was
@@ -3643,6 +3679,13 @@ func (sr *ServiceRecord) Stopped() {
 		sr.services.logger.Error(
 			"Service '%s': restart-limit-count exhausted, marking failed",
 			sr.serviceName)
+		// A dependent may already be waiting for this start: one with
+		// restart = yes that this service's last exit stopped comes back
+		// at once and asks for it again. Fail it, as a failed start
+		// would; left alone it waited for good. (One still parked on
+		// its restart delay fails when it comes back: see
+		// startCheckDependencies.)
+		sr.cancelDependentsStart(true)
 		// systemd StartLimitAction=: escalate a rate-limit failure into a
 		// system-level action (reboot/kexec/etc). Fires here — not from
 		// chooseStoppedAction — so it's independent of the failure-action
@@ -3814,8 +3857,41 @@ func (sr *ServiceRecord) cancelDependentsStart(onlyWaiting bool) {
 	}
 }
 
+// checkRestartOnce asks the restart limit whether the stop under way
+// may restart, once per stop. doStop asks it for the service's own
+// restart and stopDependents for the restart of its dependents (a
+// dependency's limit limits them too); each call used to count the stop
+// against the limit again, so restart-limit-count = 3 allowed 2
+// restarts. The answer is forgotten when the stop ends (Stopped).
+func (sr *ServiceRecord) checkRestartOnce() bool {
+	if !sr.stopRestartAsked {
+		sr.stopRestartAsked = true
+		sr.stopRestartOK = sr.self.CheckRestart()
+	}
+	return sr.stopRestartOK
+}
+
+// refuseStart is failedToStart for a start an operator refused (a stop
+// pin, a "no" at confirm-spawn): that is the operator's will, not a
+// failure, so an earlier stop request stands.
+func (sr *ServiceRecord) refuseStart(immediateStop bool) {
+	marked := sr.services.OperatorStopRequested()
+	sr.failedToStart(false, immediateStop)
+	if marked {
+		sr.services.MarkOperatorStop()
+	}
+}
+
 // failedToStart handles start failure.
 func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
+	// A start that failed on its own is a failure, not a stop on
+	// request: a container that ends now must not report an operator's
+	// earlier stop (a restart whose start failed after an upgrade
+	// removed the binary exited 0). A dependent failing with it changes
+	// nothing more.
+	if !depFailed {
+		sr.services.ClearOperatorStop()
+	}
 	// Release start limiter slot or cancel waiting
 	sr.dropStartSlot()
 
@@ -3860,6 +3936,9 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 
 func (sr *ServiceRecord) doStop(withRestart bool) {
 	if sr.IsStartPinned() {
+		// No stop: a restart answer a watchdog or health check asked
+		// for is not this service's next failure.
+		sr.stopRestartAsked = false
 		return
 	}
 
@@ -3894,7 +3973,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		// over both `restart = no` and `normal-exit`.
 		if !sr.onceRun && sr.desired.Load() == StateStarted && sr.IsForceRestartExit(exitStatus) {
 			wantedRestart = true
-			forRestart = sr.self.CheckRestart()
+			forRestart = sr.checkRestartOnce()
 			sr.inAutoRestart = forRestart
 			// Skip the per-mode auto-restart block below — the force
 			// path already decided.
@@ -3906,7 +3985,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		if autoRestart == RestartAlways && sr.desired.Load() == StateStarted {
 			if !normal {
 				wantedRestart = true
-				forRestart = sr.self.CheckRestart()
+				forRestart = sr.checkRestartOnce()
 				sr.inAutoRestart = forRestart
 			}
 		} else if autoRestart == RestartOnFailure && sr.desired.Load() == StateStarted {
@@ -3914,13 +3993,13 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 			// its default is the exit-status reading below.
 			if sr.stopReason == ReasonDepFailed && sr.failureConditions.Dependency {
 				wantedRestart = true
-				forRestart = !sr.depRestartDenied && sr.self.CheckRestart()
+				forRestart = !sr.depRestartDenied && sr.checkRestartOnce()
 				sr.inAutoRestart = forRestart
 				sr.depRestartDenied = false
 			} else if sr.stopReason == ReasonFailed ||
 				(!normal && sr.processEndIsFailure(exitStatus, restartableFailure(exitStatus))) {
 				wantedRestart = true
-				forRestart = sr.self.CheckRestart()
+				forRestart = sr.checkRestartOnce()
 				sr.inAutoRestart = forRestart
 			}
 		} else if autoRestart == RestartOnSuccess && sr.desired.Load() == StateStarted {
@@ -3936,7 +4015,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 				// the cycle ends rather than looping on an unknown.
 				if exitStatus.Exited() && exitStatus.ExitCode() == 0 {
 					wantedRestart = true
-					forRestart = sr.self.CheckRestart()
+					forRestart = sr.checkRestartOnce()
 					sr.inAutoRestart = forRestart
 				}
 			}
@@ -4075,7 +4154,7 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 	depFailure, depRestartDenied := false, false
 	if sr.forceStop && sr.desired.Load() != StateStopped && sr.stopIsFailure() {
 		depFailure = true
-		depRestartDenied = sr.depRestartDenied || !sr.self.CheckRestart()
+		depRestartDenied = sr.depRestartDenied || !sr.checkRestartOnce()
 	}
 
 	for _, dept := range sr.dependents {

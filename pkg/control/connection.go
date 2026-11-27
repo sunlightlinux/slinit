@@ -81,6 +81,14 @@ type Connection struct {
 	// Never hold it across AddListener/RemoveListener or a write: the
 	// state machine calls ServiceEvent with its own locks held.
 	handlesMu sync.RWMutex
+	// restartHeld is set while this client is between the stop and the
+	// start of a restart (a stop with StopFlagRestarting); see
+	// holdRestart. One per connection: any start ends it, as does the
+	// connection closing. How long it may keep a container with nothing
+	// active from exiting is the event loop's to bound (checkInactive).
+	restartMu     sync.Mutex
+	restartHeld   bool
+	restartClosed bool
 	// closing is set, under handlesMu, when close() starts. After it,
 	// nothing subscribes this connection to a service again: close()
 	// has taken its snapshot of the services to unsubscribe from, so a
@@ -206,6 +214,12 @@ func (c *Connection) close() {
 		for _, svc := range svcs {
 			svc.Record().RemoveListener(c)
 		}
+		// A client that went away between the halves of a restart will
+		// not send the start; and none may begin once this has run.
+		c.restartMu.Lock()
+		c.restartClosed = true
+		c.restartMu.Unlock()
+		c.releaseRestart()
 		// Unregister env listener
 		if listenEnv {
 			c.server.services.RemoveEnvListener(c)
@@ -818,6 +832,12 @@ func (c *Connection) handleStartService(payload []byte) error {
 	}
 	pin := flags&0x01 != 0
 
+	// The second half of a restart this client began: once this start
+	// has been handled, whatever its answer or its service (a reload may
+	// have swapped the service, an unload removed it), the restart is no
+	// longer pending.
+	defer c.releaseRestart()
+
 	svc := c.getService(handle)
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
@@ -936,6 +956,19 @@ func (c *Connection) handleStopService(payload []byte) error {
 	}
 
 	if svc.State() == service.StateStopped {
+		// A service waiting out its restart delay is STOPPED but still
+		// counted active, and the stop below drops that: for a restart,
+		// hold the "nothing active" exit until the client's start, as
+		// on the main path below (a container exited here, between the
+		// halves of `slinitctl restart` of a crash-looping workload);
+		// otherwise the stop is one an operator asked for.
+		if flags&StopFlagRestarting != 0 && !restart {
+			c.holdRestart()
+		} else if !restart && c.server.services.RestartPending(svc) {
+			// Only a stop that drops something counts: one of a
+			// service that is simply down changes nothing.
+			c.server.services.MarkOperatorStop()
+		}
 		// Drop its activation anyway, as dinit's stop always does: a
 		// service waiting out its restart delay (after a crash, or in
 		// the middle of a restart) is STOPPED but still wanted, and
@@ -974,11 +1007,19 @@ func (c *Connection) handleStopService(payload []byte) error {
 
 	// Someone asked for this. If the stop cascades until nothing is
 	// running, container mode reports a requested teardown rather than
-	// a boot failure.
-	c.server.services.MarkOperatorStop()
+	// a boot failure. Not for the stop half of a restart: the operator
+	// wants the service back, and a crash after it must still read as a
+	// failure, not as a stop on request.
+	if flags&StopFlagRestarting == 0 && !restart {
+		c.server.services.MarkOperatorStop()
+	}
 
 	if flags&StopFlagRestarting != 0 || restart {
 		c.server.services.MarkRestartingService(svc)
+	}
+	if flags&StopFlagRestarting != 0 && !restart {
+		// The client sends the start itself once the stop is over.
+		c.holdRestart()
 	}
 
 	if force {
@@ -2657,4 +2698,27 @@ func (c *Connection) handleListActions(payload []byte) error {
 	actions := svc.Record().ListExtraActions()
 	result := strings.Join(actions, "\n")
 	return c.writePacket(RplyActionList, []byte(result))
+}
+
+// holdRestart records that this client began a restart (see
+// ServiceSet.BeginClientRestart). A connection holds at most one.
+func (c *Connection) holdRestart() {
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
+	if c.restartClosed || c.restartHeld {
+		return
+	}
+	c.restartHeld = true
+	c.server.services.BeginClientRestart()
+}
+
+// releaseRestart ends this client's restart hold, if it has one.
+func (c *Connection) releaseRestart() {
+	c.restartMu.Lock()
+	held := c.restartHeld
+	c.restartHeld = false
+	c.restartMu.Unlock()
+	if held {
+		c.server.services.EndClientRestart()
+	}
 }

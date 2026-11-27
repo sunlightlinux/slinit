@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (301 cases)
+# Run all tests (331 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -432,6 +432,36 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 300 | kcmdline-dash-s-around-word | `-s auto -s`: boots normally to boot; `auto` is not a service |
 | 301 | kcmdline-m-after-word | `splash -m kcmd-target`: as dinit, only the words after -m are services |
 | 302 | kcmdline-oddities | unknown options, a bad `-F` value, `-s`, stray words, a KEY=VALUE word and a ~1.6 KB line: `-t no-such-svc -t boot` after them are both honoured, boot starts, the KEY=VALUE reaches services |
+| 303 | stop-in-restart-delay | `stop` (plain and `--force`) while a crashed service waits out its restart delay stops it for good: no further run, target `stop` |
+| 304 | shutdown-unpins-starting | a nested instance's poweroff with a triggered service pinned while STARTING finishes in seconds instead of waiting out the emergency timeout |
+| 305 | add-dep-hard-needs-started-target | a hard `add-dep` from a running service to a stopped one is refused and leaves no edge; `waits-for`, and a hard edge to a started service, are still accepted |
+| 306 | logbuffer-after-restart | a `log-type = buffer` service restarted while a setsid'd child holds its old stdout: the new run's 100 KB reach catlog, the run does not block |
+| 307 | reload-drops-logfile | reloading a stopped service whose file lost `logfile` and `stderr-logfile` stops its output going to the old files |
+| 308 | shutdown-time-typo | `reboot 10:3O`, `poweroff +5min`, `halt now-ish` exit 2 and shut nothing down; a valid time still schedules |
+| 309 | fifo-does-not-freeze-pid1 | an env-file FIFO and a log-file FIFO with nobody on the other end leave PID 1 answering; the log FIFO fails the start; `/dev/null` is still an env-file |
+| 310 | hostname-comment-fqdn | `/etc/hostname` with a comment, a blank line and `node-310.example.com.`: the hostname is the name line, without the trailing dot |
+| 311 | ondemand-trigger-limit | an on-demand process that exits without accepting its client: clean exits are held to the trigger window's rate and the service stays up, failed ones stop at the limit of 20 and fail it (v4.0.3: ~4000 launches in 3 s) |
+| 312 | pidfile-foreign-pid-refused | a `run-as = nobody` bgprocess whose pid file names a root process: not adopted, and the root process survives the stop; one naming its own daemon is adopted and stopped |
+| 313 | pin-leftovers | a start pin is not left on a dependency after `rm-dep` of the edge that carried it, nor on a `depends-ms` dependency pinned while it was starting; a nested instance's poweroff then finishes at once |
+| 314 | supervise-daemon-respawn-leak | a crash-looping daemon under `slinit-supervise-daemon` with a `--stdout-logger`: the supervisor's descriptors stay flat and old loggers exit (v4.0.3: +5 descriptors and one stray logger per respawn) |
+| 315 | add-dep-prepared-by | `add-dep`/`rm-dep ... prepared-by` succeed and the edge really comes and goes (v4.0.3: always "reply 52") |
+| 316 | stop-in-restart-delay-with-dependent | a stop in a restart delay with a `depends-on` dependent STARTING (waiting for the restart): no further run, the dependent is stopped too, a nested poweroff finishes at once |
+| 317 | abandoned-restart-with-dependent | a restart parked on its delay because a dependent (waits-for, then depends-on) started while the service was stopping, then called off: a nested poweroff still finishes at once (fails only with both 3766b90 and 5f02f2b removed) |
+| 318 | thread-count-flat | a nested instance running 150 processes, 150 with an output-logger and 150 idle on-demand sockets stays on a fixed set of OS threads (HEAD 22; v4.0.3 607) |
+| 319 | pin-shutdown-holds | three pin paths that left a service for the shutdown to wait out, each on its own nested instance: a start refused by the dependency's stop pin (c83cad8), a service pinned while STARTING with a dependency still starting (54dd6e5), two failed starts leaving the leaf pinned (9bf0acc) |
+| 320 | rm-dep-wakes-stopping-dependency | `rm-dep` of the edge a stopping dependency was waiting on lets it finish stopping; a nested poweroff finishes at once |
+| 321 | pidfile-symlink-path | a `run-as = nobody` bgprocess reaching root's own pid file through a symlink in a directory nobody owns: not adopted, the root process survives; a root daemon's pid file in its user's directory (no symlink) is still accepted |
+| 322 | cpu-affinity-all-threads | a nested `slinit --user --cpu-affinity 0` in a two-CPU VM: every one of its threads, and every hook it forks, is on CPU 0 (v4.0.3: 9 of 10 threads and 20 of 20 hooks were not) |
+| 323 | control-socket-reopen-after-failed-bind | a nested instance whose control socket cannot be bound at start, fixed and SIGUSR1'd: the first connection is answered (v4.0.3: nil-pointer panic) |
+| 324 | shared-logger-producer-fd | 30 start/stop cycles of a process and of a scripted shared-logger producer on a nested GOGC=off instance: its descriptors stay flat (v4.0.3: +30 each) |
+| 325 | journald-dirty-file-rotated | a binary `slinit-journald` killed with SIGKILL and restarted sets the file left online aside and starts a new one; the directory still reads |
+| 326 | stop-pin-spares-reached-milestone | a stop pin refusing a stopping service's restart fails the dependent waiting on it, but spares a `depends-ms` dependent already past its milestone, which goes on to STARTED (v4.0.3 fails on the first, c83cad8; without 5afa5d2 on the second) |
+| 327 | user-instance-low-nproc | a `slinit --user` run as nobody under `ulimit -u 20` starts, runs its service and answers (without 0f1c71d the thread reserve alone exceeded the limit and it died at start) |
+| 328 | journald-restart-no-duplicates | a binary slinit-journald restarted cleanly, then after SIGKILL, does not write PID 1's backlog again (v4.0.3: 442 entries became 884, then 1326); and on PID 1's own events socket, through a racing restart and a clean one, every event of PID 1's ring ends up in the journal (a high-water-mark filter lost 6) |
+| 329 | more-fifos-do-not-freeze-pid1 | a FIFO as lock-file, condition-file-value source, load-credential source and as the service description itself: PID 1 keeps answering after each (v4.0.3 stopped answering) |
+| 330 | prepared-by-reruns-on-restart | prep (scripted, `prepared-by` of app) runs before each of app's runs: the first, an automatic restart after a crash, and a `slinitctl restart` (with the prepared-by restart taken out of Stopped() the log reads prep app app) |
+| 331 | start-delay-and-hook-timeout | a `start-delay = 4` service waits in STARTING while another starts at once, then starts after the delay; a 3 s pre-start-command fails the start with `hook-timeout = 1` (within 2 s) and is let finish with 10 (fails with either setter made a no-op) |
+| 332 | condition-service-started | with the named service down, a `condition-service-started` service is skipped (its command never runs) and an `assert-service-started` one fails, and neither starts it; with it up both run (fails with the check made always true) |
 
 ## How It Works
 
@@ -481,6 +511,48 @@ output=$(slinitctl --system status myservice 2>&1)
 assert_contains "$output" "STARTED" "myservice is started"
 test_summary
 ```
+
+### Making sure a new case can fail
+
+A case for a fix proves something only if it fails without the fix.
+For each new case, run it against the release before the fix, with the
+case copied in, and see it fail on the assertion that targets the fix:
+
+```bash
+git worktree add --detach ../base v4.0.3
+cp tests/functional/cases/NN-name.sh ../base/tests/functional/cases/
+(cd ../base/tests/functional && ./run-tests.sh cases/NN-name.sh)   # must FAIL
+./tests/functional/run-tests.sh tests/functional/cases/NN-name.sh  # must PASS
+```
+
+When the bug existed only between releases, revert the fix's code (not
+its tests) in a throwaway worktree instead, and when a case passes
+everywhere, drop it (a GOGC=off case for the pidfds PID 1's reaper used
+to leak was dropped that way: it passed with the fixes neutered,
+because in the VM the reaper never wins the race). Run new cases under `SLINIT_NO_KVM=1` too, as CI does: a
+state read once right after STARTED can see slinit-runner still
+setting up the process there (281, 114); poll instead.
+
+### Shutdown, crash and PID-1-killing cases
+
+A case cannot watch the VM's own shutdown (the runner is gone), and a
+case that crashes or shuts down PID 1 ends the run. Start a nested
+instance instead and act on it; its shutdown can be timed and its death
+observed:
+
+```bash
+R=/tmp/NN; mkdir -p "$R/svcs"; printf '%s\n' 'type = internal' > "$R/svcs/boot"
+setsid /sbin/slinit --user --socket-path "$R/sock" --services-dir "$R/svcs" \
+    --log-file "$R/log" </dev/null >/dev/null 2>"$R/stderr" &
+NEST=$!
+sl() { timeout 10 slinitctl --socket-path "$R/sock" "$@"; }
+# ... sl poweroff; then poll `kill -0 $NEST` for a bounded time
+```
+
+304, 313, 316, 317, 319 and 320 time a nested poweroff; 308 and 323
+check the nested instance survives; 318 and 322 read its threads.
+Global slinitctl flags (`--no-wait`, `--pin`, `--force`) go before the
+verb: after it they are silently ignored.
 
 ## Service Files for Tests
 
