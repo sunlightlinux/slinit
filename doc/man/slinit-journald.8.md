@@ -35,7 +35,12 @@ history into the binary format.
 
 The daemon opens */run/slinit.socket* on startup and replays any
 events slinit's ring buffer already holds, so events emitted
-before the daemon bound to its events socket are not lost.
+before the daemon bound to its events socket are not lost. With the
+binary format, the backlog events of this boot that are already in the
+journal (written by an earlier run of the daemon) are skipped, so a
+restart does not write them twice; any other backlog event is written,
+including one an earlier run never received. With the jsonl format, or
+a journal that cannot be read, the whole backlog is written again.
 
 # FLAGS
 
