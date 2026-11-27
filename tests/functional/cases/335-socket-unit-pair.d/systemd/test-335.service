@@ -1,0 +1,6 @@
+[Unit]
+Description=handed its socket
+Requires=test-335.socket
+
+[Service]
+ExecStart=/bin/sh -c 'echo "$LISTEN_FDS" > /run/test-335.fds; exec sleep 1000'

@@ -1,0 +1,6 @@
+[Unit]
+Description=part of test-334-x
+PartOf=test-334-x.service
+
+[Service]
+ExecStart=/bin/sleep 1000

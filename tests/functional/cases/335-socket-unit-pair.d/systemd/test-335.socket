@@ -1,0 +1,6 @@
+[Socket]
+ListenStream=/run/test-335/s.sock
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target

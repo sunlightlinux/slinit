@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (332 cases)
+# Run all tests (335 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -463,6 +463,9 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 331 | start-delay-and-hook-timeout | a `start-delay = 4` service waits in STARTING while another starts at once, then starts after the delay; a 3 s pre-start-command fails the start with `hook-timeout = 1` (within 2 s) and is let finish with 10 (fails with either setter made a no-op) |
 | 332 | condition-service-started | with the named service down, a `condition-service-started` service is skipped (its command never runs) and an `assert-service-started` one fails, and neither starts it; with it up both run (fails with the check made always true) |
 | 333 | sd-notify-readiness | `ready-notification = sd-notify`: a service stays STARTING through an early `WATCHDOG=1` and is STARTED on `READY=1` sent with `slinit-notify`; a systemd `Type=notify` unit loaded directly does the same (fails with the notify dispatch removed) |
+| 334 | part-of | `part-of:` under PID 1: a restart of the named service restarts the member (new pid), a stop of it stops the member, a stop of the member leaves it alone; a systemd unit's `PartOf=` loaded directly does the same (fails with the propagation removed) |
+| 335 | socket-unit-pair | a systemd service's `.socket` unit is read with it: the daemon is handed `LISTEN_FDS=1`, the socket exists in a directory slinit created, with the unit's `SocketMode=` (fails with the socket unit not read) |
+| 336 | send-sighup-and-clean | `send-sighup`: a service ignoring SIGTERM stops at once on the hangup, not at its 30s stop-timeout; `slinitctl clean` then removes the cache directory by default and the state directory only with `--what=state`, and refuses a running service (fails with the hangup dropped and with clean removing nothing) |
 
 ## How It Works
 
