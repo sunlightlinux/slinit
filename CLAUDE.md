@@ -109,7 +109,7 @@ For multi-step tasks, state a brief plan:
 - `go test ./...` — ~2900 unit tests across the Go tree (42 pkg/ + cmd/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
-- `./tests/functional/run-tests.sh` — 328 QEMU-based integration tests
+- `./tests/functional/run-tests.sh` — 329 QEMU-based integration tests
   (requires `qemu-system-x86_64`).
 - `./tests/acceptance/ssh/run.sh` — 218 SSH-driven cases against a live VM.
 - `./tests/performance/ssh/run.sh` — 93 SSH-driven perf cases (comprehensive
