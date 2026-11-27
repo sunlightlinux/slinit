@@ -134,8 +134,9 @@ func main() {
 	earlySignals := eventloop.SetupEarlySignals()
 
 	// Make the threads the runtime will want later while the kernel still
-	// gives them out: see threadreserve.go.
-	reserveThreads(runtime.GOMAXPROCS(0) + threadReserveExtra)
+	// gives them out (see threadreserve.go), as many as the task limits
+	// leave room for (threadbudget.go).
+	reserveThreads(threadReserveSize(runtime.GOMAXPROCS(0) + threadReserveExtra))
 
 	// Whether our output is a terminal, decided here because the
 	// catch-all logger later points fd 1 at a pipe: asking afterwards
