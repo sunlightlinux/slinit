@@ -24,6 +24,23 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [4.0.4] — 2026-11-27
+
+**A fix release on the 4.0 long-term-support line, and the same
+deliberate exception as 4.0.3.** Ten security fixes lead it: one
+connection could keep PID 1 forking without end, a local user could fill
+`/run`, one user could keep root's syslog messages out of the journal,
+inhibitor locks could exhaust `slinit-logind`'s descriptors, and a pid
+file or a symlink not owned by root could steer slinit to a foreign
+process. Most of the 75 fixes are in the service lifecycle, around start
+and stop pins and dependencies. The 13 entries under *Changed* fix
+faults in a way a working setup could notice — several of them a FIFO
+where slinit expects a file, which used to freeze PID 1 and is now
+refused — and each carries a *Compat* note. STABILITY.md keeps such
+changes out of a patch release; they ship in 4.0.4 because they remove
+real bugs from the line people run. Read the *Compat* notes before
+upgrading. The control protocol stays at version 7.
+
 ### Security
 
 - **Mount churn kept PID 1 parsing the mount table (`start-on-mount`)**:
@@ -142,6 +159,18 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`localectl set-keymap` ignored `export KEYMAP=` in `rc.conf`**: the
+  line was not recognised, so `rc.conf` was left with the old keymap and
+  the boot script restored it at the next boot. It is updated now, with
+  its `export` and indentation kept.
+- **`timedatectl set-timezone` dropped `export` from `rc.conf`**: an
+  `export TIMEZONE=...` line, or an indented one, was rewritten as a bare
+  `TIMEZONE=...`. What stands before the name is kept now.
+- **`stderr-logfile` without `logfile` wrote nothing**: the service's
+  stderr went to `/dev/null` and the file was never created, so its
+  rotation settings had nothing to rotate. stderr was wired to its own
+  pipe, and that pipe read, only next to a stdout pipe. Likewise an
+  `error-logger` without a stdout logger now receives stderr.
 - **`TestDispatchEerrorReturnsOneAndUsesStderr` (cmd/slinit-einfo) failed
   under `go test -json`** (unreleased, test only): in test2json mode the
   testing package sets `os.Stderr = os.Stdout`, so the test's capture,
@@ -1838,18 +1867,6 @@ requires.
   stayed STOPPING forever**: the stop-timeout SIGKILL was sent to a
   process group the daemon does not lead. It now reaches the daemon's
   group, as the stop signal does.
-- **`localectl set-keymap` ignored `export KEYMAP=` in `rc.conf`**: the
-  line was not recognised, so `rc.conf` was left with the old keymap and
-  the boot script restored it at the next boot. It is updated now, with
-  its `export` and indentation kept.
-- **`timedatectl set-timezone` dropped `export` from `rc.conf`**: an
-  `export TIMEZONE=...` line, or an indented one, was rewritten as a bare
-  `TIMEZONE=...`. What stands before the name is kept now.
-- **`stderr-logfile` without `logfile` wrote nothing**: the service's
-  stderr went to `/dev/null` and the file was never created, so its
-  rotation settings had nothing to rotate. stderr was wired to its own
-  pipe, and that pipe read, only next to a stdout pipe. Likewise an
-  `error-logger` without a stdout logger now receives stderr.
 - **`slinitctl --pin stop` on a service already stopped did not pin it**:
   the reply said "already stopped" and the pin was dropped, so the next
   start, a dependent's or `start-all`'s, brought it up. It is pinned now,
