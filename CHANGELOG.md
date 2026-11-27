@@ -77,6 +77,14 @@ verified with `git tag -v`.
   it out (*Compat:* the log file keeps the line as written). A systemd
   unit's four directives map onto them.
 
+- **`condition-virtualization` takes systemd's categories**: `vm`,
+  `container`, `container-other` and `private-users` (a user namespace
+  other than the initial one).
+
+- **`condition-needs-update = /DIR`**, systemd's form: `/usr` was
+  modified after `DIR/.updated`. `yes` and `no` keep slinit's marker
+  files; an absolute directory was rejected before.
+
 - **`reboot-argument` reaches the kernel.** A `failure-action` or
   `success-action` that reboots now passes the service's
   `reboot-argument` to `reboot(2)` through `LINUX_REBOOT_CMD_RESTART2`,
@@ -152,6 +160,63 @@ verified with `git tag -v`.
   installed now fails the load, as it fails the unit in systemd.
 
 ### Fixed
+
+- **`condition-security = audit` never held.** It looked for "audit" in
+  `/sys/kernel/security/lsm`, but audit is not an LSM and never appears
+  there. It now holds when the kernel's audit netlink socket opens and
+  answers, as systemd's `use_audit` decides.
+
+- **`condition-security = measured-os` held for any TPM event log**,
+  which every TPM-equipped firmware writes, booted from a UKI or not.
+  It now follows `$SYSTEMD_FORCE_MEASURE`, then the
+  `systemd.tpm2_measured_os=` kernel argument, and otherwise
+  `measured-uki`, as systemd's `efi_measured_os`. *Compat:* a host with
+  a TPM log but no measured UKI now fails the check.
+
+- **`condition-cpu-feature` was false for every feature on arm64.** It
+  read only the x86 `flags` line of `/proc/cpuinfo`; arm64 names its
+  hwcaps on `Features`, which is now read there. Other architectures
+  fail, as in systemd, and systemd's x86 spellings `pclmul` and `fma3`
+  are taken for the kernel's `pclmulqdq` and `fma`.
+
+- **`condition-architecture = x86-64` never matched**: slinit called the
+  architecture `x86_64`, systemd `x86-64`. systemd's names (and
+  `native`) are accepted now; slinit's old `x86_64`, `mipsle` and
+  `loong64` still are.
+
+- **`condition-kernel-module-loaded` missed built-in modules**, since it
+  read `/proc/modules`, and counted a module still initialising as
+  loaded. It now reads `/sys/module/NAME` and its `initstate` as systemd
+  does, with `-` and `_` alike in the name.
+
+- **`condition-directory-not-empty` counted dotfiles and backups**
+  (`foo~`, `*.rpmnew`, `*.dpkg-old`), which systemd skips, failed on a
+  directory it could not read, which systemd counts as not empty, and
+  blocked on a FIFO at the path until a writer came, with the service
+  set locked. All three now behave as systemd's.
+
+- **`condition-virtualization` mis-detected several machines.** A KVM
+  guest read as `qemu`, WSL2 as a VM, Docker on cgroup v2 as nothing,
+  and DMI was consulted only when the CPU flagged a hypervisor. The
+  detector is now a port of systemd's `virt.c` (CPUID signature, DMI,
+  Xen, device tree, `/.dockerenv`, `/run/.containerenv`, OpenVZ, proot,
+  PID namespace) and reports systemd's ids. *Compat:* `qemu` still
+  matches a KVM guest whose DMI names QEMU, and `virtualbox` what is
+  now `oracle`; an unknown hypervisor, once `vm`, is `vm-other`, and
+  `vm` now matches every VM.
+
+- **`condition-path-is-mount-point` missed bind mounts within one
+  filesystem and took btrfs subvolumes for mounts**, comparing the
+  device with the parent's. It now asks the kernel
+  (`STATX_ATTR_MOUNT_ROOT`, then the mount id), as systemd's
+  `path_is_mount_point`.
+
+- **`slinit-systemd-convert` left more systemd conditions unchecked than it
+  had to.** `ConditionDirectoryNotEmpty=`, `ConditionKernelModuleLoaded=`,
+  `ConditionNeedsUpdate=`, `ConditionSecurity=audit|measured-os`,
+  `ConditionCPUFeature=` on arm64 and every `ConditionVirtualization=`
+  value but `qemu` (whose slinit meaning is wider) are now mapped,
+  since the native checks answer as systemd's.
 
 - **`before:` ordered the other way round.** `a: before: x` was stored
   on `a`, and the service holding an ordering edge waits for its target,

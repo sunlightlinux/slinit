@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The tests in this file point predicateRoot at a fixture tree, so the
@@ -16,12 +18,21 @@ import (
 
 // withPredicateRoot points the fixed host paths at a fresh fixture
 // root for the length of the test and returns that root.
+//
+// The probes that do not read files are faked too, as the fixture
+// machine's: x86-64, no hypervisor in CPUID, and a kernel without
+// audit. A test that needs another machine sets the variable itself.
 func withPredicateRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	orig := predicateRoot
+	origRoot, origArch, origCPUID, origAudit := predicateRoot, predicateGOARCH, virtCPUID, auditProbe
 	predicateRoot = root
-	t.Cleanup(func() { predicateRoot = orig })
+	predicateGOARCH = "amd64"
+	virtCPUID = func() (bool, string) { return false, "" }
+	auditProbe = func() (error, error) { return syscall.EPROTONOSUPPORT, nil }
+	t.Cleanup(func() {
+		predicateRoot, predicateGOARCH, virtCPUID, auditProbe = origRoot, origArch, origCPUID, origAudit
+	})
 	return root
 }
 
@@ -107,76 +118,194 @@ func TestKernelCommandLineMissingFile(t *testing.T) {
 
 // -------- virtualization --------------------------------------------------
 
+// unsetContainerEnv removes $container for the test, which t.Setenv
+// cannot do (it can only set a value, and an empty one is a value).
+func unsetContainerEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("container", "") // registers the restore
+	os.Unsetenv("container")
+}
+
+// hv is a CPUID probe that reports a hypervisor with signature sig.
+func hv(sig string) func() (bool, string) {
+	return func() (bool, string) { return true, sig }
+}
+
+// smbiosRaw is a BIOS information structure (DMI type 0) with the "VM"
+// bit of BIOS Characteristics Extension Byte 2 set or not.
+func smbiosRaw(vm bool) string {
+	b := make([]byte, 24)
+	b[1] = 24
+	if vm {
+		b[19] = 1 << 4
+	}
+	return string(b)
+}
+
 func TestVirtualizationDetect(t *testing.T) {
+	const kvmSig, tcgSig = "KVMKVMKVM", "TCGTCGTCGTCG"
 	for _, tc := range []struct {
 		name  string
-		env   string
+		env   string // "-" leaves $container unset
+		arch  string // GOARCH, default amd64
+		cpuid func() (bool, string)
 		files map[string]string
 		want  string
 	}{
-		{"bare metal", "", map[string]string{
-			"/proc/cpuinfo":              "flags\t\t: fpu vme sse2\n",
+		{name: "bare metal", env: "-", files: map[string]string{
+			"/proc/cpuinfo":              "vendor_id\t: GenuineIntel\nflags\t\t: fpu vme sse2\n",
 			"/proc/sys/kernel/osrelease": "6.12.0-sunlight\n",
 			"/proc/1/cgroup":             "0::/init.scope\n",
-		}, ""},
-		{"nothing readable", "", nil, ""},
-		{"container env", "systemd-nspawn", nil, "systemd-nspawn"},
-		{"env beats cgroup", "lxc", map[string]string{"/proc/1/cgroup": "0::/docker/abc\n"}, "lxc"},
-		{"docker cgroup", "", map[string]string{"/proc/1/cgroup": "0::/docker/abc\n"}, "docker"},
-		{"lxc cgroup", "", map[string]string{"/proc/1/cgroup": "0::/lxc/c1\n"}, "lxc"},
-		{"kubepods cgroup", "", map[string]string{"/proc/1/cgroup": "0::/kubepods/burstable/p1\n"}, "kubernetes"},
-		{"podman cgroup", "", map[string]string{"/proc/1/cgroup": "0::/machine.slice/libpod-podman-1\n"}, "podman"},
-		{"container beats hypervisor", "", map[string]string{
+			"/proc/self/ns/pid":          "",
+		}, want: ""},
+		{name: "nothing readable", env: "-", want: ""},
+		{name: "empty env is unset", env: "", want: ""},
+
+		// Containers.
+		{name: "container env", env: "systemd-nspawn", want: "systemd-nspawn"},
+		{name: "unknown env verbatim", env: "garden", want: "garden"},
+		{name: "env beats cgroup", env: "lxc", files: map[string]string{"/proc/1/cgroup": "0::/docker/abc\n"}, want: "lxc"},
+		{name: "oci env, dockerenv", env: "oci", files: map[string]string{"/.dockerenv": ""}, want: "docker"},
+		{name: "oci env, nothing else", env: "oci", want: "container-other"},
+		{name: "container-manager file", env: "-", files: map[string]string{"/run/host/container-manager": "podman\n"}, want: "podman"},
+		{name: "run systemd container", env: "-", files: map[string]string{"/run/systemd/container": "lxc-libvirt\n"}, want: "lxc-libvirt"},
+		{name: "pid 1 environ", env: "-", files: map[string]string{"/proc/1/environ": "HOME=/\x00container=rkt\x00TERM=linux\x00"}, want: "rkt"},
+		// Docker on cgroup v2: PID 1's cgroup is "0::/", only
+		// /.dockerenv says docker.
+		{name: "dockerenv cgroup v2", env: "-", files: map[string]string{"/.dockerenv": "", "/proc/1/cgroup": "0::/\n"}, want: "docker"},
+		{name: "containerenv beats dockerenv", env: "-", files: map[string]string{"/.dockerenv": "", "/run/.containerenv": ""}, want: "podman"},
+		{name: "docker cgroup", env: "-", files: map[string]string{"/proc/1/cgroup": "0::/docker/abc\n"}, want: "docker"},
+		{name: "lxc cgroup", env: "-", files: map[string]string{"/proc/1/cgroup": "0::/lxc/c1\n"}, want: "lxc"},
+		{name: "kubepods cgroup", env: "-", files: map[string]string{"/proc/1/cgroup": "0::/kubepods/burstable/p1\n"}, want: "kubernetes"},
+		{name: "podman cgroup", env: "-", files: map[string]string{"/proc/1/cgroup": "0::/machine.slice/libpod-podman-1\n"}, want: "podman"},
+		{name: "openvz", env: "-", files: map[string]string{"/proc/vz/veinfo": ""}, want: "openvz"},
+		{name: "openvz host", env: "-", files: map[string]string{"/proc/vz/veinfo": "", "/proc/bc/0": ""}, want: ""},
+		{name: "proot", env: "-", files: map[string]string{
+			"/proc/self/status": "Name:\tsh\nTracerPid:\t4242\n",
+			"/proc/4242/comm":   "proot\n",
+		}, want: "proot"},
+		{name: "traced by gdb", env: "-", files: map[string]string{
+			"/proc/self/status": "Name:\tsh\nTracerPid:\t4242\n",
+			"/proc/4242/comm":   "gdb\n",
+		}, want: ""},
+		{name: "container beats hypervisor", env: "-", cpuid: hv(kvmSig), files: map[string]string{
 			"/proc/1/cgroup": "0::/docker/abc\n",
-			"/proc/cpuinfo":  "flags\t\t: fpu hypervisor\n",
-		}, "docker"},
-		{"hypervisor no dmi", "", map[string]string{"/proc/cpuinfo": "flags\t\t: fpu hypervisor\n"}, "vm"},
-		{"qemu vendor", "", map[string]string{
-			"/proc/cpuinfo":                "flags\t\t: hypervisor\n",
-			"/sys/class/dmi/id/sys_vendor": "QEMU\n",
-		}, "qemu"},
-		{"qemu product", "", map[string]string{
-			"/proc/cpuinfo":                  "flags\t\t: hypervisor\n",
-			"/sys/class/dmi/id/product_name": "Standard PC (Q35 + ICH9, 2009) QEMU\n",
-		}, "qemu"},
-		{"vmware", "", map[string]string{
-			"/proc/cpuinfo":                  "flags\t\t: hypervisor\n",
-			"/sys/class/dmi/id/product_name": "VMware Virtual Platform\n",
-		}, "vmware"},
-		{"virtualbox", "", map[string]string{
-			"/proc/cpuinfo":                "flags\t\t: hypervisor\n",
-			"/sys/class/dmi/id/sys_vendor": "innotek GmbH\n",
-		}, "virtualbox"},
-		{"hyper-v", "", map[string]string{
-			"/proc/cpuinfo":                "flags\t\t: hypervisor\n",
+		}, want: "docker"},
+		// WSL2 runs on Hyper-V: its kernel sees a hypervisor, and it
+		// read as a VM when the WSL fingerprint came after that.
+		{name: "wsl2", env: "-", cpuid: hv("Microsoft Hv"), files: map[string]string{
+			"/proc/sys/kernel/osrelease":   "5.15.90.1-microsoft-standard-WSL2\n",
 			"/sys/class/dmi/id/sys_vendor": "Microsoft Corporation\n",
-		}, "microsoft"},
-		{"xen", "", map[string]string{
-			"/proc/cpuinfo":                "flags\t\t: hypervisor\n",
-			"/sys/class/dmi/id/sys_vendor": "Xen\n",
-		}, "xen"},
-		{"gce", "", map[string]string{
-			"/proc/cpuinfo":                "flags\t\t: hypervisor\n",
-			"/sys/class/dmi/id/sys_vendor": "Google\n",
-		}, "google"},
-		{"unknown dmi", "", map[string]string{
-			"/proc/cpuinfo":                "flags\t\t: hypervisor\n",
-			"/sys/class/dmi/id/sys_vendor": "Acme\n",
-		}, "vm"},
-		// DMI is only consulted when the CPU says it runs under a
-		// hypervisor: a QEMU vendor string alone is not a VM.
-		{"dmi without hypervisor", "", map[string]string{
-			"/proc/cpuinfo":                "flags\t\t: fpu\n",
+		}, want: "wsl"},
+		{name: "wsl1", env: "-", files: map[string]string{
+			"/proc/sys/kernel/osrelease": "4.4.0-19041-Microsoft\n",
+		}, want: "wsl"},
+		{name: "microsoft-built kernel is not wsl", env: "-", files: map[string]string{
+			"/proc/sys/kernel/osrelease": "6.6.0-microsoft-cbl\n",
+		}, want: ""},
+
+		// VMs by CPUID.
+		{name: "kvm", env: "-", cpuid: hv(kvmSig), files: map[string]string{
+			"/sys/class/dmi/id/sys_vendor":   "QEMU\n",
+			"/sys/class/dmi/id/product_name": "Standard PC (Q35 + ICH9, 2009)\n",
+		}, want: "kvm"},
+		{name: "kvm hyperv enlightened", env: "-", cpuid: hv("Linux KVM Hv"), want: "kvm"},
+		{name: "qemu tcg", env: "-", cpuid: hv(tcgSig), files: map[string]string{
 			"/sys/class/dmi/id/sys_vendor": "QEMU\n",
-		}, ""},
-		{"wsl", "", map[string]string{
-			"/proc/cpuinfo":              "flags\t\t: fpu\n",
-			"/proc/sys/kernel/osrelease": "5.15.90.1-Microsoft-standard-WSL2\n",
-		}, "wsl"},
+		}, want: "qemu"},
+		{name: "hyper-v", env: "-", cpuid: hv("Microsoft Hv"), files: map[string]string{
+			"/sys/class/dmi/id/sys_vendor":   "Microsoft Corporation\n",
+			"/sys/class/dmi/id/product_name": "Virtual Machine\n",
+		}, want: "microsoft"},
+		// QEMU with Hyper-V enlightenments: DMI names it.
+		{name: "qemu cloaked as hyper-v", env: "-", cpuid: hv("Microsoft Hv"), files: map[string]string{
+			"/sys/class/dmi/id/sys_vendor": "QEMU\n",
+		}, want: "qemu"},
+		{name: "unknown hypervisor", env: "-", cpuid: hv("AcmeAcmeAcme"), want: "vm-other"},
+		{name: "vmware", env: "-", cpuid: hv("VMwareVMware"), want: "vmware"},
+
+		// VMs DMI names before CPUID.
+		{name: "virtualbox", env: "-", cpuid: hv(kvmSig), files: map[string]string{
+			"/sys/class/dmi/id/sys_vendor": "innotek GmbH\n",
+		}, want: "oracle"},
+		{name: "gce", env: "-", cpuid: hv(kvmSig), files: map[string]string{
+			"/sys/class/dmi/id/product_name": "Google Compute Engine\n",
+		}, want: "google"},
+		{name: "gce bare metal", env: "-", files: map[string]string{
+			"/sys/class/dmi/id/product_name": "Google Compute Engine\n",
+		}, want: ""},
+		{name: "amazon vm bit", env: "-", cpuid: hv(kvmSig), files: map[string]string{
+			"/sys/class/dmi/id/sys_vendor":      "Amazon EC2\n",
+			"/sys/firmware/dmi/entries/0-0/raw": smbiosRaw(true),
+		}, want: "amazon"},
+		{name: "amazon metal", env: "-", files: map[string]string{
+			"/sys/class/dmi/id/sys_vendor":      "Amazon EC2\n",
+			"/sys/firmware/dmi/entries/0-0/raw": smbiosRaw(false),
+		}, want: ""},
+		{name: "amazon metal by name", env: "-", files: map[string]string{
+			"/sys/class/dmi/id/sys_vendor":   "Amazon EC2\n",
+			"/sys/class/dmi/id/product_name": "c5.metal\n",
+		}, want: ""},
+
+		// No CPUID hypervisor: DMI alone, as systemd.
+		{name: "dmi qemu without cpuid", env: "-", files: map[string]string{
+			"/sys/class/dmi/id/sys_vendor": "QEMU\n",
+		}, want: "qemu"},
+		{name: "dmi kvm product", env: "-", files: map[string]string{
+			"/sys/class/dmi/id/product_name": "KVM\n",
+			"/sys/class/dmi/id/sys_vendor":   "QEMU\n",
+		}, want: "kvm"},
+		{name: "smbios vm bit only", env: "-", files: map[string]string{
+			"/sys/firmware/dmi/entries/0-0/raw": smbiosRaw(true),
+		}, want: "vm-other"},
+		{name: "uml", env: "-", files: map[string]string{
+			"/proc/cpuinfo": "processor\t: 0\nvendor_id\t: User Mode Linux\n",
+		}, want: "uml"},
+		{name: "xen domU", env: "-", files: map[string]string{"/proc/xen/capabilities": ""}, want: "xen"},
+		// Dom0 is the host, not a guest: none, unless CPUID shows it
+		// nested in another hypervisor.
+		{name: "xen dom0", env: "-", files: map[string]string{
+			"/proc/xen/capabilities":              "",
+			"/sys/hypervisor/properties/features": "00000801\n",
+			"/sys/hypervisor/type":                "xen\n",
+		}, want: ""},
+		{name: "xen dom0 by capabilities", env: "-", files: map[string]string{
+			"/proc/xen/capabilities": "control_d\n",
+		}, want: ""},
+		{name: "xen dom0 nested in kvm", env: "-", cpuid: hv(kvmSig), files: map[string]string{
+			"/proc/xen/capabilities": "control_d\n",
+		}, want: "kvm"},
+		{name: "xen hvm domU by sysfs", env: "-", files: map[string]string{
+			"/sys/hypervisor/type": "xen\n",
+		}, want: "xen"},
+
+		// Other architectures: no CPUID, the device tree.
+		{name: "arm64 kvm", env: "-", arch: "arm64", cpuid: hv("KVMKVMKVM"), files: map[string]string{
+			"/proc/device-tree/hypervisor/compatible": "linux,kvm\x00",
+		}, want: "kvm"},
+		{name: "arm64 fw-cfg", env: "-", arch: "arm64", files: map[string]string{
+			"/proc/device-tree/fw-cfg@9020000/compatible": "qemu,fw-cfg-mmio\x00",
+		}, want: "qemu"},
+		{name: "arm64 dummy-virt", env: "-", arch: "arm64", files: map[string]string{
+			"/proc/device-tree/compatible": "linux,dummy-virt\x00",
+		}, want: "vm-other"},
+		{name: "s390x zvm", env: "-", arch: "s390x", files: map[string]string{
+			"/proc/sysinfo": "VM00 Name:  LINUX1\nVM00 Control Program: z/VM    7.2.0\n",
+		}, want: "zvm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := withPredicateRoot(t)
-			t.Setenv("container", tc.env)
+			if tc.env == "-" {
+				unsetContainerEnv(t)
+			} else {
+				t.Setenv("container", tc.env)
+			}
+			if tc.arch != "" {
+				predicateGOARCH = tc.arch
+			}
+			if tc.cpuid != nil {
+				virtCPUID = tc.cpuid
+			}
 			for p, c := range tc.files {
 				put(t, root, p, c)
 			}
@@ -185,17 +314,39 @@ func TestVirtualizationDetect(t *testing.T) {
 			}
 		})
 	}
+	// The PID namespace: the initial one has inode 0xEFFFFFFC.
+	t.Run("pid namespace", func(t *testing.T) {
+		root := withPredicateRoot(t)
+		unsetContainerEnv(t)
+		mkdir(t, root, "/proc/self/ns")
+		link := filepath.Join(root, "/proc/self/ns/pid")
+		if err := os.Symlink("pid:[4026531836]", link); err != nil {
+			t.Fatal(err)
+		}
+		if got := detectVirtualization(); got != "" {
+			t.Fatalf("initial pid namespace: %q, want none", got)
+		}
+		os.Remove(link)
+		if err := os.Symlink("pid:[4026532999]", link); err != nil {
+			t.Fatal(err)
+		}
+		if got := detectVirtualization(); got != "container-other" {
+			t.Fatalf("other pid namespace: %q, want container-other", got)
+		}
+	})
 }
 
 func TestVirtualizationPredicate(t *testing.T) {
 	t.Run("bare metal", func(t *testing.T) {
 		withPredicateRoot(t)
-		t.Setenv("container", "")
+		unsetContainerEnv(t)
 		runPred(t, PredVirtualization, []predCase{
 			{"", false, false},
 			{"yes", false, false},
 			{"no", false, true},
 			{"kvm", false, false},
+			{"vm", false, false},
+			{"container", false, false},
 			{"no", true, false},
 			{"yes", true, true},
 		})
@@ -203,21 +354,83 @@ func TestVirtualizationPredicate(t *testing.T) {
 			t.Errorf("reason %q should say no virtualization was detected", why)
 		}
 	})
-	t.Run("qemu", func(t *testing.T) {
+	t.Run("kvm", func(t *testing.T) {
 		root := withPredicateRoot(t)
-		t.Setenv("container", "")
-		put(t, root, "/proc/cpuinfo", "flags\t\t: hypervisor\n")
+		unsetContainerEnv(t)
+		virtCPUID = hv("KVMKVMKVM")
 		put(t, root, "/sys/class/dmi/id/sys_vendor", "QEMU\n")
 		runPred(t, PredVirtualization, []predCase{
 			{"", false, true},
 			{"yes", false, true},
 			{"no", false, false},
+			{"kvm", false, true},
+			{"vm", false, true},
+			{"container", false, false},
+			// slinit before 4.1 said "qemu" here, from the DMI.
 			{"qemu", false, true},
-			{"kvm", false, false},
 			{"QEMU", false, false},
-			{"qemu", true, false},
+			{"kvm", true, false},
 			{"no", true, true},
 		})
+	})
+	t.Run("kvm without qemu dmi", func(t *testing.T) {
+		withPredicateRoot(t)
+		unsetContainerEnv(t)
+		virtCPUID = hv("KVMKVMKVM")
+		runPred(t, PredVirtualization, []predCase{{"kvm", false, true}, {"qemu", false, false}})
+	})
+	t.Run("qemu tcg", func(t *testing.T) {
+		root := withPredicateRoot(t)
+		unsetContainerEnv(t)
+		virtCPUID = hv("TCGTCGTCGTCG")
+		put(t, root, "/sys/class/dmi/id/sys_vendor", "QEMU\n")
+		runPred(t, PredVirtualization, []predCase{{"qemu", false, true}, {"kvm", false, false}, {"vm", false, true}})
+	})
+	t.Run("virtualbox", func(t *testing.T) {
+		root := withPredicateRoot(t)
+		unsetContainerEnv(t)
+		put(t, root, "/sys/class/dmi/id/sys_vendor", "innotek GmbH\n")
+		runPred(t, PredVirtualization, []predCase{{"oracle", false, true}, {"virtualbox", false, true}, {"vm", false, true}})
+	})
+	t.Run("docker", func(t *testing.T) {
+		root := withPredicateRoot(t)
+		unsetContainerEnv(t)
+		virtCPUID = hv("KVMKVMKVM")
+		put(t, root, "/.dockerenv", "")
+		runPred(t, PredVirtualization, []predCase{
+			{"docker", false, true},
+			{"container", false, true},
+			{"vm", false, false},
+			{"container-other", false, false},
+			{"kvm", false, false},
+			{"yes", false, true},
+		})
+	})
+	t.Run("unknown container manager", func(t *testing.T) {
+		withPredicateRoot(t)
+		t.Setenv("container", "garden")
+		runPred(t, PredVirtualization, []predCase{
+			{"garden", false, true},
+			{"container", false, true},
+			{"container-other", false, true},
+		})
+	})
+	t.Run("private-users", func(t *testing.T) {
+		root := withPredicateRoot(t)
+		unsetContainerEnv(t)
+		runPred(t, PredVirtualization, []predCase{{"private-users", false, false}})
+		mkdir(t, root, "/proc/self/ns")
+		link := filepath.Join(root, "/proc/self/ns/user")
+		if err := os.Symlink("user:[4026531837]", link); err != nil {
+			t.Fatal(err)
+		}
+		runPred(t, PredVirtualization, []predCase{{"private-users", false, false}, {"private-users", true, true}})
+		os.Remove(link)
+		if err := os.Symlink("user:[4026532001]", link); err != nil {
+			t.Fatal(err)
+		}
+		// Not a container by itself: only the user namespace differs.
+		runPred(t, PredVirtualization, []predCase{{"private-users", false, true}, {"no", false, true}})
 	})
 }
 
@@ -269,20 +482,64 @@ func TestSecurityPredicate(t *testing.T) {
 	}
 	t.Run("audit", func(t *testing.T) {
 		root := withPredicateRoot(t)
-		runPred(t, PredSecurity, []predCase{{"audit", false, false}})
-		put(t, root, "/sys/kernel/security/lsm", "capability,landlock,yama,apparmor\n")
-		runPred(t, PredSecurity, []predCase{{"audit", false, false}})
+		// Audit is not an LSM: its name in the LSM list (where the
+		// kernel never puts it) means nothing.
 		put(t, root, "/sys/kernel/security/lsm", "capability,audit\n")
+		runPred(t, PredSecurity, []predCase{{"audit", false, false}, {"audit", true, true}})
+		auditProbe = func() (error, error) { return nil, nil }
 		runPred(t, PredSecurity, []predCase{{"audit", false, true}, {"audit", true, false}})
+		// The probe on this kernel: whatever it says, the condition
+		// agrees with it.
+		auditProbe = probeAuditNetlink
+		want := auditUsable(probeAuditNetlink())
+		runPred(t, PredSecurity, []predCase{{"audit", false, want}})
 	})
 	t.Run("measured-os", func(t *testing.T) {
 		root := withPredicateRoot(t)
 		const log = "/sys/kernel/security/tpm0/binary_bios_measurements"
+		const stub = "/sys/firmware/efi/efivars/StubPcrKernelImage-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 		runPred(t, PredSecurity, []predCase{{"measured-os", false, false}})
-		put(t, root, log, "")
-		runPred(t, PredSecurity, []predCase{{"measured-os", false, false}})
+		// A TPM event log is what any TPM firmware writes; it is not
+		// a measured OS.
 		put(t, root, log, "\x01\x02")
+		runPred(t, PredSecurity, []predCase{{"measured-os", false, false}, {"measured-os", true, true}})
+		// A measured UKI is.
+		put(t, root, stub, "\x06\x00\x00\x001\x001\x00")
 		runPred(t, PredSecurity, []predCase{{"measured-os", false, true}, {"measured-os", true, false}})
+		// The kernel command line overrides, either way, the last
+		// word winning; a value that is no boolean is ignored.
+		for cmdline, want := range map[string]bool{
+			"quiet systemd.tpm2_measured_os=0":                      false,
+			"systemd.tpm2_measured_os=no":                           false,
+			"systemd.tpm2-measured-os=off":                          false,
+			"systemd.tpm2_measured_os=0 systemd.tpm2_measured_os=1": true,
+			"systemd.tpm2_measured_os=maybe":                        true,
+			"systemd.tpm2_measured_os_x=0":                          true,
+		} {
+			put(t, root, "/proc/cmdline", cmdline+"\n")
+			runPred(t, PredSecurity, []predCase{{"measured-os", false, want}})
+		}
+		if err := os.Remove(filepath.Join(root, stub)); err != nil {
+			t.Fatal(err)
+		}
+		for cmdline, want := range map[string]bool{
+			"systemd.tpm2_measured_os":   true,
+			"systemd.tpm2_measured_os=1": true,
+			"systemd.tpm2_measured_os=y": true,
+			"quiet":                      false,
+		} {
+			put(t, root, "/proc/cmdline", cmdline+"\n")
+			runPred(t, PredSecurity, []predCase{{"measured-os", false, want}})
+		}
+		// $SYSTEMD_FORCE_MEASURE comes before the command line.
+		put(t, root, "/proc/cmdline", "systemd.tpm2_measured_os=1\n")
+		t.Setenv("SYSTEMD_FORCE_MEASURE", "0")
+		runPred(t, PredSecurity, []predCase{{"measured-os", false, false}})
+		t.Setenv("SYSTEMD_FORCE_MEASURE", "bogus")
+		runPred(t, PredSecurity, []predCase{{"measured-os", false, true}})
+		put(t, root, "/proc/cmdline", "quiet\n")
+		t.Setenv("SYSTEMD_FORCE_MEASURE", "yes")
+		runPred(t, PredSecurity, []predCase{{"measured-os", false, true}})
 	})
 	t.Run("measured-uki", func(t *testing.T) {
 		root := withPredicateRoot(t)
@@ -334,9 +591,63 @@ func TestNeedsUpdatePredicate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// systemd's own spelling takes a directory; slinit rejects it.
-	if ok, why := checkNeedsUpdate("/etc"); ok || !strings.Contains(why, "invalid") {
-		t.Errorf("needs-update=/etc = %v %q, want false + invalid", ok, why)
+}
+
+// TestNeedsUpdateDirectory: systemd's form, an absolute directory, is
+// true when /usr was modified after DIR/.updated.
+func TestNeedsUpdateDirectory(t *testing.T) {
+	root := withPredicateRoot(t)
+	mkdir(t, root, "/usr")
+	mkdir(t, root, "/etc")
+	stamp := filepath.Join(root, "/etc/.updated")
+	usr := filepath.Join(root, "/usr")
+	at := func(p string, sec, nsec int64) {
+		t.Helper()
+		tm := time.Unix(sec, nsec)
+		if err := os.Chtimes(p, tm, tm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No stamp yet: never updated, so update.
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, true}, {"/etc", true, false}})
+	put(t, root, "/etc/.updated", "")
+	at(usr, 1000, 0)
+	at(stamp, 2000, 0)
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, false}, {" /etc ", false, false}, {"/etc", true, true}})
+	at(usr, 3000, 0)
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, true}})
+	// Same second: the nanoseconds decide.
+	at(usr, 3000, 500)
+	at(stamp, 3000, 400)
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, true}})
+	at(stamp, 3000, 600)
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, false}})
+	// A stamp without nanoseconds (its filesystem keeps none): the
+	// TIMESTAMP_NSEC= it records decides.
+	put(t, root, "/etc/.updated", "# written by systemd-update-done\nTIMESTAMP_NSEC=3000000000600\n")
+	at(stamp, 3000, 0)
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, false}})
+	put(t, root, "/etc/.updated", "TIMESTAMP_NSEC=3000000000400\n")
+	at(stamp, 3000, 0)
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, true}})
+	put(t, root, "/etc/.updated", "")
+	at(stamp, 3000, 0)
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, true}})
+	// The kernel command line decides first; the initrd never updates.
+	at(stamp, 9000, 0)
+	put(t, root, "/proc/cmdline", "systemd.condition_needs_update=1\n")
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, true}})
+	put(t, root, "/proc/cmdline", "systemd.condition_needs_update=0\n")
+	at(stamp, 1, 0)
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, false}})
+	put(t, root, "/proc/cmdline", "quiet\n")
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, true}})
+	put(t, root, "/etc/initrd-release", "")
+	runPred(t, PredNeedsUpdate, []predCase{{"/etc", false, false}})
+	// The marker form is untouched by any of it.
+	runPred(t, PredNeedsUpdate, []predCase{{"yes", false, false}, {"no", false, true}})
+	if ok, why := checkNeedsUpdate("etc"); ok || !strings.Contains(why, "invalid") {
+		t.Errorf("needs-update=etc = %v %q, want false + invalid", ok, why)
 	}
 }
 
@@ -447,7 +758,7 @@ func TestPathIsMountPointHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	checked := 0
-	for _, p := range []string{"/", "/proc", "/sys", "/dev", "/proc/self", "/proc/sys/kernel", tmp, file} {
+	for _, p := range []string{"/", "/proc", "/sys", "/dev", "/proc/self", "/proc/sys", "/proc/sys/kernel", "/sys/fs/cgroup", "/dev/pts", "/run", tmp, file} {
 		if _, err := os.Stat(p); err != nil {
 			continue
 		}
@@ -567,32 +878,37 @@ func TestReadOSReleaseFile(t *testing.T) {
 
 func TestKernelModuleLoadedPredicate(t *testing.T) {
 	root := withPredicateRoot(t)
-	put(t, root, "/proc/modules",
-		"nf_tables 368640 0 - Live 0x0000000000000000\n"+
-			"ext4 1048576 1 - Live 0x0000000000000000\n"+
-			"\n"+
-			"snd_hda_intel 61440 2 - Loading 0x0000000000000000\n")
+	// A module loaded at runtime has an initstate; a built-in one has
+	// the directory (with parameters) but none. /proc/modules lists
+	// only the first kind, and a built-in module was "not loaded".
+	put(t, root, "/proc/modules", "nf_tables 368640 0 - Live 0x0000000000000000\n")
+	put(t, root, "/sys/module/nf_tables/initstate", "live\n")
+	put(t, root, "/sys/module/snd_hda_intel/initstate", "coming\n")
+	put(t, root, "/sys/module/vt/parameters/default_utf8", "1\n")
+	put(t, root, "/sys/module/zram/initstate", "going\n")
+	put(t, root, "/sys/module/notdir", "")
 	runPred(t, PredKernelModuleLoaded, []predCase{
-		{"ext4", false, true},
-		{" ext4 ", false, true},
 		{"nf_tables", false, true},
-		{"snd_hda_intel", false, true},
-		{"ext", false, false},
-		{"EXT4", false, false},
-		{"368640", false, false},
-		{"Live", false, false},
-		{"vfat", false, false},
-		{"ext4", true, false},
-		{"vfat", true, true},
+		{"nf-tables", false, true},
+		{" nf_tables ", false, true},
+		{"vt", false, true},
+		{"snd_hda_intel", false, false},
+		{"zram", false, false},
+		{"ext4", false, false},
+		{"nf_table", false, false},
+		{"NF_TABLES", false, false},
+		{"notdir", false, false},
+		{"../module/vt", false, false},
+		{"..", false, false},
+		{"nf_tables", true, false},
+		{"ext4", true, true},
+		{"vt", true, false},
 	})
 	if ok, why := checkKernelModuleLoaded("  "); ok || !strings.Contains(why, "empty") {
 		t.Errorf("empty name = %v %q", ok, why)
 	}
-	if err := os.Remove(filepath.Join(root, "/proc/modules")); err != nil {
-		t.Fatal(err)
-	}
-	if ok, why := checkKernelModuleLoaded("ext4"); ok || !strings.Contains(why, "/proc/modules") {
-		t.Errorf("missing /proc/modules = %v %q", ok, why)
+	if _, why := checkKernelModuleLoaded("snd-hda-intel"); !strings.Contains(why, "coming") {
+		t.Errorf("a module still in its init should say so: %q", why)
 	}
 }
 
@@ -864,11 +1180,8 @@ func TestPathIsMountPointSpelling(t *testing.T) {
 		{toKernel, true, true},
 	}
 	// In a container /proc/sys is a read-only bind of the same procfs:
-	// mountinfo lists it, but the device comparison cannot see a bind
-	// within one filesystem (a known limit), so only the plain host
-	// layout pins the ".." spelling.
-	if !mp["/proc/sys"] {
-		cases = append(cases, predCase{"/proc/sys/kernel/..", false, false})
-	}
+	// mountinfo lists it, and the kernel's mount-root attribute sees
+	// it, where a device comparison could not.
+	cases = append(cases, predCase{"/proc/sys/kernel/..", false, mp["/proc/sys"]})
 	runPred(t, PredPathIsMountPoint, cases)
 }

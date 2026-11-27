@@ -22,61 +22,89 @@ import (
 
 // -------- architecture ---------------------------------------------------
 
-// checkArchitecture compares systemd's canonical architecture name
-// against Go's runtime.GOARCH. Systemd's names align with GOARCH for
-// x86_64/arm64/riscv64/... — the remap table covers the historical
-// divergences (i686 vs 386, ppc64le naming, etc.) so a service file
-// ported from a systemd-managed distro Just Works.
+// predicateGOARCH is the architecture the architecture and cpu-feature
+// checks answer for. It is runtime.GOARCH outside tests, which set it
+// to exercise another architecture's branch on this one.
+var predicateGOARCH = runtime.GOARCH
+
+// checkArchitecture compares the param against systemd's name for the
+// architecture slinit runs on (architecture_table in systemd's
+// architecture.c), so a ConditionArchitecture= value ported from a
+// systemd unit means the same thing here.
 func checkArchitecture(param string) (bool, string) {
-	want := strings.TrimSpace(param)
-	got := archAlias(runtime.GOARCH)
-	if got == want {
+	if archMatches(param) {
 		return true, ""
 	}
-	return false, fmt.Sprintf("architecture: %q != %q", got, want)
+	return false, fmt.Sprintf("architecture: %q != %q", archAlias(predicateGOARCH), strings.TrimSpace(param))
 }
 
-// archMatches reports whether param names the current runtime arch,
-// using the same canonical names as checkArchitecture. Used by both
-// ConditionArchitecture and the arch-prefix form of ConditionCPUFeature
-// (systemd d5186757411).
+// archLegacyNames are the names slinit reported before it used
+// systemd's: "x86_64" for x86-64, and the bare GOARCH for the two the
+// old table left out. Configs written against them keep matching.
+var archLegacyNames = map[string]string{
+	"x86_64":  "x86-64",
+	"mipsle":  "mips-le",
+	"loong64": "loongarch64",
+}
+
+// archMatches reports whether param names the current architecture:
+// systemd's name, one of slinit's older names, or "native", which
+// systemd takes as the architecture it was built for. Used by both
+// architecture and the arch-prefix form of cpu-feature (systemd
+// d5186757411), as systemd shares condition_test_architecture_parameter
+// between them.
 func archMatches(param string) bool {
-	return archAlias(runtime.GOARCH) == strings.TrimSpace(param)
+	p := strings.TrimSpace(param)
+	if p == "native" {
+		return true
+	}
+	if canon, ok := archLegacyNames[p]; ok {
+		p = canon
+	}
+	return p == archAlias(predicateGOARCH)
 }
 
+// archAlias maps a GOARCH to systemd's architecture name.
 func archAlias(goarch string) string {
 	switch goarch {
 	case "386":
-		return "x86" // systemd's canonical name for the 32-bit x86 family
+		return "x86"
 	case "amd64":
-		return "x86_64"
-	case "arm":
-		return "arm"
-	case "arm64":
-		return "arm64"
-	case "ppc64":
-		return "ppc64"
+		return "x86-64"
 	case "ppc64le":
 		return "ppc64-le"
-	case "s390x":
-		return "s390x"
-	case "riscv64":
-		return "riscv64"
-	case "mips":
-		return "mips"
-	case "mips64":
-		return "mips64"
+	case "mipsle":
+		return "mips-le"
 	case "mips64le":
 		return "mips64-le"
+	case "loong64":
+		return "loongarch64"
 	}
+	// arm, arm64, ppc64, s390x, riscv64, mips, mips64: GOARCH and
+	// systemd agree.
 	return goarch
 }
 
 // -------- cpu-feature ----------------------------------------------------
 
-// checkCPUFeature succeeds when /proc/cpuinfo's flags line contains the
-// requested feature (case-insensitive), matching systemd's
-// ConditionCPUFeature=. Common examples: avx2, sha_ni, aes.
+// cpuFeatureAliases are systemd's spellings of two x86 flags that the
+// kernel lists in /proc/cpuinfo under another name (systemd reads them
+// from CPUID with names of its own, virt.c leaf1_ecx).
+var cpuFeatureAliases = map[string]string{
+	"pclmul": "pclmulqdq",
+	"fma3":   "fma",
+}
+
+// checkCPUFeature succeeds when the CPU has the requested feature
+// (case-insensitive), as systemd's ConditionCPUFeature=. Common
+// examples: avx2, sha_ni, aes.
+//
+// systemd's has_cpu_with_flag asks the hardware on x86 (CPUID) and on
+// arm64 (the AT_HWCAP words) and answers false on every other
+// architecture. The kernel names those same bits in /proc/cpuinfo: the
+// "flags" line on x86 and the "Features" line on arm64, the latter from
+// the same hwcap names systemd's table copies. Reading only "flags"
+// made every feature false on arm64.
 //
 // Also accepts an optional architecture prefix so a service can spell
 // "arm64.bti" instead of bare "bti" on mixed-arch fleets where CPU
@@ -88,7 +116,7 @@ func checkCPUFeature(param string) (bool, string) {
 	param = strings.TrimSpace(param)
 	if arch, feature, ok := strings.Cut(param, "."); ok {
 		if !archMatches(arch) {
-			return false, fmt.Sprintf("cpu-feature: arch prefix %q does not match current %q", arch, archAlias(runtime.GOARCH))
+			return false, fmt.Sprintf("cpu-feature: arch prefix %q does not match current %q", arch, archAlias(predicateGOARCH))
 		}
 		param = feature
 	}
@@ -96,16 +124,25 @@ func checkCPUFeature(param string) (bool, string) {
 	if want == "" {
 		return false, "cpu-feature: empty flag name"
 	}
-	data, err := os.ReadFile("/proc/cpuinfo")
+	var key string
+	switch predicateGOARCH {
+	case "amd64", "386":
+		key = "flags"
+		if alias, ok := cpuFeatureAliases[want]; ok {
+			want = alias
+		}
+	case "arm64":
+		key = "Features"
+	default:
+		return false, fmt.Sprintf("cpu-feature: no CPU feature list on %s", archAlias(predicateGOARCH))
+	}
+	data, err := os.ReadFile(hostPath("/proc/cpuinfo"))
 	if err != nil {
 		return false, fmt.Sprintf("cpu-feature: /proc/cpuinfo: %v", err)
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		if !strings.HasPrefix(line, "flags") {
-			continue
-		}
-		_, val, ok := strings.Cut(line, ":")
-		if !ok {
+		name, val, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(name) != key {
 			continue
 		}
 		for _, f := range strings.Fields(val) {
@@ -113,9 +150,9 @@ func checkCPUFeature(param string) (bool, string) {
 				return true, ""
 			}
 		}
-		return false, fmt.Sprintf("cpu-feature: %q not in flags", want)
+		return false, fmt.Sprintf("cpu-feature: %q not in %s", want, key)
 	}
-	return false, "cpu-feature: no flags line in /proc/cpuinfo"
+	return false, fmt.Sprintf("cpu-feature: no %s line in /proc/cpuinfo", key)
 }
 
 // -------- cpus, memory (numeric OP-value) --------------------------------
@@ -206,28 +243,48 @@ func checkKernelVersion(param string) (bool, string) {
 
 // -------- kernel-module-loaded ------------------------------------------
 
-// checkKernelModuleLoaded scans /proc/modules for the given module name.
-// A leading '!' would be handled by the outer Negate; the module name
-// itself is trimmed and matched against the first whitespace-delimited
-// field of each line.
+// checkKernelModuleLoaded reports whether the named module is loaded,
+// as systemd's condition_test_kernel_module_loaded decides it: the
+// module has a /sys/module/<name> directory and, when that directory
+// has an initstate file, it reads "live". A module built into the
+// kernel has the directory (when it has parameters or a version) but no
+// initstate, and counts as loaded; /proc/modules, read before, lists
+// only modules loaded at runtime, so a built-in one read as missing,
+// and it listed a module still running its init ("Loading") as loaded.
+// '-' and '_' name the same module, as modprobe has it, and the kernel
+// names the directory with '_'.
 func checkKernelModuleLoaded(param string) (bool, string) {
 	want := strings.TrimSpace(param)
 	if want == "" {
 		return false, "kernel-module-loaded: empty module name"
 	}
-	f, err := os.Open(hostPath("/proc/modules"))
+	name := strings.ReplaceAll(want, "-", "_")
+	// filename_is_valid: no '/', not "." or "..", at most NAME_MAX.
+	if strings.ContainsRune(name, '/') || name == "." || name == ".." || len(name) > 255 {
+		return false, fmt.Sprintf("kernel-module-loaded: %q is not a module name", want)
+	}
+	dir := hostPath("/sys/module/" + name)
+	st, err := os.Stat(dir)
 	if err != nil {
-		return false, fmt.Sprintf("kernel-module-loaded: /proc/modules: %v", err)
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) > 0 && fields[0] == want {
-			return true, ""
+		if os.IsNotExist(err) {
+			return false, fmt.Sprintf("kernel-module-loaded: %q not loaded (no /sys/module/%s)", want, name)
 		}
+		return false, fmt.Sprintf("kernel-module-loaded: %v", err)
 	}
-	return false, fmt.Sprintf("kernel-module-loaded: %q not loaded", want)
+	if !st.IsDir() {
+		return false, fmt.Sprintf("kernel-module-loaded: /sys/module/%s is not a directory", name)
+	}
+	data, err := os.ReadFile(dir + "/initstate")
+	if os.IsNotExist(err) {
+		return true, "" // built in
+	}
+	if err != nil {
+		return false, fmt.Sprintf("kernel-module-loaded: /sys/module/%s/initstate: %v", name, err)
+	}
+	if state := strings.TrimSpace(string(data)); state != "live" {
+		return false, fmt.Sprintf("kernel-module-loaded: %q is %s, not live", want, state)
+	}
+	return true, ""
 }
 
 // -------- os-release ----------------------------------------------------

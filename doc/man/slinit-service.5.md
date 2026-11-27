@@ -2823,27 +2823,53 @@ form):
 :   *path* exists and is a directory.
 
 **\*-path-is-mount-point**=*path*
-:   *path* is a filesystem mount point (its device id differs from its
-    parent's).
+:   *path* (symlinks followed) is the root of a mount, as the kernel's
+    `STATX_ATTR_MOUNT_ROOT` reports it, which sees a bind mount within
+    one filesystem and does not take a btrfs subvolume for a mount.
+    Kernels before 5.8 compare the mount id, then the device, with the
+    parent's. Before 4.1 slinit compared the device only.
 
 **\*-file-not-empty**=*path*
 :   *path* is a regular file with non-zero size.
 
 **\*-directory-not-empty**=*path*
-:   *path* is a directory with at least one entry.
+:   *path* is a directory with at least one entry that is not hidden
+    or a backup, as systemd's **ConditionDirectoryNotEmpty=**: names
+    starting with `.`, ending in `~`, `lost+found`, `aquota.user`,
+    `aquota.group` and the suffixes `.rpmnew`, `.rpmsave`, `.rpmorig`,
+    `.dpkg-*`, `.ucf-*`, `.swp`, `.bak`, `.old`, `.new` and `.ignore`
+    are skipped. A directory that exists but cannot be read counts as
+    not empty. Before 4.1 every entry counted and an unreadable
+    directory failed the check.
 
 **\*-kernel-command-line**=*token*
 :   `/proc/cmdline` contains *token*. *token* may be a bare key
     (`quiet`) or a `key=value` pair.
 
-**\*-virtualization**=[*kind*|`yes`|`no`]
-:   Detect the running virtualization. Probe order: the `$container`
-    env var (value used verbatim), `/proc/1/cgroup` (`docker`, `lxc`,
-    `kubernetes`, `podman`), the cpuinfo `hypervisor` flag refined by
-    DMI (`qemu`, `vmware`, `virtualbox`, `microsoft`, `xen`,
-    `google`, else `vm`), then the WSL fingerprint (`wsl`). A KVM
-    guest reports `qemu`; `kvm` is never returned. `yes` / empty
-    matches any virtualization; `no` matches bare metal.
+**\*-virtualization**=[*id*|`vm`|`container`|`private-users`|`yes`|`no`]
+:   Detect the running virtualization the way systemd-detect-virt(1)
+    does, with its ids. A container is looked for first: OpenVZ, WSL,
+    proot, `/run/host/container-manager`, the `$container` variable
+    (slinit's own, then `/run/systemd/container` and PID 1's when slinit
+    is not PID 1; the value is used verbatim, `oci` aside),
+    `/run/.containerenv` (`podman`), `/.dockerenv` (`docker`), the
+    container manager in `/proc/1/cgroup` (`docker`, `lxc`,
+    `kubernetes`, `podman`) and a PID namespace other than the initial
+    one (`container-other`). Then a VM: DMI vendors, User-Mode Linux,
+    Xen, the CPUID hypervisor signature (`kvm`, `qemu` without KVM,
+    `vmware`, `microsoft`, ...), DMI again, `/sys/hypervisor`, the
+    device tree and z/VM; an unknown hypervisor is `vm-other`.
+    `yes` / empty matches any virtualization, `no` bare metal; `vm`
+    and `container` match the category; `container-other` a container
+    whose manager has no systemd id; `private-users` a user namespace
+    other than the initial one.
+
+    Until 4.1 slinit reported a KVM guest as `qemu` and VirtualBox as
+    `virtualbox`. Both still match: `qemu` holds on a KVM guest whose
+    DMI names QEMU (systemd says `kvm` there, and only `kvm`), and
+    `virtualbox` where systemd says `oracle`. An unknown hypervisor was
+    `vm`, which now matches every VM. WSL2 was found as a VM, and Docker
+    on cgroup v2 not at all.
 
 **\*-first-boot**[=`yes`|`no`]
 :   `/etc/machine-id` is missing or `uninitialized`. Defaults to `yes`.
@@ -2853,12 +2879,23 @@ form):
 
 **\*-security**=*lsm*
 :   Named LSM or feature is active. Recognised: `selinux`, `apparmor`,
-    `tomoyo`, `smack`, `ima`, `audit`, `measured-os` (a non-empty TPM
-    measurement log) and `measured-uki` (the same, plus the sd-stub
-    *StubPcrKernelImage* EFI variable).
+    `tomoyo`, `smack`, `ima`, `audit`, `measured-uki` (the sd-stub
+    *StubPcrKernelImage* EFI variable exists and the TPM measurement log
+    is not empty) and `measured-os`. `audit` holds when the kernel's
+    audit netlink socket can be opened and answers, as systemd's
+    `use_audit` decides (until 4.1 it looked for audit in the LSM list,
+    where it never is, and never held). `measured-os` follows
+    `$SYSTEMD_FORCE_MEASURE`, then the `systemd.tpm2_measured_os=`
+    kernel argument, and otherwise `measured-uki`, as systemd's
+    `efi_measured_os`; until 4.1 any non-empty TPM log satisfied it.
 
-**\*-needs-update**[=`yes`|`no`]
-:   `/run/systemd/update-on-next-boot` or `/run/needs-update` exists.
+**\*-needs-update**[=`yes`|`no`|*directory*]
+:   `yes` (the default): `/run/systemd/update-on-next-boot` or
+    `/run/needs-update` exists; `no`: neither does. An absolute
+    *directory* (since 4.1) is systemd's **ConditionNeedsUpdate=**:
+    `/usr` was modified after *directory*`/.updated` (or that file is
+    missing), not in the initrd and not on a read-only filesystem, the
+    kernel argument `systemd.condition_needs_update=` overriding.
 
 **\*-ac-power**[=`yes`|`no`]
 :   Reads `/sys/class/power_supply` to detect AC vs battery. With no
@@ -2900,15 +2937,21 @@ form):
     always produces the same decision. Fails when */etc/machine-id* is
     missing.
 
-**\*-architecture**=*x86_64*|*x86*|*arm64*|*arm*|*ppc64-le*|...
-:   Runtime CPU architecture, in systemd's spelling: `x86_64`, not
-    `amd64`; `x86`, not `386`; `ppc64-le` and `mips64-le` for the
-    little-endian 64-bit variants.
+**\*-architecture**=*x86-64*|*x86*|*arm64*|*arm*|*ppc64-le*|`native`|...
+:   CPU architecture slinit runs on, in systemd's spelling: `x86-64`,
+    not `amd64`; `x86`, not `386`; `ppc64-le`, `mips64-le`, `mips-le`
+    and `loongarch64`. `native` always holds. The names slinit used
+    before 4.1, `x86_64`, `mipsle` and `loong64`, are still accepted.
 
-**\*-cpu-feature**=[*ARCH*.]*avx2*|*sha_ni*|...
-:   Named cpuinfo flag present in `/proc/cpuinfo`. An *ARCH*`.`
-    prefix (`x86_64.avx2`) restricts the check to that architecture;
-    on any other it fails.
+**\*-cpu-feature**=[*ARCH*.]*avx2*|*sha_ni*|*bti*|...
+:   The CPU has the named feature: on x86 a word of the `flags` line of
+    `/proc/cpuinfo` (systemd's `pclmul` and `fma3` are taken for the
+    kernel's `pclmulqdq` and `fma`), on arm64 a word of the `Features`
+    line (the hwcap names systemd reads). On any other architecture it
+    fails, as systemd's does. Until 4.1 only the `flags` line was read,
+    so every feature failed on arm64. An *ARCH*`.` prefix
+    (`x86-64.avx2`, `arm64.bti`) restricts the check to that
+    architecture; on any other it fails.
 
 **\*-cpus**=[*OP*]*N*
 :   Number of usable CPUs (the affinity mask) compared with *OP*:
@@ -2924,7 +2967,11 @@ form):
     `>= 6.6.5`, etc.
 
 **\*-kernel-module-loaded**=*name*
-:   Module `name` appears in `/proc/modules`.
+:   `/sys/module/`*name* exists and, when it has an `initstate`, that
+    reads `live`: a built-in module (no `initstate`) counts as loaded,
+    one still initialising does not. `-` and `_` in *name* are the same.
+    Until 4.1 slinit read `/proc/modules`, which lists no built-in
+    module.
 
 **\*-os-release**=*KEY*=*VALUE*
 :   Field *KEY* of `/etc/os-release` (or `/usr/lib/os-release`)
@@ -3066,7 +3113,7 @@ Examples:
     condition-first-boot = no
 
     # Refuse to start outside a KVM guest:
-    assert-virtualization = qemu
+    assert-virtualization = kvm
 
     # Only run when the laptop is on AC:
     condition-ac-power = yes

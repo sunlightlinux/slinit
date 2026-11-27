@@ -22,9 +22,9 @@ const (
 	PredPathExists        PredicateKind = iota // path exists (any kind)
 	PredPathExistsGlob                         // glob has at least one match
 	PredPathIsDirectory                        // path exists and is a directory
-	PredPathIsMountPoint                       // path is a mount point (parent dev differs)
+	PredPathIsMountPoint                       // path is a mount root (statx STATX_ATTR_MOUNT_ROOT)
 	PredFileNotEmpty                           // regular file, size > 0
-	PredDirectoryNotEmpty                      // directory containing at least one entry
+	PredDirectoryNotEmpty                      // directory with an entry not hidden or a backup
 	PredKernelCommandLine                      // /proc/cmdline contains the token
 	PredVirtualization                         // running under (or not) a given virt
 	PredFirstBoot                              // OS first-boot marker present
@@ -38,12 +38,12 @@ const (
 	// Bucket A1: cheap-win predicates — all self-contained, all read a
 	// single /proc or /etc source and compare a value the operator
 	// declared. Systemd equivalents in parentheses.
-	PredArchitecture       // Architecture= — GOARCH match (x86_64, arm64, ...)
-	PredCPUFeature         // CPUFeature= — /proc/cpuinfo flag match
+	PredArchitecture       // Architecture= — GOARCH under systemd's name (x86-64, arm64, ...)
+	PredCPUFeature         // CPUFeature= — /proc/cpuinfo flags (x86) or Features (arm64)
 	PredCPUs               // CPUs= — runtime.NumCPU vs OP-value
 	PredMemory             // Memory= — /proc/meminfo MemTotal vs OP-value
 	PredKernelVersion      // KernelVersion= — uname().Release vs OP-value
-	PredKernelModuleLoaded // KernelModuleLoaded= — /proc/modules match
+	PredKernelModuleLoaded // KernelModuleLoaded= — /sys/module/NAME, initstate live
 	PredOSRelease          // OSRelease= — /etc/os-release KEY=VALUE
 	PredUser               // User= — os.Getuid() vs uid or username
 	PredGroup              // Group= — os.Getgid()+groups vs gid or groupname
@@ -325,14 +325,7 @@ func evalRaw(ctx context.Context, p Predicate, prep func(*exec.Cmd)) (bool, stri
 		}
 		return true, ""
 	case PredDirectoryNotEmpty:
-		entries, err := os.ReadDir(p.Param)
-		if err != nil {
-			return false, fmt.Sprintf("dir %q: %v", p.Param, err)
-		}
-		if len(entries) == 0 {
-			return false, fmt.Sprintf("dir %q is empty", p.Param)
-		}
-		return true, ""
+		return checkDirectoryNotEmpty(p.Param)
 	case PredKernelCommandLine:
 		return kernelCmdlineContains(p.Param)
 	case PredVirtualization:

@@ -1,9 +1,10 @@
 #!/bin/sh
 # Test: condition-security = measured-os (systemd v261 addition).
-# Verifies /sys/kernel/security/tpm0/binary_bios_measurements is
-# non-empty. The test VM is a plain QEMU without a TPM device, so
-# the file is absent and the condition MUST fail — service reaches
-# STARTED (silent skip) with no PID.
+# Since 4.1 it is systemd's efi_measured_os: the kernel argument
+# systemd.tpm2_measured_os=, else a measured UKI (StubPcrKernelImage
+# EFI variable plus a non-empty TPM log). The test VM is a plain QEMU
+# without a TPM device or a UKI, so the condition MUST fail — service
+# reaches STARTED (silent skip) with no PID.
 #
 # The positive path (TPM present, PCRs populated) would need
 # `-device tpm-tis,tpmdev=…` and swtpm running alongside QEMU. Out

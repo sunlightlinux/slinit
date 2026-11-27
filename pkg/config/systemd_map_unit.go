@@ -20,9 +20,12 @@ import (
 // pkg/service/predicate*.go), but its evaluators were written from the
 // documentation's one-line summaries, and several read the value
 // differently: ConditionCPUs=4 means ">= 4" to systemd and "== 4" to
-// slinit, ConditionArchitecture=x86-64 never matches slinit's "x86_64",
-// ConditionMemoryPressure=20% holds when pressure is BELOW 20% for
-// systemd and above it for slinit. So every kind goes through a conv
+// slinit, ConditionMemoryPressure=20% holds when pressure is BELOW 20%
+// for systemd and above it for slinit. (Several were brought in line
+// with systemd's src/shared/condition.c in 4.1: architecture names,
+// cpu-feature on arm64, security=audit and measured-os, virtualization,
+// kernel-module-loaded, directory-not-empty, needs-update=DIR and
+// path-is-mount-point.) So every kind goes through a conv
 // that passes on only the values whose evaluation is the same, rewrites
 // the ones it can (an implied operator, a size suffix, an architecture
 // name), and reports the rest.
@@ -86,6 +89,9 @@ var sdConditionKinds = map[string]sdCondKind{
 	"PathIsReadWrite":        {pred: "path-is-read-write", path: true},
 	"PathIsSocket":           {pred: "path-is-socket", path: true},
 	"FileIsExecutable":       {pred: "file-is-executable", path: true},
+	"DirectoryNotEmpty":      {pred: "directory-not-empty", path: true},
+	"NeedsUpdate":            {pred: "needs-update", path: true},
+	"KernelModuleLoaded":     {pred: "kernel-module-loaded"},
 	"FirstBoot":              {pred: "first-boot", conv: sdCondBool},
 	"ACPower":                {pred: "ac-power", conv: sdCondBool},
 	"Architecture":           {pred: "architecture", conv: sdCondArchitecture},
@@ -107,21 +113,11 @@ var sdConditionKinds = map[string]sdCondKind{
 	"ControlGroupController": {pred: "control-group-controller", conv: sdCondCgroupController},
 
 	// No slinit evaluator means the same thing.
-	"Capability": {gap: "slinit has no check of its own capability bounding set"},
-	"NeedsUpdate": {path: true, gap: "slinit's needs-update looks for marker files under /run, " +
-		"not at whether /usr is newer than this directory's .updated stamp"},
+	"Capability":      {gap: "slinit has no check of its own capability bounding set"},
 	"PathIsEncrypted": {path: true, gap: "slinit has no check for a path on an encrypted block device"},
-	// systemd's dir_is_empty skips hidden and backup files (.foo, foo~,
-	// *.rpmnew) and counts an unreadable directory (EACCES) as not
-	// empty; slinit's check counts every entry and fails when it
-	// cannot read the directory.
-	"DirectoryNotEmpty": {path: true, gap: "slinit's directory-not-empty counts hidden and backup files " +
-		"(.foo, foo~, *.rpmnew), which systemd skips, and fails on a directory it cannot read, which systemd counts as not empty"},
-	"KernelModuleLoaded": {gap: "slinit's kernel-module-loaded reads /proc/modules, " +
-		"which leaves out built-in modules that systemd counts as loaded (/sys/module)"},
-	"MemoryPressure": {gap: sdPSIGap},
-	"CPUPressure":    {gap: sdPSIGap},
-	"IOPressure":     {gap: sdPSIGap},
+	"MemoryPressure":  {gap: sdPSIGap},
+	"CPUPressure":     {gap: sdPSIGap},
+	"IOPressure":      {gap: sdPSIGap},
 }
 
 const sdPSIGap = "slinit's pressure checks hold when the 10s 'some' average is AT LEAST the value " +
@@ -397,12 +393,17 @@ func sdCondBool(v string, negate bool) ([]sdPred, []SystemdWarning, error) {
 
 // sdCondVirtualization: systemd compares "yes"/"no" (any boolean), the
 // categories "vm" and "container", "private-users", or one detector id.
-// slinit's detector knows no categories, and reports some machines
-// under ids of its own ("qemu" on KVM, where systemd says "kvm"), so
-// only the ids it reports as systemd does are passed on.
+// slinit's detector is a port of systemd's (pkg/service predicate_virt.go)
+// and takes all of them, but its "qemu" also matches a KVM guest whose
+// DMI says QEMU, as slinit's detector before 4.1 reported KVM guests,
+// and systemd's does not: "qemu" is the one id left unchecked.
 var sdVirtIDs = map[string]bool{
-	"docker": true, "podman": true, "lxc": true, "lxc-libvirt": true, "systemd-nspawn": true,
-	"wsl": true, "vmware": true, "microsoft": true, "xen": true, "google": true,
+	"vm": true, "container": true, "private-users": true,
+	"kvm": true, "amazon": true, "bochs": true, "xen": true, "uml": true, "vmware": true,
+	"oracle": true, "microsoft": true, "zvm": true, "parallels": true, "bhyve": true, "qnx": true,
+	"acrn": true, "powervm": true, "apple": true, "sre": true, "google": true, "vm-other": true,
+	"systemd-nspawn": true, "lxc-libvirt": true, "lxc": true, "openvz": true, "docker": true,
+	"podman": true, "rkt": true, "wsl": true, "proot": true, "pouch": true, "container-other": true,
 }
 
 func sdCondVirtualization(v string, negate bool) ([]sdPred, []SystemdWarning, error) {
@@ -411,6 +412,9 @@ func sdCondVirtualization(v string, negate bool) ([]sdPred, []SystemdWarning, er
 	}
 	if sdVirtIDs[v] {
 		return sdOne(v, negate), nil, nil
+	}
+	if v == "qemu" {
+		return nil, nil, errors.New("slinit's virtualization check also takes a KVM guest that DMI calls QEMU for \"qemu\", where systemd says \"kvm\"")
 	}
 	return nil, nil, fmt.Errorf("slinit's virtualization check cannot tell %q the way systemd does", v)
 }
@@ -481,21 +485,63 @@ var sdCPUFeatures = map[string]string{
 	"constant_tsc": "constant_tsc",
 }
 
+// sdARM64Features are the arm64 hardware capabilities systemd's
+// has_cpu_with_flag knows (AT_HWCAP, AT_HWCAP2, AT_HWCAP3; virt.c
+// hwcap[], hwcap2[], hwcap3[]). Its names are the kernel's, which the
+// "Features" line of /proc/cpuinfo prints for the same bits, so slinit
+// reads the same answer there.
+var sdARM64Features = map[string]bool{
+	"fp": true, "asimd": true, "evtstrm": true, "aes": true, "pmull": true, "sha1": true,
+	"sha2": true, "crc32": true, "atomics": true, "fphp": true, "asimdhp": true, "cpuid": true,
+	"asimdrdm": true, "jscvt": true, "fcma": true, "lrcpc": true, "dcpop": true, "sha3": true,
+	"sm3": true, "sm4": true, "asimddp": true, "sha512": true, "sve": true, "asimdfhm": true,
+	"dit": true, "uscat": true, "ilrcpc": true, "flagm": true, "ssbs": true, "sb": true, "paca": true,
+	"pacg": true, "gcs": true, "cmpbr": true, "fprcvt": true, "f8mm8": true, "f8mm4": true,
+	"svef16mm": true, "sveeltperm": true, "sveaes2": true, "svebfscale": true, "sve2p2": true,
+	"sme2p2": true, "smesbitperm": true, "smeaes": true, "smesfexpa": true, "smestmop": true,
+	"smesmop4": true, "dcpodp": true, "sve2": true, "sveaes": true, "svepmull": true,
+	"svebitperm": true, "svesha3": true, "svesm4": true, "flagm2": true, "frint": true,
+	"svei8mm": true, "svef32mm": true, "svef64mm": true, "svebf16": true, "i8mm": true, "bf16": true,
+	"dgh": true, "rng": true, "bti": true, "mte": true, "ecv": true, "afp": true, "rpres": true,
+	"mte3": true, "sme": true, "smei16i64": true, "smef64f64": true, "smei8i32": true,
+	"smef16f32": true, "smeb16f32": true, "smef32f32": true, "smefa64": true, "wfxt": true,
+	"ebf16": true, "sveebf16": true, "cssc": true, "rprfm": true, "sve2p1": true, "sme2": true,
+	"sme2p1": true, "smei16i32": true, "smebi32i32": true, "smeb16b16": true, "smef16f16": true,
+	"mops": true, "hbc": true, "sveb16b16": true, "lrcpc3": true, "lse128": true, "fpmr": true,
+	"lut": true, "faminmax": true, "f8cvt": true, "f8fma": true, "f8dp4": true, "f8dp2": true,
+	"f8e4m3": true, "f8e5m2": true, "smelutv2": true, "smef8f16": true, "smef8f32": true,
+	"smesf8fma": true, "smesf8dp4": true, "smesf8dp2": true, "poe": true, "mtefar": true,
+	"mtestoreonly": true, "lsfe": true, "ls64": true, "sveb16mm": true, "sve2p3": true,
+	"smelut6": true, "sme2p3": true, "f16mm": true, "f16f32dot": true, "f16f32mm": true,
+	"svelut6": true,
+}
+
 func sdCondCPUFeature(v string, negate bool) ([]sdPred, []SystemdWarning, error) {
 	arch, feature, prefixed := strings.Cut(v, ".")
 	if !prefixed {
 		feature = v
-		// slinit reads the x86 "flags" line of /proc/cpuinfo; systemd
-		// reads the hardware capabilities on arm64 too.
-		if runtime.GOARCH != "amd64" && runtime.GOARCH != "386" {
-			return nil, nil, errors.New("slinit's cpu-feature reads only the x86 CPU flags")
+		// Without a prefix the feature is looked up on the machine the
+		// service runs on, taken to be this one.
+		arch = map[string]string{"amd64": "x86-64", "386": "x86", "arm64": "arm64"}[runtime.GOARCH]
+		if arch == "" {
+			return nil, nil, errors.New("slinit's cpu-feature reads the x86 and arm64 CPU features only")
 		}
-	} else if arch != "x86" && arch != "x86-64" {
-		return nil, nil, errors.New("slinit's cpu-feature reads only the x86 CPU flags")
 	}
-	f, ok := sdCPUFeatures[strings.ToLower(feature)]
-	if !ok {
-		return nil, nil, fmt.Errorf("systemd does not know the CPU feature %q", feature)
+	lower := strings.ToLower(feature)
+	var f string
+	switch arch {
+	case "x86", "x86-64":
+		var ok bool
+		if f, ok = sdCPUFeatures[lower]; !ok {
+			return nil, nil, fmt.Errorf("systemd does not know the CPU feature %q", feature)
+		}
+	case "arm64":
+		if !sdARM64Features[lower] {
+			return nil, nil, fmt.Errorf("systemd does not know the CPU feature %q", feature)
+		}
+		f = lower
+	default:
+		return nil, nil, errors.New("slinit's cpu-feature reads the x86 and arm64 CPU features only")
 	}
 	if prefixed {
 		f = sdArchNames[arch] + "." + f
@@ -821,18 +867,22 @@ func sdCondFirmware(v string, negate bool) ([]sdPred, []SystemdWarning, error) {
 	return nil, nil, fmt.Errorf("slinit's firmware check has no %q", v)
 }
 
-// sdCondSecurity: the frameworks slinit detects as systemd does. "audit"
-// it looks for in the LSM list, where audit never is; "measured-os" it
-// takes for any TPM event log, where systemd wants a measured UKI or the
-// kernel command line to say so; "uefi-secureboot", "tpm2" and "cvm" it
-// does not know.
+// sdCondSecurity: the frameworks slinit detects as systemd does.
+// "uefi-secureboot", "tpm2" and "cvm" it does not know.
 var sdSecurityOK = map[string]bool{
-	"selinux": true, "apparmor": true, "smack": true, "ima": true, "tomoyo": true, "measured-uki": true,
+	"selinux": true, "apparmor": true, "smack": true, "ima": true, "tomoyo": true,
+	"measured-uki": true, "measured-os": true, "audit": true,
 }
 
 func sdCondSecurity(v string, negate bool) ([]sdPred, []SystemdWarning, error) {
 	if !sdSecurityOK[v] {
 		return nil, nil, fmt.Errorf("slinit's security check cannot tell %q the way systemd does", v)
+	}
+	if v == "audit" {
+		// use_audit asks both: the kernel's audit socket, and whether
+		// systemd can load libaudit.so.1 to talk to it.
+		return sdOne(v, negate), []SystemdWarning{{"NOTE", "Security=audit: slinit asks the kernel's audit socket only; " +
+			"systemd also answers no when libaudit.so.1 is not installed"}}, nil
 	}
 	return sdOne(v, negate), nil, nil
 }

@@ -1,18 +1,29 @@
 package service
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
-// pathIsMountPoint returns true iff path is a filesystem mount point.
-// Detection: the device id of path differs from the device id of its
-// parent. Falls back to checking /proc/self/mountinfo if stat fails.
+// mountStatx is unix.Statx; tests replace it to stand in for kernels
+// that lack STATX_ATTR_MOUNT_ROOT or statx itself.
+var mountStatx = unix.Statx
+
+// pathIsMountPoint returns true iff path is a mount point, the way
+// systemd's path_is_mount_point(AT_SYMLINK_FOLLOW) decides it: the
+// kernel's STATX_ATTR_MOUNT_ROOT (Linux 5.8), which says whether the
+// path is the root of a mount. Comparing the device with the parent's,
+// as slinit did, cannot see a bind mount within one filesystem (same
+// device on both sides) and takes a btrfs subvolume (a device of its
+// own, no mount) for one. Kernels without the attribute fall back to
+// comparing mount ids (STATX_MNT_ID) and, before statx, the device.
 //
 // The path is resolved first, as systemd's AT_SYMLINK_FOLLOW does: the
 // parent compared against is the parent of the directory the path
@@ -22,6 +33,55 @@ func pathIsMountPoint(path string) (bool, string) {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
+	if filepath.Clean(path) == "/" {
+		return true, ""
+	}
+	notMount := func() (bool, string) { return false, fmt.Sprintf("%q is not a mount point", path) }
+	// AT_NO_AUTOMOUNT|AT_STATX_DONT_SYNC as systemd: whether a path is
+	// a mount is local, and must not trigger an automount or a network
+	// round trip.
+	const flags = unix.AT_NO_AUTOMOUNT | unix.AT_STATX_DONT_SYNC
+	var stx unix.Statx_t
+	err := mountStatx(unix.AT_FDCWD, path, flags, unix.STATX_TYPE|unix.STATX_INO|unix.STATX_MNT_ID, &stx)
+	if errors.Is(err, unix.ENOSYS) {
+		return pathIsMountPointByDev(path)
+	}
+	if err != nil {
+		return false, fmt.Sprintf("path %q: %v", path, err)
+	}
+	if stx.Attributes_mask&unix.STATX_ATTR_MOUNT_ROOT != 0 {
+		if stx.Attributes&unix.STATX_ATTR_MOUNT_ROOT != 0 {
+			return true, ""
+		}
+		// In a chroot the root directory need not be a mount root,
+		// yet it is "/" to everything under it.
+		var root unix.Statx_t
+		if mountStatx(unix.AT_FDCWD, "/", unix.AT_STATX_DONT_SYNC, unix.STATX_TYPE|unix.STATX_INO, &root) == nil &&
+			root.Dev_major == stx.Dev_major && root.Dev_minor == stx.Dev_minor && root.Ino == stx.Ino {
+			return true, ""
+		}
+		return notMount()
+	}
+	if stx.Mask&unix.STATX_MNT_ID != 0 {
+		parent := filepath.Dir(path)
+		var pstx unix.Statx_t
+		if err := mountStatx(unix.AT_FDCWD, parent, flags, unix.STATX_MNT_ID, &pstx); err != nil {
+			return false, fmt.Sprintf("parent %q: %v", parent, err)
+		}
+		if pstx.Mask&unix.STATX_MNT_ID != 0 {
+			if stx.Mnt_id != pstx.Mnt_id {
+				return true, ""
+			}
+			return notMount()
+		}
+	}
+	return pathIsMountPointByDev(path)
+}
+
+// pathIsMountPointByDev is the last resort, for kernels whose statx
+// reports neither the mount-root attribute nor the mount id: the device
+// differs from the parent's.
+func pathIsMountPointByDev(path string) (bool, string) {
 	st, err := os.Stat(path)
 	if err != nil {
 		return false, fmt.Sprintf("path %q: %v", path, err)
@@ -40,12 +100,6 @@ func pathIsMountPoint(path string) (bool, string) {
 		return false, fmt.Sprintf("parent %q: cannot read stat", parent)
 	}
 	if sysStat.Dev != psysStat.Dev {
-		return true, ""
-	}
-	// A bind-mounted directory onto its own parent shares the dev but
-	// the inode of "/" and "." differs in odd cases — treat anything
-	// where path == parent (i.e. /) as a mount point.
-	if filepath.Clean(path) == "/" {
 		return true, ""
 	}
 	return false, fmt.Sprintf("%q is not a mount point", path)
@@ -136,116 +190,6 @@ func kernelCmdlineContains(token string) (bool, string) {
 	return false, fmt.Sprintf("kernel cmdline lacks %q", token)
 }
 
-// checkVirtualization matches against a probe of the current
-// virtualization. The probe order mirrors systemd-detect-virt:
-// /proc/1/sched, /proc/cpuinfo "hypervisor", /sys/class/dmi product,
-// /proc/sys/kernel/osrelease (Microsoft WSL marker). param accepts:
-//
-//	"" or "yes" → succeed iff any virtualization is detected
-//	"no"        → succeed iff none is detected
-//	specific    → succeed iff the probe equals "specific" (e.g. "kvm",
-//	              "qemu", "vmware", "lxc", "docker", "wsl")
-func checkVirtualization(param string) (bool, string) {
-	got := detectVirtualization()
-	switch param {
-	case "", "yes":
-		if got != "" {
-			return true, ""
-		}
-		return false, "no virtualization detected"
-	case "no":
-		if got == "" {
-			return true, ""
-		}
-		return false, fmt.Sprintf("virtualization %q detected", got)
-	default:
-		if got == param {
-			return true, ""
-		}
-		if got == "" {
-			return false, fmt.Sprintf("expected %q, no virt detected", param)
-		}
-		return false, fmt.Sprintf("expected %q, got %q", param, got)
-	}
-}
-
-// detectVirtualization returns a short identifier of the detected
-// virtualization, or "" for bare metal. The probes are best-effort and
-// scoped at what is reliably available without root: cpuinfo flag,
-// DMI strings, /proc/1/sched, /proc/version. Container detection
-// (lxc/docker/podman) reads /proc/1/cgroup.
-func detectVirtualization() string {
-	// Container probes first (cheap, no DMI access).
-	if v := detectContainer(); v != "" {
-		return v
-	}
-	// Hypervisor flag in cpuinfo: set by KVM/QEMU/VMware/Hyper-V/Xen.
-	if data, err := os.ReadFile(hostPath("/proc/cpuinfo")); err == nil {
-		if bytes.Contains(data, []byte("hypervisor")) {
-			// Refine via DMI if available.
-			if v := dmiVirt(); v != "" {
-				return v
-			}
-			return "vm"
-		}
-	}
-	// WSL fingerprint.
-	if data, err := os.ReadFile(hostPath("/proc/sys/kernel/osrelease")); err == nil {
-		s := strings.ToLower(string(data))
-		if strings.Contains(s, "microsoft") {
-			return "wsl"
-		}
-	}
-	return ""
-}
-
-func detectContainer() string {
-	if v := os.Getenv("container"); v != "" {
-		return v
-	}
-	if data, err := os.ReadFile(hostPath("/proc/1/cgroup")); err == nil {
-		s := string(data)
-		switch {
-		case strings.Contains(s, "docker"):
-			return "docker"
-		case strings.Contains(s, "lxc"):
-			return "lxc"
-		case strings.Contains(s, "kubepods"):
-			return "kubernetes"
-		case strings.Contains(s, "podman"):
-			return "podman"
-		}
-	}
-	return ""
-}
-
-func dmiVirt() string {
-	dmi := func(file string) string {
-		b, err := os.ReadFile(filepath.Join(hostPath("/sys/class/dmi/id"), file))
-		if err != nil {
-			return ""
-		}
-		return strings.ToLower(strings.TrimSpace(string(b)))
-	}
-	vendor := dmi("sys_vendor")
-	product := dmi("product_name")
-	switch {
-	case strings.Contains(vendor, "qemu"), strings.Contains(product, "qemu"):
-		return "qemu"
-	case strings.Contains(vendor, "vmware"), strings.Contains(product, "vmware"):
-		return "vmware"
-	case strings.Contains(vendor, "innotek"), strings.Contains(product, "virtualbox"):
-		return "virtualbox"
-	case strings.Contains(vendor, "microsoft"), strings.Contains(product, "virtual machine"):
-		return "microsoft"
-	case strings.Contains(vendor, "xen"):
-		return "xen"
-	case strings.Contains(vendor, "google"):
-		return "google"
-	}
-	return "vm"
-}
-
 // checkFirstBoot checks whether this is the OS's first boot. systemd
 // uses /etc/machine-id == "uninitialized" or a missing /etc/machine-id
 // as the marker. We accept either form. param "yes" (default) succeeds
@@ -318,62 +262,44 @@ func checkSecurity(param string) (bool, string) {
 			return true, ""
 		}
 	case "audit":
-		if data, err := os.ReadFile(hostPath("/sys/kernel/security/lsm")); err == nil {
-			if strings.Contains(string(data), "audit") {
-				return true, ""
-			}
+		// systemd's use_audit: the kernel's audit netlink socket can be
+		// opened and answers. Audit is not an LSM, so the LSM list read
+		// before never named it and the check was always false.
+		if auditUsable(auditProbe()) {
+			return true, ""
 		}
 	case "measured-os":
-		// systemd v261: succeeds when the kernel has extended TPM PCRs
-		// during boot. We look at the TPM binary_bios_measurements log —
-		// a non-empty file means firmware/kernel measured something into
-		// the TPM. Does not require systemd-stub or UKI.
-		st, err := os.Stat(hostPath("/sys/kernel/security/tpm0/binary_bios_measurements"))
-		if err != nil {
-			return false, "no TPM binary_bios_measurements log"
-		}
-		if st.Size() == 0 {
-			return false, "TPM binary_bios_measurements log is empty"
-		}
-		return true, ""
+		return measuredOS()
 	case "measured-uki":
 		// Stricter sibling of measured-os: requires evidence that a
 		// UKI (systemd-stub or equivalent) measured the kernel image
 		// into a TPM PCR at boot. sd-stub advertises this by writing
-		// the LoaderVendor EFI variable StubPcrKernelImage=<pcr>. The
-		// efivarfs sysfs path is stable across kernels; a stat is
-		// enough to confirm the variable is present.
-		const stubPCRVar = "/sys/firmware/efi/efivars/" +
-			"StubPcrKernelImage-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
-		if _, err := os.Stat(hostPath(stubPCRVar)); err != nil {
-			return false, "no StubPcrKernelImage EFI variable (not booted via sd-stub UKI)"
-		}
-		// Reuse the measured-os TPM log check: if the log is empty
-		// the UKI did not actually reach the TPM.
-		if st, err := os.Stat(hostPath("/sys/kernel/security/tpm0/binary_bios_measurements")); err != nil {
-			return false, "no TPM binary_bios_measurements log"
-		} else if st.Size() == 0 {
-			return false, "TPM binary_bios_measurements log is empty"
-		}
-		return true, ""
+		// the LoaderVendor EFI variable StubPcrKernelImage=<pcr>.
+		return measuredUKI()
 	default:
 		return false, fmt.Sprintf("unknown security framework %q", param)
 	}
 	return false, fmt.Sprintf("security framework %q not active", param)
 }
 
-// checkNeedsUpdate looks for systemd-style markers under /var/lib (and
-// /etc when /var lags behind /usr in mtime). slinit's lightweight read:
-// the presence of /run/systemd/update-on-next-boot OR /run/needs-update
-// indicates an update is pending. param "yes" succeeds when present.
+// checkNeedsUpdate has two forms. slinit's own, "yes" (the default)
+// or "no", looks for the marker files /run/systemd/update-on-next-boot
+// and /run/needs-update. systemd's, an absolute directory (/etc, /var),
+// asks whether /usr changed after that directory's .updated stamp
+// (needsUpdateDir); slinit rejected it until 4.1, so taking it now
+// changes no working config.
 func checkNeedsUpdate(param string) (bool, string) {
+	p := strings.TrimSpace(param)
+	if strings.HasPrefix(p, "/") {
+		return needsUpdateDir(p)
+	}
 	pending := false
 	if _, err := os.Stat(hostPath("/run/systemd/update-on-next-boot")); err == nil {
 		pending = true
 	} else if _, err := os.Stat(hostPath("/run/needs-update")); err == nil {
 		pending = true
 	}
-	switch strings.TrimSpace(param) {
+	switch p {
 	case "", "yes":
 		if pending {
 			return true, ""

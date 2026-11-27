@@ -199,9 +199,17 @@ func TestSystemdConditionKinds(t *testing.T) {
 		{name: "virt bool", lines: "ConditionVirtualization=true", want: []string{"condition-virtualization = yes"}},
 		{name: "virt no", lines: "ConditionVirtualization=0", want: []string{"condition-virtualization = no"}},
 		{name: "virt id", lines: "ConditionVirtualization=!vmware", want: []string{"condition-virtualization = !vmware"}},
-		{name: "virt category", lines: "ConditionVirtualization=!container", warn: "WARN:virtualization"},
-		{name: "virt kvm", lines: "ConditionVirtualization=kvm", warn: "WARN:virtualization"},
-		{name: "virt assert category", lines: "AssertVirtualization=vm", err: "AssertVirtualization"},
+		{name: "virt category", lines: "ConditionVirtualization=!container", want: []string{"condition-virtualization = !container"}},
+		{name: "virt kvm", lines: "ConditionVirtualization=kvm", want: []string{"condition-virtualization = kvm"}},
+		{name: "virt assert category", lines: "AssertVirtualization=vm", want: []string{"assert-virtualization = vm"}},
+		{name: "virt private users", lines: "ConditionVirtualization=private-users", want: []string{"condition-virtualization = private-users"}},
+		{name: "virt container-other", lines: "ConditionVirtualization=container-other", want: []string{"condition-virtualization = container-other"}},
+		{name: "virt openvz", lines: "ConditionVirtualization=openvz", want: []string{"condition-virtualization = openvz"}},
+		// slinit's "qemu" also takes a KVM guest with QEMU's DMI.
+		{name: "virt qemu", lines: "ConditionVirtualization=qemu", warn: "WARN:KVM"},
+		{name: "virt qemu, assertion", lines: "AssertVirtualization=qemu", err: "KVM"},
+		{name: "virt slinit id", lines: "ConditionVirtualization=kubernetes", warn: "WARN:cannot tell"},
+		{name: "virt none", lines: "ConditionVirtualization=none", warn: "WARN:cannot tell"},
 
 		// CPUs / Memory: systemd's implied operator is >=, slinit's ==.
 		{name: "cpus bare", lines: "ConditionCPUs=4", want: []string{"condition-cpus = >=4"}},
@@ -238,7 +246,10 @@ func TestSystemdConditionKinds(t *testing.T) {
 
 		// CPU features: prefixed forms do not depend on the host.
 		{name: "cpufeature prefixed", lines: "ConditionCPUFeature=x86-64.fma3", want: []string{"condition-cpu-feature = x86_64.fma"}},
-		{name: "cpufeature arm", lines: "ConditionCPUFeature=arm64.bti", warn: "WARN:x86"},
+		{name: "cpufeature arm", lines: "ConditionCPUFeature=arm64.bti", want: []string{"condition-cpu-feature = arm64.bti"}},
+		{name: "cpufeature arm upper", lines: "ConditionCPUFeature=!arm64.SVE2", want: []string{"condition-cpu-feature = !arm64.sve2"}},
+		{name: "cpufeature arm unknown", lines: "ConditionCPUFeature=arm64.avx2", warn: "WARN:does not know"},
+		{name: "cpufeature riscv", lines: "ConditionCPUFeature=riscv64.v", warn: "WARN:x86 and arm64"},
 		{name: "cpufeature unknown", lines: "ConditionCPUFeature=x86.avx512f", warn: "WARN:does not know"},
 
 		// os-release.
@@ -262,7 +273,8 @@ func TestSystemdConditionKinds(t *testing.T) {
 		{name: "firmware uefi", lines: "ConditionFirmware=uefi", want: []string{"condition-firmware = uefi"}},
 		{name: "firmware smbios", lines: "ConditionFirmware=smbios-field(board_name = Foo)", warn: "WARN:firmware"},
 		{name: "security", lines: "ConditionSecurity=!selinux", want: []string{"condition-security = !selinux"}},
-		{name: "security audit", lines: "ConditionSecurity=audit", warn: "WARN:audit"},
+		{name: "security audit", lines: "ConditionSecurity=audit", want: []string{"condition-security = audit"}, warn: "NOTE:libaudit"},
+		{name: "security measured-os", lines: "AssertSecurity=measured-os", want: []string{"assert-security = measured-os"}},
 		{name: "security tpm2", lines: "AssertSecurity=tpm2", err: "tpm2"},
 
 		// Users, groups, booleans, environment, credentials.
@@ -291,22 +303,23 @@ func TestSystemdConditionKinds(t *testing.T) {
 		{name: "glob leading wildcard", lines: "ConditionPathExistsGlob=/etc/foo.d/*.conf",
 			want: []string{"condition-path-exists-glob = /etc/foo.d/*.conf"}, warn: "NOTE:dot"},
 		{name: "glob brace", lines: "ConditionPathExistsGlob=/dev/{a,b}", warn: "WARN:{a,b}"},
-		// slinit's check counts hidden and backup files and fails on
-		// EACCES; neither is what systemd's does.
-		{name: "dir not empty", lines: "ConditionDirectoryNotEmpty=/etc/foo.d", warn: "WARN:hidden and backup files"},
-		{name: "dir not empty, assertion", lines: "AssertDirectoryNotEmpty=/etc/foo.d", err: "hidden and backup files"},
+		{name: "dir not empty", lines: "ConditionDirectoryNotEmpty=/etc/foo.d", want: []string{"condition-directory-not-empty = /etc/foo.d"}},
+		{name: "dir not empty, assertion", lines: "AssertDirectoryNotEmpty=!/etc/foo.d", want: []string{"assert-directory-not-empty = !/etc/foo.d"}},
+		{name: "mount point", lines: "ConditionPathIsMountPoint=/sys/fs/bpf", want: []string{"condition-path-is-mount-point = /sys/fs/bpf"}},
 		{name: "symlink", lines: "ConditionPathIsSymbolicLink=/etc/localtime", want: []string{"condition-path-is-symbolic-link = /etc/localtime"}},
 		{name: "read-write", lines: "AssertPathIsReadWrite=/var", want: []string{"assert-path-is-read-write = /var"}},
 		{name: "socket", lines: "ConditionPathIsSocket=/run/dbus/system_bus_socket", want: []string{"condition-path-is-socket = /run/dbus/system_bus_socket"}},
 		{name: "executable", lines: "ConditionFileIsExecutable=/usr/bin/foo", want: []string{"condition-file-is-executable = /usr/bin/foo"}},
 
-		// Kinds slinit has no evaluator for.
+		// Kinds slinit has no evaluator for, and three it gained in 4.1.
 		{name: "capability", lines: "ConditionCapability=CAP_SYS_ADMIN", warn: "WARN:bounding set"},
 		{name: "capability assert", lines: "AssertCapability=CAP_SYS_ADMIN", err: "bounding set"},
-		{name: "needs update", lines: "ConditionNeedsUpdate=/etc", warn: "WARN:.updated"},
+		{name: "needs update", lines: "ConditionNeedsUpdate=/etc", want: []string{"condition-needs-update = /etc"}},
+		{name: "needs update negated", lines: "ConditionNeedsUpdate=!/var", want: []string{"condition-needs-update = !/var"}},
 		{name: "needs update relative", lines: "ConditionNeedsUpdate=etc", warn: "WARN:must be absolute"},
 		{name: "encrypted", lines: "ConditionPathIsEncrypted=/home", warn: "WARN:encrypted"},
-		{name: "module", lines: "AssertKernelModuleLoaded=loop", err: "built-in"},
+		{name: "module", lines: "AssertKernelModuleLoaded=loop", want: []string{"assert-kernel-module-loaded = loop"}},
+		{name: "module dash", lines: "ConditionKernelModuleLoaded=!nf-tables", want: []string{"condition-kernel-module-loaded = !nf-tables"}},
 		{name: "pressure", lines: "ConditionMemoryPressure=20%", warn: "WARN:AT MOST"},
 		{name: "io pressure assert", lines: "AssertIOPressure=10%", err: "AT MOST"},
 	}
@@ -314,6 +327,11 @@ func TestSystemdConditionKinds(t *testing.T) {
 		cases = append(cases,
 			sdUnitCase{name: "cpufeature bare", lines: "ConditionCPUFeature=pclmul", want: []string{"condition-cpu-feature = pclmulqdq"}},
 			sdUnitCase{name: "cpufeature unknown bare", lines: "ConditionCPUFeature=avx512f", warn: "WARN:does not know"})
+	}
+	if runtime.GOARCH == "arm64" {
+		cases = append(cases,
+			sdUnitCase{name: "cpufeature bare arm64", lines: "ConditionCPUFeature=ATOMICS", want: []string{"condition-cpu-feature = atomics"}},
+			sdUnitCase{name: "cpufeature bare x86 on arm64", lines: "ConditionCPUFeature=avx2", warn: "WARN:does not know"})
 	}
 	runSDUnitCases(t, cases, "condition-", "assert-")
 }
