@@ -530,6 +530,9 @@ func dropAliasRefs(cfg *SystemdConfig) []SystemdWarning {
 
 // [Unit] section directives.
 func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	if r, ok := sdUnitRules[key]; ok {
+		return cfg.applyRule("Unit", key, val, r)
+	}
 	var warns []SystemdWarning
 	switch key {
 	case "Description":
@@ -599,8 +602,14 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	case "ConditionVirtualization":
 		cfg.conditions = append(cfg.conditions, condDir{"condition-virtualization", val})
 	default:
-		if strings.HasPrefix(key, "Condition") || strings.HasPrefix(key, "Assert") {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Unit `%s=%s` not mapped — check slinit condition-* / assert-* directives manually", key, val)})
+		if g, ok := sdUnitNoEquivalent[key]; ok {
+			warns = append(warns, gapWarning("Unit", key, val, g)...)
+		} else if _, ok := sdUnitIgnored[key]; ok {
+			// systemd-internal; nothing to carry over.
+		} else {
+			// Was silent for anything but a condition, so BindsTo=,
+			// PartOf= and the like vanished without a word.
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("[Unit] `%s=%s` not mapped", key, val)})
 		}
 	}
 	return warns
@@ -608,6 +617,9 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 
 // [Service] section directives.
 func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []SystemdWarning {
+	if r, ok := sdServiceRules[key]; ok {
+		return cfg.applyRule("Service", key, val, r)
+	}
 	var warns []SystemdWarning
 	switch key {
 	case "Type":
@@ -939,9 +951,16 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	case "ImportCredential", "LoadCredential", "SetCredential":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s — credential passing needs manual wiring", key, val)})
 	default:
-		// Unrecognised [Service] key. Warn once so the operator
-		// knows something got skipped.
-		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("[Service] `%s=%s` not mapped", key, val)})
+		if g, ok := sdServiceNoEquivalent[key]; ok {
+			warns = append(warns, gapWarning("Service", key, val, g)...)
+		} else if _, ok := sdServiceIgnored[key]; ok {
+			// systemd-internal; nothing to carry over.
+		} else {
+			// A directive the registry does not know: one systemd added
+			// after testdata/systemd-directives.txt was generated, or a
+			// misspelling, which systemd also ignores with a warning.
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("[Service] `%s=%s` not mapped", key, val)})
+		}
 	}
 	return warns
 }
@@ -1396,13 +1415,7 @@ func parseSystemdSeconds(v, inf string) (string, bool) {
 // assignment to the list, and an empty one empties it.
 func (cfg *SystemdConfig) setMappedList(slinitKey, val string, entries []string) {
 	if strings.TrimSpace(trimQuotes(val)) == "" {
-		kept := cfg.mapped[:0]
-		for _, kv := range cfg.mapped {
-			if kv.key != slinitKey {
-				kept = append(kept, kv)
-			}
-		}
-		cfg.mapped = kept
+		cfg.dropMapped(slinitKey)
 		return
 	}
 	if len(entries) > 0 {
