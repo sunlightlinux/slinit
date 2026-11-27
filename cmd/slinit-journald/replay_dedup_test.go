@@ -7,7 +7,7 @@ import (
 
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/journal"
-	"github.com/sunlightlinux/slinit/pkg/journald"
+	"github.com/sunlightlinux/slinit/pkg/journalbin"
 )
 
 type collectSink struct{ got []*journal.Event }
@@ -43,64 +43,99 @@ func fakeRing(t *testing.T, evts []*journal.Event) string {
 	return sock
 }
 
-// A restarted daemon replayed PID 1's whole ring: a clean restart doubled
-// the journal (measured in the VM, 442 entries became 884). With a marker
-// saying an earlier run persisted this boot up to Mts 300, only what is
-// not strictly older is written again; an event at exactly the marker's
-// time is kept, since several can share it.
-func TestReplaySkipsWhatAnEarlierRunPersisted(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "persisted")
-	if err := journald.WritePersistedMarker(marker, journald.PersistedMarker{
-		BootID: "b1", Mts: 300, Dir: "/var/log/journal", Format: "binary",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	ring := []*journal.Event{
-		{BootID: "b1", Mts: 100, Msg: "old"},
-		{BootID: "b1", Mts: 299, Msg: "old too"},
-		{BootID: "b1", Mts: 300, Msg: "at the marker"},
-		{BootID: "b1", Mts: 301, Msg: "new"},
-		{BootID: "b0", Mts: 50, Msg: "another boot"},
-	}
+const (
+	testBoot = "0123456789abcdef0123456789abcdef"
+	testMach = "fedcba9876543210fedcba9876543210"
+)
 
-	var sink collectSink
-	n, err := replayBacklog(fakeRing(t, ring), &sink, replaySkip(marker, "/var/log/journal", "binary"))
+func ev(mts int64, msg string) *journal.Event {
+	return &journal.Event{Ts: 1795770000000000000 + mts, Mts: mts, Msg: msg, Unit: "u",
+		BootID: testBoot, MachineID: testMach, Prio: journal.PriorityInfo}
+}
+
+func writeJournal(t *testing.T, dir string, evts ...*journal.Event) {
+	t.Helper()
+	w, err := journalbin.NewWriter(filepath.Join(dir, "day.journal"), testBoot, testMach)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var msgs []string
-	for _, e := range sink.got {
-		msgs = append(msgs, e.Msg)
-	}
-	want := []string{"at the marker", "new", "another boot"}
-	if n != len(want) || len(msgs) != len(want) {
-		t.Fatalf("replayed %d %q, want %q", n, msgs, want)
-	}
-	for i := range want {
-		if msgs[i] != want[i] {
-			t.Fatalf("replayed %q, want %q", msgs, want)
+	for _, e := range evts {
+		if _, err := w.Append(e); err != nil {
+			t.Fatal(err)
 		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// The marker only says what is in the journal it describes: another
-// directory or format, an unreadable marker, or none at all, and the whole
-// backlog is replayed as before.
-func TestReplaySkipOnlyForTheSameJournal(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "persisted")
-	journald.WritePersistedMarker(marker, journald.PersistedMarker{
-		BootID: "b1", Mts: 300, Dir: "/var/log/journal", Format: "binary",
-	})
-	for _, c := range []struct {
-		name, path, dir, format string
-	}{
-		{"other directory", marker, "/run/log/journal", "binary"},
-		{"other format", marker, "/var/log/journal", "jsonl"},
-		{"no marker", filepath.Join(t.TempDir(), "none"), "/var/log/journal", "binary"},
-		{"marker disabled", "", "/var/log/journal", "binary"},
-	} {
-		if f := replaySkip(c.path, c.dir, c.format); f != nil {
-			t.Errorf("%s: got a filter, want the whole backlog replayed", c.name)
+func msgs(evts []*journal.Event) []string {
+	var out []string
+	for _, e := range evts {
+		out = append(out, e.Msg)
+	}
+	return out
+}
+
+func sameMsgs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
 		}
+	}
+	return true
+}
+
+// A restarted daemon replayed PID 1's whole ring: a clean restart doubled
+// the journal (measured in the VM, 442 entries became 884). Only the ring
+// events already in the journal are skipped now. "lost" never reached
+// the journal (as an event emitted while the listener was down would
+// not), so it is replayed although events after it were persisted; a
+// marker-style high-water mark would have dropped it for good. Two
+// identical events with one copy on disk replay once.
+func TestReplaySkipsOnlyWhatIsOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	writeJournal(t, dir, ev(100, "a"), ev(200, "b"), ev(400, "d"), ev(500, "twin"))
+	ring := []*journal.Event{
+		ev(100, "a"), ev(200, "b"), ev(300, "lost"), ev(400, "d"),
+		ev(500, "twin"), ev(500, "twin"), ev(600, "new"),
+	}
+	other := ev(50, "another boot")
+	other.BootID = "11111111111111111111111111111111"
+	ring = append(ring, other)
+
+	var sink collectSink
+	n, err := replayBacklog(fakeRing(t, ring), &sink, dedupAgainstDisk(dir, testBoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"lost", "twin", "new", "another boot"}
+	if got := msgs(sink.got); n != len(want) || !sameMsgs(got, want) {
+		t.Fatalf("replayed %d %q, want %q", n, got, want)
+	}
+}
+
+// Without a journal to compare against (none yet, another directory, an
+// unreadable file) the whole backlog is replayed as before.
+func TestReplayWholeBacklogWhenDiskSaysNothing(t *testing.T) {
+	ring := []*journal.Event{ev(100, "a"), ev(200, "b")}
+	for _, dir := range []string{t.TempDir(), filepath.Join(t.TempDir(), "missing")} {
+		var sink collectSink
+		if _, err := replayBacklog(fakeRing(t, ring), &sink, dedupAgainstDisk(dir, testBoot)); err != nil {
+			t.Fatal(err)
+		}
+		if got := msgs(sink.got); !sameMsgs(got, []string{"a", "b"}) {
+			t.Errorf("dir %s: replayed %q, want the whole backlog", dir, got)
+		}
+	}
+	var sink collectSink
+	if _, err := replayBacklog(fakeRing(t, ring), &sink, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.got) != 2 {
+		t.Errorf("no filter: replayed %d, want 2", len(sink.got))
 	}
 }

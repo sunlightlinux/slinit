@@ -6,10 +6,9 @@
 # a clean restart doubled the journal (v4.0.3: 442 entries became 884,
 # the same events with new sequence numbers), and a daemon restarted
 # after a crash added up to 4096 duplicates each time. The replay now
-# skips this boot's events strictly older than the last one an earlier
-# run made durable (the persisted marker, written after every fsync and
-# on a clean exit). After SIGKILL only the events since the last fsync
-# may come again.
+# skips the backlog events of this boot that an earlier
+# run already wrote, judged by the journal on disk. Events that never
+# reached the journal are replayed, so nothing in PID 1's ring is lost.
 
 D=/tmp/328
 rm -rf "$D"; mkdir -p "$D/j"
@@ -53,6 +52,43 @@ else
 fi
 _out=$(slinit-journalctl -D "$D/j" --no-pager 2>&1); _rc=$?
 assert_eq "$_rc" "0" "the directory still reads"
+kill "$(cat "$D/pid")" 2>/dev/null; sleep 1
 
-kill "$(cat "$D/pid")" 2>/dev/null
+# Nothing may be skipped that is not on disk. Here the daemon listens on
+# PID 1's own events socket, so events also arrive live, and some are
+# lost on the way (emitted after the backlog was read but before the
+# socket was bound, or while PID 1 backs off after a refused connect).
+# A replay filtered by a high-water mark would drop those for good once
+# later events pushed the mark past them; filtered by what is on disk,
+# the next start puts them back.
+E=/tmp/328e
+rm -rf "$E"; mkdir -p "$E/j"
+jde() {
+    slinit-journald --format=binary --dir="$E/j" --pid-file="$E/pid" \
+        --admin-socket="$E/ctl" >/dev/null 2>>"$E/err" &
+}
+printf '%s\n' 'type = process' 'command = /bin/sleep 3280' 'restart = false' \
+    > /etc/slinit.d/test-328
+churn() { for _ in 1 2 3; do
+    slinitctl --system start test-328 >/dev/null 2>&1
+    slinitctl --system stop test-328 >/dev/null 2>&1
+done; }
+jde; sleep 2
+kill -9 "$(cat "$E/pid")"; sleep 0.3
+jde; churn                       # races the new daemon's start
+sleep 3; churn                   # delivered live
+kill "$(cat "$E/pid")"; sleep 1  # clean exit
+jde; sleep 2                     # this start must repair any loss
+kill "$(cat "$E/pid")"; sleep 1
+# The journal keeps microseconds, the ring nanoseconds: compare to the µs.
+key() { sed -n 's/.*"ts":\([0-9]*\)[0-9][0-9][0-9][,}].*"msg":"\([^"]*\)".*/\1 \2/p' | sort; }
+# Without -D, slinit-journalctl reads PID 1's ring: this boot only.
+slinit-journalctl --no-pager -o json 2>/dev/null | key > "$E/ring"
+slinit-journalctl -D "$E/j" --no-pager -o json 2>/dev/null | key | sort -u > "$E/disk"
+_missing=$(comm -23 "$E/ring" "$E/disk" | wc -l)
+echo "PID 1's ring for this boot: $(wc -l < "$E/ring") events; missing from disk: $_missing"
+comm -23 "$E/ring" "$E/disk" | head -3
+[ "$(wc -l < "$E/ring")" -gt 50 ] || skip_case "could not read PID 1's ring"
+assert_eq "$_missing" "0" "every event of this boot in PID 1's ring is in the journal"
+
 test_summary
