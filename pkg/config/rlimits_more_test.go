@@ -56,7 +56,7 @@ func TestSystemdLimitsMapped(t *testing.T) {
 		{"LimitSTACK=8M:infinity", "rlimit-stack = 8388608:unlimited"},
 		{"LimitCPU=90", "rlimit-cpu = 90"},
 		{"LimitCPU=1min 30s", "rlimit-cpu = 90"},
-		{"LimitCPU=1.5", "rlimit-cpu = 2"}, // rounded up, as systemd does
+		{"LimitCPU=1.5", "rlimit-cpu = 2"},         // rounded up, as systemd does
 		{"LimitRTTIME=500", "rlimit-rttime = 500"}, // microseconds
 		{"LimitRTTIME=1s", "rlimit-rttime = 1000000"},
 		{"LimitNICE=-5", "rlimit-nice = 25"},
