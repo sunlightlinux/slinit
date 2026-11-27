@@ -867,7 +867,10 @@ error. Repeat the line for several targets.
     service into the *failed* state. Defaults are *10* seconds and *3*
     failures; a count of *0* means no limit. Each one keeps its default
     when only the other is given (since 3.20.0; before, giving only the
-    interval set the count to *0*, so restarts were unlimited).
+    interval set the count to *0*, so restarts were unlimited). A
+    service with restart-limit-count *N* thus runs *N*+1 times inside
+    the window (from 3.14.0 until 4.0.4 each failure was counted twice,
+    so *N* allowed only *N*/2 restarts, rounded up).
 
 **start-limit-action**=*none*|*reboot*|*poweroff*|*halt*|*exit*
 :   System-level action when the restart limit is exhausted. *none*

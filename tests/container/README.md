@@ -28,7 +28,7 @@ is `busybox:1.37-musl` plus statically built `slinit`, `slinitctl` and
 the working tree on every run unless `KEEP_IMAGE=1`.
 
 `CONTAINER_RUNTIME=podman` selects Podman, and both runtimes are
-exercised: 31/31 under Docker (2026-11-27), 22/23 under rootless Podman 6.0 (before cases 24-31 existed), where
+exercised: 32/32 under Docker (2026-11-27), 22/23 under rootless Podman 6.0 (before cases 24-32 existed), where
 `17-memory-limit` skips itself. Rootless is the more searching of the two,
 because the container's root is a mapped uid with no real CAP_SYS_ADMIN.
 
@@ -79,6 +79,7 @@ against the same PID 1 contract these cases pin.
 | 29-non-root-pid1 | `--user 1000:1000` with `-p /tmp/ctl.sock`: the workload runs as 1000, slinitctl answers, a restart keeps the container, `docker stop` exits 0 and a crash exits non-zero (4.0.3 ended the container on the restart) |
 | 30-restart-after-sigkill | the container is SIGKILLed and `docker start`ed twice: the old control socket left in /run does not keep slinit from coming up (fails if the stale socket is not removed before bind) |
 | 31-console-service | `options = runs-on-console`: with `-t` the service's terminal is /dev/console; without a tty there is no /dev/console, and the service still starts with its output in `docker logs` (fails if a console that cannot be opened fails the start, or if the option is ignored) |
+| 32-crash-loop | a workload crash-looping with `restart-delay` and `restart-limit-count = 3`, its boot target `restart = yes`: the container stays up through the delays and `docker stop` exits 0 in the middle; once the limit is used up (3 restarts, 4 runs) the container ends as a failure (4.0.3 never ended it: boot waited in STARTING for good; and it counted each exit twice, 3 runs) |
 
 `soak.sh` runs the lifecycle over and over against a tree with a
 worker, an orphan generator and a SIGTERM-ignoring service. It rotates

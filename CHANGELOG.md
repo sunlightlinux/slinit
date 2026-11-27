@@ -26,6 +26,22 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`restart-limit-count = N` allows N restarts again, not about half
+  as many.** Each exit of a service was counted twice against its
+  restart limit (once for its own restart, once on behalf of the
+  dependents it takes down, since 3.14.0), so N allowed N/2 restarts,
+  rounded up: the default of 3 allowed 2, and 10 allowed 5. A service
+  now runs N+1 times inside the interval before it is marked failed,
+  as the man page says.
+
+- **A dependent no longer waits for good on a service that used up its
+  restart limit.** When a crash-looping service's last exit stopped a
+  dependent with `restart = yes`, the dependent came back at once and
+  waited for it; the service then settled into the failed state without
+  telling it. The dependent stayed STARTING for good, and a container
+  whose boot target depended on such a workload never exited. It now
+  fails to start, and the container ends as a failure.
+
 - **A crash after an unrelated `slinitctl stop` ends a container as a
   failure again.** A stop request marks the stop as requested, so that
   a stop which cascades until nothing is left ends the container with

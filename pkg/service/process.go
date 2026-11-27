@@ -1163,7 +1163,7 @@ func (s *ProcessService) fireWatchdogStop(stop chan struct{}) {
 	withRestart := false
 	switch s.autoRestartThisRun() {
 	case RestartAlways, RestartOnFailure, RestartOnSuccess:
-		withRestart = s.CheckRestart()
+		withRestart = s.checkRestartOnce()
 	}
 
 	s.doStop(withRestart)
@@ -1195,7 +1195,7 @@ func (s *ProcessService) fireHealthCheckStop(pid int) {
 	withRestart := false
 	switch s.autoRestartThisRun() {
 	case RestartAlways, RestartOnFailure, RestartOnSuccess:
-		withRestart = s.CheckRestart()
+		withRestart = s.checkRestartOnce()
 	}
 
 	s.doStop(withRestart)
