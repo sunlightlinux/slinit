@@ -4,7 +4,7 @@ Go native fuzz tests (`testing.F`) for slinit's input parsing surfaces.
 
 ## This directory is not all of them
 
-29 targets live here. Another 23 sit beside the code they exercise,
+29 targets live here. Another 24 sit beside the code they exercise,
 because a fuzz target for an unexported parser has to live in its own
 package:
 
@@ -20,7 +20,7 @@ package:
 | `cmd/slinit-tmpfiles` | `FuzzTmpfilesParseLine` |
 | `cmd/slinit-immortal-convert` | `FuzzParseImmortalYAML` |
 | `pkg/timedate` | `FuzzReadZoneTab`, `FuzzValidateZone` |
-| `pkg/hostname` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease` |
+| `pkg/hostname` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease`, `FuzzReadStatic` |
 | `pkg/journal` | `FuzzParseSyslog`, `FuzzAppendJSONMatchesMarshal` |
 | `pkg/process` | `FuzzMatchFDName` |
 | `pkg/control` | `FuzzControlServer`, `FuzzParseShutdownTime` |
@@ -152,6 +152,7 @@ via `./tests/fuzz/`.
 | pkg/hostname | FuzzDecodeValue | machine-info/os-release value decoder + round-trip through the encoder |
 | pkg/hostname | FuzzLoadMachineInfo | Full load → save → reload round-trip on /etc/machine-info |
 | pkg/hostname | FuzzParseOSRelease | /etc/os-release parser |
+| pkg/hostname | FuzzReadStatic | /etc/hostname as PID 1 reads it: the static name is none or valid; Cleanup is idempotent, leaves a valid name unchanged and never returns an invalid one (wildcards aside) |
 | pkg/timedate | FuzzReadZoneTab | /usr/share/zoneinfo/zone.tab enumeration; asserts no NUL / no path-escape zones surface to caller |
 | pkg/timedate | FuzzValidateZone | Zone-name validator (last line of defense before filepath.Join with the zoneinfo dir) |
 | pkg/journal | FuzzParseSyslog | syslog(3) datagrams PID 1 reads from /dev/log: priority, timestamp, `IDENT[PID]:` |

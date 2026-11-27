@@ -341,7 +341,7 @@ ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/performance/ssh/run.sh          # 93 cases; see tests/performance/README.md
 ```
 
-52 fuzz targets in all: 29 under `tests/fuzz`, the rest beside the code
+53 fuzz targets in all: 29 under `tests/fuzz`, the rest beside the code
 they exercise, so `./tests/fuzz` alone does not reach them —
 `grep -rl '^func Fuzz' --include='*_test.go' .` finds every one. CI runs
 the unit, functional, fuzz and performance suites plus a nightly
