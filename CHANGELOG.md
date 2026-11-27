@@ -142,6 +142,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A milestone dependent already past its milestone was failed with
+  its start still running** (unreleased): the fix that fails the
+  dependents of a stop-pinned service also failed a dependent whose
+  milestone was reached before the stop, leaving it STOPPED while its
+  start process ran on, untracked. Only dependents still waiting for
+  the service are failed now.
+
 - **`slinitctl analyze` with an unknown subcommand exited 1**, the
   status for a command that failed, where slinitctl(8) lists a
   malformed argument under exit 2. *Compat:* it now exits 2.

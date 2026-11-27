@@ -3583,7 +3583,7 @@ func (sr *ServiceRecord) Stopped() {
 		// active even once they let go of it, as a release reaching 0
 		// on a STOPPED service does not mark it inactive.
 		sr.desired.Store(StateStopped)
-		sr.cancelDependentsStart()
+		sr.cancelDependentsStart(true)
 	}
 	// restart-limit-count exhausted overrides willRestart: settle into
 	// the FAILED stable state instead of trying initiateStart again.
@@ -3735,8 +3735,17 @@ func (sr *ServiceRecord) Stopped() {
 // cancelDependentsStart fails the start of the hard dependents waiting
 // for this service, lets the soft ones go on without it, and releases
 // what every dependent holds on it.
-func (sr *ServiceRecord) cancelDependentsStart() {
+//
+// onlyWaiting skips a milestone dependent no longer waiting for this
+// service: Stopped() calls it for a service that had started, so such a
+// dependent's milestone was reached and its own start is under way.
+// failedToStart passes false: a service that never started has no
+// reached milestones, and dinit fails every STARTING milestone there.
+func (sr *ServiceRecord) cancelDependentsStart(onlyWaiting bool) {
 	for _, dept := range sr.dependents {
+		if onlyWaiting && dept.DepType == DepMilestone && !dept.WaitingOn {
+			continue
+		}
 		switch dept.DepType {
 		case DepRegular, DepPreparedBy, DepMilestone:
 			if dept.From.Record().state.Load() == StateStarting {
@@ -3774,7 +3783,7 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 		sr.Release(false)
 	}
 
-	sr.cancelDependentsStart()
+	sr.cancelDependentsStart(false)
 
 	// A start that failed is over: STOPPING until the process, if any,
 	// is gone (dinit's failed_to_start). Left in STARTING, the process's

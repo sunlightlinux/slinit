@@ -47,3 +47,54 @@ func TestStopPinnedWhileStoppingFailsDependentStart(t *testing.T) {
 		t.Errorf("%d services still counted active after every service stopped", n)
 	}
 }
+
+// The dependents c83cad8 fails are those waiting for this service. A
+// milestone dependent whose milestone was already reached is not: it
+// is starting on its own (its start process running), and failing it
+// marked it STOPPED with that process left running, untracked.
+func TestStopPinnedWhileStoppingSparesReachedMilestone(t *testing.T) {
+	set, _ := newTestSet()
+	d := newTestSvc(t, set, "d")
+	d.autoStop = false
+	m := newTestSvc(t, set, "m")
+	m.autoStart = false
+	e := newTestSvc(t, set, "e")
+	for _, s := range []*testSvc{d, m, e} {
+		set.AddService(s)
+	}
+	if err := set.AddDependency(m, d, DepMilestone); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.AddDependency(e, d, DepRegular); err != nil {
+		t.Fatal(err)
+	}
+
+	set.StartService(d)
+	set.StartService(m)
+	if m.State() != StateStarting || !m.upReqd {
+		t.Fatalf("m %v (asked up %v), want STARTING with its own start under way", m.State(), m.upReqd)
+	}
+	set.StopService(d)
+	set.PinStopService(d)
+	if d.State() != StateStopping {
+		t.Fatalf("d %v, want STOPPING", d.State())
+	}
+	set.StartService(e)
+	set.WithGraphLock(func() {
+		d.Stopped()
+		set.processQueuesLocked()
+	})
+	if m.State() != StateStarting {
+		t.Errorf("m %v, want still STARTING: its milestone was reached before d stopped", m.State())
+	}
+	if e.State() != StateStopped {
+		t.Errorf("e %v, want STOPPED: its start waits on d, which the stop pin refuses", e.State())
+	}
+	set.WithGraphLock(func() {
+		m.Started()
+		set.processQueuesLocked()
+	})
+	if m.State() != StateStarted {
+		t.Errorf("m %v after its start finished, want STARTED", m.State())
+	}
+}
