@@ -158,10 +158,13 @@ that way reloads the daemon rather than stopping it, and such an
 using it is dropped with a warning, leaving slinit to stop the service with its
 term-signal.
 
-Dependencies: **Requires** becomes **depends-on**; **Wants** and
-**After** become **waits-for** (so **After** also pulls the other
-service in, which systemd's does not; ordering-only **after** is
-planned for 4.1). Only **.service** and **.socket** references become
+Dependencies: **Requires** and **BindsTo** become **depends-on**
+(which stops this service when the dependency stops, as **BindsTo**
+does); **Wants** becomes **waits-for**; **After** and **Before** become
+**after** and **before**, ordering only, as in systemd (since 4.1.0;
+through 4.0 **After** became **waits-for** and so also started the
+other service, and **Before** was dropped); **Requisite** becomes
+**assert-service-started**. Only **.service** and **.socket** references become
 dependencies, a socket as the service it activates
 (**Requires=dm-event.socket** is **depends-on: dm-event**); a unit's
 reference to itself, such as its own socket, is dropped with a note. A
@@ -172,9 +175,11 @@ since slinit has no such services (and **sysroot.mount** is no
 dependency of any kind does not exist, so each name written must exist
 as a slinit service (or a unit slinit can load) on the target system.
 A unit loaded directly is more forgiving, as systemd is: see
-**slinit**(8). **Before** cannot be
-mapped and is warned about; **WantedBy** / **RequiredBy** produce a
-note suggesting **slinitctl enable**.
+**slinit**(8). **PartOf**, **Upholds**, **PropagatesReloadTo**,
+**PropagatesStopTo**, **JoinsNamespaceOf**, **RequiresMountsFor** and
+**OnSuccess** have no slinit equivalent and are reported with what to
+use instead; **WantedBy** / **RequiredBy** produce a note suggesting
+**slinitctl enable**.
 
 Not carried over, and reported: inline **Environment=** (slinit takes
 an **EnvironmentFile** only), **ExecReload** (slinit's reload is a

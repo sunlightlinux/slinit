@@ -620,12 +620,16 @@ facilities — **cron=**, path-activation directives, the boot service
 graph — and translating them mechanically would produce a service
 that starts and does the wrong thing.
 
-A unit's **After=** and **Wants=** become **waits-for:**. systemd
-ignores either for a unit that is not installed, where slinit fails
-the load on any missing dependency, so a directly loaded unit leaves
-out each one that names no service, init.d script or unit, and logs a
-note saying so. **Requires=** on a missing unit still fails, as
-it does under systemd.
+A unit's **Wants=** becomes **waits-for:**, and **After=** and
+**Before=** become **after:** and **before:**, which order two services
+when both start and start neither (since 4.1.0; through 4.0 **After=**
+became **waits-for:** too, so it also started the other service). A
+unit that needs the other one running says **Wants=** or **Requires=**.
+systemd ignores any of these for a unit that is not installed, where
+slinit fails the load on any missing dependency, so a directly loaded
+unit leaves out each one that names no service, init.d script or unit,
+and logs a note saying so. **Requires=** on a missing unit still fails,
+as it does under systemd.
 
 Directives with no slinit equivalent are reported to the log at
 warning level rather than dropped silently, naming the unit and the

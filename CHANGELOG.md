@@ -24,6 +24,32 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Changed
+
+- **A systemd unit's `After=` orders only, as in systemd.** A `.service`
+  unit loaded directly or converted with `slinit-systemd-convert` turned
+  `After=X` into `waits-for: X`, which also started X: a unit ordered
+  after an optional daemon pulled the daemon up with it. `After=` is now
+  `after:` and `Before=`, which was dropped with a warning, is `before:`,
+  both ordering only: they apply when both services start and start
+  neither. *Compat:* a unit that relied on `After=` to start the other
+  service (bolt for polkit, systemd-remount-fs for systemd-fsck-root
+  among systemd's own) needs `Wants=` or `Requires=` for it, or a
+  native `waits-for:`. A directly loaded unit still leaves out an
+  ordering reference to a unit that is not installed, with a note.
+
+### Added
+
+- **`BindsTo=`** (and its old spelling `BindTo=`) becomes `depends-on:`,
+  which stops the service when its dependency stops, as `BindsTo=`
+  does; the obsolete `RequiresOverridable=` and `RequisiteOverridable=`
+  read as `Requires=` and `Requisite=`, as systemd reads them. They were
+  dropped without a word, like every `[Unit]` key the loader did not
+  know; such a key now draws a warning, and `PartOf=`, `Upholds=`,
+  `PropagatesReloadTo=`, `PropagatesStopTo=`, `JoinsNamespaceOf=`,
+  `RequiresMountsFor=`, `OnSuccess=` and `StopWhenUnneeded=` say what to
+  use instead.
+
 ## [4.0.5] — 2026-11-27
 
 **A fix release on the 4.0 long-term-support line, led by a 4.0.4

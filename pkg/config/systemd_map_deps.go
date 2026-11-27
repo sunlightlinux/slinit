@@ -1,0 +1,41 @@
+package config
+
+// [Unit] dependency directives the loader classifies through the
+// registry: the ones with a slinit mapping are bespoke cases in
+// applyUnitKey (Requires=, Wants=, After=, Before=, BindsTo=, ...),
+// because they feed the dependency lists rather than one setting.
+
+func init() {
+	gaps := map[string]sdGap{
+		"PartOf": {why: "a stop or restart of that unit does not reach this service; " +
+			"`depends-on:` it if this service cannot run without it"},
+		"Upholds":              {why: "slinit does not restart that unit whenever it stops; give it `restart = yes`"},
+		"PropagatesReloadTo":   {why: "`slinitctl reload` of this service reloads only this service"},
+		"PropagateReloadTo":    {why: "`slinitctl reload` of this service reloads only this service"},
+		"ReloadPropagatedFrom": {why: "a reload of that unit does not reach this service"},
+		"PropagateReloadFrom":  {why: "a reload of that unit does not reach this service"},
+		"PropagatesStopTo": {why: "a stop of this service does not stop that unit; " +
+			"make that unit `depends-on:` this one if it must stop with it"},
+		"StopPropagatedFrom": {why: "a stop of that unit does not stop this service; " +
+			"`depends-on:` it if this service must stop with it"},
+		"JoinsNamespaceOf": {confine: true, why: "the service gets namespaces of its own, " +
+			"not those of that unit (see the namespace-* settings)"},
+		"RequiresMountsFor": {why: "slinit does not order services after the mounts of a path; " +
+			"make sure the path is mounted first, e.g. `depends-on:` the service that mounts it"},
+		"WantsMountsFor": {why: "slinit does not order services after the mounts of a path"},
+		"OnSuccess": {why: "`chain-to` starts a service when this one exits 0 on its own; " +
+			"systemd also starts it after a clean stop. Use chain-to if that is the case that matters"},
+		"StopWhenUnneeded": {why: "slinit already stops a service started only as a dependency " +
+			"once nothing needs it; one started by hand stays up"},
+	}
+	for k, g := range gaps {
+		sdUnitNoEquivalent[k] = g
+	}
+	for k, why := range map[string]string{
+		"OnFailureJobMode": "a job mode for OnFailure=; slinit has no job queue",
+		"OnSuccessJobMode": "a job mode for OnSuccess=; slinit has no job queue",
+		"OnFailureIsolate": "obsolete; systemd reads it as OnFailureJobMode=isolate",
+	} {
+		sdUnitIgnored[k] = why
+	}
+}
