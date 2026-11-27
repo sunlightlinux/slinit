@@ -149,6 +149,12 @@ verified with `git tag -v`.
   start process ran on, untracked. Only dependents still waiting for
   the service are failed now.
 
+- **The boot-failure menu said "No service files found" for every
+  load failure.** A boot file with a syntax error, or a dependency
+  missing or broken, was headed by a claim that no file existed, with
+  the real error below it cut to the menu's width. The headline now
+  says the boot service failed to load, and keeps "No service files
+  found" for when no boot service has a description at all.
 - **`slinitctl analyze` with an unknown subcommand exited 1**, the
   status for a command that failed, where slinitctl(8) lists a
   malformed argument under exit 2. *Compat:* it now exits 2.

@@ -1832,9 +1832,11 @@ func main() {
 	// graph. Nothing to load or restart.
 	var startedAny bool
 	var loadErrors []string
+	var bootLoadErrs []bootLoadErr
 	for retry := 0; !rescueMode; retry++ {
 		startedAny = false
 		loadErrors = loadErrors[:0]
+		bootLoadErrs = bootLoadErrs[:0]
 		for _, svcName := range bootServices {
 			// Locked: by the second iteration of the retry loop, earlier
 			// services are running and their monitor goroutines take the
@@ -1848,6 +1850,7 @@ func main() {
 				msg := fmt.Sprintf("load '%s': %v", svcName, err)
 				logger.Error("Failed to %s", msg)
 				loadErrors = append(loadErrors, msg)
+				bootLoadErrs = append(bootLoadErrs, bootLoadErr{svcName, err})
 				continue
 			}
 			// Profile filter: a profile-tagged boot service outside the
@@ -1912,7 +1915,7 @@ func main() {
 		stopSigWatch := rebootOnSignalWhileBlocked(logger)
 		action := recovery.Present(recovery.Options{
 			Errors: append([]string{
-				fmt.Sprintf("No service files found in %v", dirs),
+				bootFailureHeadline(dirs, bootLoadErrs),
 				fmt.Sprintf("(bootService=%q)", bootServices[0]),
 			}, loadErrors...),
 			// The menu owns the console while it is up; an
@@ -2388,6 +2391,34 @@ func main() {
 
 	closeWatchdog(wd, logger)
 	logger.Info("slinit shutdown complete")
+}
+
+// bootLoadErr is a boot service that failed to load, and why.
+type bootLoadErr struct {
+	name string
+	err  error
+}
+
+// bootFailureHeadline is the first line of the boot-failure menu. It
+// said "No service files found" whatever the failure was, so a boot
+// file with a syntax error, or a dependency missing or broken, sent the
+// operator looking for a file that was there, with the real error
+// below it cut to the menu's width. It says so only when no boot
+// service has a description at all.
+func bootFailureHeadline(dirs []string, errs []bootLoadErr) string {
+	notFound := len(errs) > 0
+	for _, e := range errs {
+		var le *config.ServiceLoadError
+		if !errors.As(e.err, &le) || le.ServiceName != e.name ||
+			!errors.Is(le.Err, config.ErrServiceNotFound) {
+			notFound = false
+			break
+		}
+	}
+	if notFound {
+		return fmt.Sprintf("No service files found in %v", dirs)
+	}
+	return "The boot service failed to load (errors below)"
 }
 
 // debuggerForceFail is the boot debugger's [f] action. It runs on the
