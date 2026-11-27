@@ -39,6 +39,7 @@ var KnownSettings = map[string]OperatorType{
 	"prepared-by.d": OpColon,
 	"before":        OpColon,
 	"after":         OpColon,
+	"part-of":       OpColon, // not a dependency: see service/partof.go
 	// s6-rc-style bundle: names a group of services this "internal"
 	// service pulls up as a unit. Accepts either `=` (single-line
 	// comma/space list) or repeated `:` (one name per line).

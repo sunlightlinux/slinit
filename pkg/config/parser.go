@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -125,6 +126,11 @@ type ServiceDescription struct {
 	PreparedBy []string // prepared-by (PREPARED_BY)
 	Before     []string // before
 	After      []string // after
+	PartOf     []string // part-of: stopped and restarted with these
+
+	// fromSystemd marks a description read from a systemd unit; the
+	// loader commits it to DirLoader.systemdLoaded when it installs it.
+	fromSystemd bool
 
 	// Best-effort ordering: like Before/After but the loader treats a
 	// missing target as a silently-dropped hint, not a load failure.
@@ -1849,6 +1855,14 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid dependency name: %w", err)
 		}
 		desc.After = append(desc.After, depName)
+	case "part-of":
+		name := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(name); err != nil {
+			return fmt.Errorf("invalid part-of name: %w", err)
+		}
+		if !slices.Contains(desc.PartOf, name) {
+			desc.PartOf = append(desc.PartOf, name)
+		}
 	case "depends-on.d":
 		desc.DependsOnD = append(desc.DependsOnD, desc.dirDepPath(expandEnvVars(value, serviceArg)))
 	case "depends-ms.d":

@@ -259,6 +259,16 @@ type ServiceRecord struct {
 	socketGID       int
 	stopReason      StoppedReason
 	chainTo         string // service to start when this one completes
+	// partOf names the services whose stop or restart reaches this one
+	// (part-of, systemd's PartOf=); see propagatePartOf in partof.go.
+	partOf []string
+	// partOfGen is the restart wave this service last took part in, so
+	// a part-of loop restarts each service once; partOfRestartOnStart
+	// says the coming start is a restart whose wave reaches the
+	// services part of this one.
+	partOfGen            uint64
+	partOfRestartOnStart bool
+	inPartOfWave         bool // this restart came from a part-of wave (partOfGen)
 
 	// Service alias (alternative name for lookup)
 	provides string
@@ -1571,6 +1581,8 @@ func (sr *ServiceRecord) IsNormalExit(es ExitStatus) bool {
 	return false
 }
 func (sr *ServiceRecord) SetChainTo(name string)             { sr.chainTo = name }
+func (sr *ServiceRecord) SetPartOf(names []string)           { sr.partOf = names }
+func (sr *ServiceRecord) PartOf() []string                   { return sr.partOf }
 func (sr *ServiceRecord) SetServiceDscDir(dir string)        { sr.serviceDscDir = dir }
 func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)   { sr.termSignal = sig }
 func (sr *ServiceRecord) SetReloadSignal(sig syscall.Signal) { sr.reloadSignal = sig }
@@ -3378,6 +3390,12 @@ func (sr *ServiceRecord) doStart() {
 }
 
 func (sr *ServiceRecord) initiateStart() {
+	wave := sr.inPartOfWave
+	sr.inPartOfWave = false
+	if sr.partOfRestartOnStart {
+		sr.partOfRestartOnStart = false
+		sr.services.propagatePartOfRestart(sr.self, wave)
+	}
 	// A start is underway, so the service is no longer parked on a
 	// restart-delay timer — whether this start IS that restart or took
 	// it over. The state leaves STOPPED just below, which is also what
@@ -3824,6 +3842,14 @@ func (sr *ServiceRecord) Stopped() {
 			sr.fdStore.Close()
 		}
 	}
+	// A restart, automatic or asked for, restarts the services part of
+	// this one when it starts again (initiateStart): after any
+	// restart-delay, so one ordered after: this service does not come
+	// up while it still waits out the delay. RestartMode=direct keeps
+	// them up, as it keeps dependents up.
+	if (willRestart || sr.restarting) && sr.restartMode != RestartModeDirect {
+		sr.partOfRestartOnStart = true
+	}
 	sr.restarting = false
 
 	sr.cleanupServiceDirs(willRestart)
@@ -4041,6 +4067,16 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 
 	sr.inAutoRestart = false
 	sr.inUserRestart = false
+
+	// A stop that was asked for, and is not the first half of a
+	// restart, stops the services part of this one; a crash does not
+	// (desired is still STARTED then), as systemd propagates stop jobs
+	// and not a unit's own death.
+	if !withRestart && !sr.restarting && sr.desired.Load() == StateStopped {
+		sr.partOfRestartOnStart = false
+		sr.inPartOfWave = false
+		sr.services.propagatePartOfStop(sr.self)
+	}
 
 	forRestart := withRestart
 	// systemd RestartMode=direct: keep dependents up through this

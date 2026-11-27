@@ -12,6 +12,7 @@ func TestSystemdDependencyMapping(t *testing.T) {
 		unit                     string
 		depends, waits           []string
 		after, before            []string
+		partOf                   []string
 		asserts                  []string
 		stopWhenUnneeded         bool
 		noteContains, notWarnFor string
@@ -60,9 +61,10 @@ func TestSystemdDependencyMapping(t *testing.T) {
 			after: []string{"db"},
 		},
 		{
-			name:         "PartOf= has no equivalent and says so",
-			unit:         "[Unit]\nPartOf=db.service\n",
-			noteContains: "PartOf=db.service has no slinit equivalent",
+			name:         "PartOf= is part-of, a target in it dropped",
+			unit:         "[Unit]\nPartOf=db.service graphical.target\nPartOf=db.service web.service\n",
+			partOf:       []string{"db", "web"},
+			noteContains: "graphical.target",
 		},
 		{
 			name:             "StopWhenUnneeded=yes is stop-when-unneeded",
@@ -96,6 +98,7 @@ func TestSystemdDependencyMapping(t *testing.T) {
 			eq("waits-for", desc.WaitsFor, tc.waits)
 			eq("after", desc.After, tc.after)
 			eq("before", desc.Before, tc.before)
+			eq("part-of", desc.PartOf, tc.partOf)
 			var asserts []string
 			for _, p := range desc.Predicates {
 				if strings.Contains(p.String(), "service-started") {

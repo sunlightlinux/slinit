@@ -635,11 +635,12 @@ An ordering edge can close a loop with dependencies, which real units
 contain (wickedd has **Wants=wickedd-nanny**, wickedd-nanny
 **After=wickedd**): every service on such a loop would wait for the
 next, and none would start. Once a load or reload has installed its
-services, slinit looks for such loops and drops one ordering edge of
-each, a systemd unit's when there is one, with a warning naming the
-loop, as systemd drops an ordering job on a cycle. A slinit
-description's **before:** or **after:** that closes a loop it can see
-at load is refused instead, as dinit refuses it.
+services, slinit looks for such loops and drops one ordering edge a
+systemd unit declared on each, with a warning naming the loop, as
+systemd drops an ordering job on a cycle. A loop on which no systemd
+unit declared an ordering edge (a slinit description's **before:** or
+**after:**, or dependencies alone) refuses the load instead, as dinit
+refuses it, and what the load brought in for it is unloaded again.
 
 The unit's drop-ins are applied on top of it, found in the same
 directories as systemd finds them: *NAME*.service.d/\*.conf, the

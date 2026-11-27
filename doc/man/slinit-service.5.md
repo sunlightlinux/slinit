@@ -594,6 +594,20 @@ error. Repeat the line for several targets.
 **after**: *service*
 :   Ordering only: if both start, this one starts after *service*.
 
+**part-of**: *service* (since 4.1.0)
+:   Not a dependency: this service neither starts with *service* nor
+    waits for it. A stop asked of *service* (by **slinitctl stop**, by
+    its own dependencies stopping, at shutdown) stops this service too,
+    and so what depends on it; a restart of *service*, asked for or
+    automatic, restarts this service if it is running, once *service*
+    starts again (after its **restart-delay**). A crash of *service*
+    that leaves it stopped leaves this service running, and so does a
+    restart with **restart-mode** = *direct*. systemd's **PartOf=**.
+    Add **after**: *service* for this one to start once *service* is
+    up. *service* need not be loaded; the link is by name, so it holds
+    across a reload of either. A loop of **part-of** restarts each
+    service once.
+
 **chain-to**=*service*
 :   Start *service* when this one finishes. Three conditions, all
     required: this service **terminated on its own** rather than being

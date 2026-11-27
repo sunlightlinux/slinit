@@ -51,6 +51,15 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`part-of: X`**, systemd's `PartOf=`: a stop asked of X stops this
+  service, and a restart of X, asked for or automatic, restarts it if
+  it is running, once X starts again (after its restart-delay). It does
+  not start with X or wait for it, a crash that leaves X stopped leaves
+  it running, and `restart-mode = direct` keeps it up, as in systemd.
+  The link is by name and adds no dependency edge: X need not be
+  loaded, and a loop restarts each service once. A unit's `PartOf=` on
+  a service maps onto it (wicked's daemons are each `PartOf=wickedd`).
+
 - **`slinitctl cat NAME`**, as `systemctl cat`: the service's
   description and what applies on top of it (`.override`, the conf.d
   overlay), and for a systemd unit loaded directly its drop-ins and the
@@ -239,8 +248,10 @@ verified with `git tag -v`.
   is still loading. Once a load or reload has installed its services,
   slinit now finds such loops and drops one ordering edge of each — a
   systemd unit's when there is one — with a warning naming the loop, as
-  systemd drops an ordering job on a cycle. A slinit file's `before:`
-  or `after:` closing a loop visible at load is refused, as in dinit.
+  systemd drops an ordering job on a cycle. A loop with no ordering
+  edge a systemd unit declared (a slinit file's `after:` or `before:`,
+  or dependencies alone) refuses the load, as dinit refuses it, and
+  takes out with it what the load brought in behind it.
   Also: loading the target of a `before:` no longer counts the
   declaring service as a dependency the target waits for, which
   refused the same order said from both ends as a cycle

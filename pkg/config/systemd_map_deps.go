@@ -1,5 +1,7 @@
 package config
 
+import "slices"
+
 // [Unit] dependency directives the loader classifies through the
 // registry: the ones with a slinit mapping are bespoke cases in
 // applyUnitKey (Requires=, Wants=, After=, Before=, BindsTo=, ...),
@@ -7,8 +9,6 @@ package config
 
 func init() {
 	gaps := map[string]sdGap{
-		"PartOf": {why: "a stop or restart of that unit does not reach this service; " +
-			"`depends-on:` it if this service cannot run without it"},
 		"Upholds":              {why: "slinit does not restart that unit whenever it stops; give it `restart = yes`"},
 		"PropagatesReloadTo":   {why: "`slinitctl reload` of this service reloads only this service"},
 		"PropagateReloadTo":    {why: "`slinitctl reload` of this service reloads only this service"},
@@ -29,6 +29,19 @@ func init() {
 	for k, g := range gaps {
 		sdUnitNoEquivalent[k] = g
 	}
+	// part-of: a stop or restart of the named service reaches this one,
+	// which neither starts with it nor is ordered by it. A target is
+	// dropped, as for After=: slinit has no targets to stop.
+	registerUnit("PartOf", sdRule{custom: func(cfg *SystemdConfig, key, val string) []SystemdWarning {
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
+		for _, d := range deps {
+			if !slices.Contains(cfg.partOf, d) {
+				cfg.partOf = append(cfg.partOf, d)
+			}
+		}
+		return noteDroppedTargets(key, targets, self)
+	}})
+
 	// Same meaning, same values: the service stops once nothing that
 	// depends on it needs it any more.
 	registerUnit("StopWhenUnneeded", sdRule{key: "stop-when-unneeded"})

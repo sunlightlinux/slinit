@@ -121,6 +121,7 @@ type SystemdConfig struct {
 	depends     []string // depends-on: X
 	waitsFor    []string // waits-for: X
 	after       []string // after: X (ordering only)
+	partOf      []string // part-of: X
 	before      []string // before: X (ordering only)
 	aliases     []string // [Install] Alias= .service names, bare
 	conditions  []condDir
@@ -2037,6 +2038,9 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 			fmt.Fprintf(w, "before: %s\n", d)
 			done[d] = true
 		}
+	}
+	for _, d := range c.partOf {
+		fmt.Fprintf(w, "part-of: %s\n", d)
 	}
 }
 

@@ -51,7 +51,7 @@ func readBaseline(t *testing.T) map[string]bool {
 // its term line plus the indented description under it, up to the next
 // term or heading. Empty when the directive is not documented at all.
 func documentedBlock(page, name string) string {
-	term := regexp.MustCompile(`(?m)^\*\*\\?` + regexp.QuoteMeta(name) + `\*\*[=(\s]`)
+	term := regexp.MustCompile(`(?m)^\*\*\\?` + regexp.QuoteMeta(name) + `\*\*[=:(\s]`)
 	loc := term.FindStringIndex(page)
 	if loc == nil {
 		return ""

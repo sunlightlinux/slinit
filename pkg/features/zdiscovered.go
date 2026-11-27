@@ -237,6 +237,7 @@ var BuiltinDirectives = []string{
 	"open-file",
 	"options",
 	"output-logger",
+	"part-of",
 	"pass-environment",
 	"personality",
 	"pid-file",

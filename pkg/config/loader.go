@@ -198,12 +198,9 @@ func (dl *DirLoader) LoadService(name string) (service.Service, error) {
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
 	dl.touched = nil
+	defer func() { dl.touched = nil }()
 	svc, err := dl.loadServiceLocked(name)
-	if err == nil {
-		dl.breakOrderingCycles(dl.touched)
-	}
-	dl.touched = nil
-	return svc, err
+	return svc, dl.settleLoad(svc, err)
 }
 
 // loadServiceLocked is the mutex-bypass variant of LoadService.
@@ -229,20 +226,30 @@ func (dl *DirLoader) ReloadService(svc service.Service) (reloaded service.Servic
 	// The edges a reload installs (and the services it loads for them)
 	// can close a start-order cycle too.
 	dl.touched = nil
+	name := svc.Name()
+	wasSystemd := dl.systemdLoaded[name]
 	defer func() {
-		if err == nil && reloaded != nil {
-			dl.breakOrderingCycles(append(dl.touched, reloaded))
+		if err != nil {
+			// The installed record is still the old description's.
+			dl.systemdLoaded[name] = wasSystemd
 		}
+		dl.dropDangling()
+		roots := dl.touchedInSet()
+		if err == nil && reloaded != nil {
+			roots = append(roots, reloaded)
+		}
+		dl.breakOrderingCycles(roots)
 		dl.touched = nil
 	}()
-
-	name := svc.Name()
 
 	// Re-parse the config file
 	desc, filePath, err := dl.findAndParse(name)
 	if err != nil {
 		return nil, err
 	}
+	// The checks below and the edges the reload installs follow the new
+	// description's kind; restored above if the reload fails.
+	dl.systemdLoaded[name] = desc.fromSystemd
 	// The same checks and rewrites a fresh load applies. Skipping them
 	// let a reload install what a load refuses (chroot on a scripted
 	// service, which then ran outside the jail) and turned a bundle into
@@ -912,6 +919,12 @@ func (dl *DirLoader) checkCycle(svc service.Service, desc *ServiceDescription) e
 		depSvc := dl.set.FindService(depName, false)
 		if depSvc != nil {
 			for _, dep := range depSvc.Record().Dependencies() {
+				// For a systemd unit, a loop closed through an ordering
+				// edge is broken once the reload is in, as a fresh load
+				// breaks it; only a loop of dependencies is refused.
+				if dl.systemdLoaded[svc.Name()] && dep.IsOnlyOrdering() {
+					continue
+				}
 				queue = append(queue, dep.To.Name())
 			}
 		}
@@ -1030,6 +1043,10 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	if err := dl.validateDesc(name, desc); err != nil {
 		return nil, err
 	}
+	// Not loaded until now (loadServiceLocked returns a loaded one), so
+	// nothing installed reads a stale value; a failed load leaves the
+	// name out of the set, where the flag means nothing.
+	dl.systemdLoaded[name] = desc.fromSystemd
 
 	// Create the service based on type
 	svc := dl.createService(name, desc)
@@ -1527,8 +1544,6 @@ func canFeedConsumer(svc service.Service) bool {
 }
 
 func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, error) {
-	// Set again below when the description comes from a systemd unit.
-	delete(dl.systemdLoaded, name)
 	// The name, argument included, is joined onto each service, init.d,
 	// unit and overlay directory below, and Join resolves ".." — so
 	// "a/../../tmp/x" or "x@/../../tmp/x" loaded a file from outside
@@ -1636,7 +1651,7 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 			if IsSystemdUnit(path) {
 				desc, err := SystemdUnitToServiceDescription(path, name, dl.systemdDirs...)
 				if err == nil {
-					dl.systemdLoaded[name] = true
+					desc.fromSystemd = true
 				}
 				if err != nil {
 					return nil, "", &ServiceLoadError{
@@ -2253,6 +2268,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetTermSignal(desc.TermSignal)
 	rec.SetReloadSignal(desc.ReloadSignal)
 	rec.SetChainTo(desc.ChainTo)
+	rec.SetPartOf(desc.PartOf)
 	if desc.SocketPath != "" {
 		rec.SetSocketDetails(desc.SocketPath, desc.SocketPerms, desc.SocketUID, desc.SocketGID)
 		rec.SetSocketPaths(desc.SocketPaths)

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -29,8 +30,117 @@ import (
 // it; on each loop found, one ordering edge is removed, one a systemd
 // unit declared when there is one, and the loop is named in a warning.
 // The description still declares the edge: a reload installs it again
-// and it is removed again. A loop with no ordering edge on it was refused
-// when it was loaded, and is only reported.
+// and it is removed again. A load refuses a loop with no such edge first
+// (settleLoad); a reload has the cycle check of checkCycle, so what is
+// left for it here is a slinit edge on a loop another reload closed,
+// which is dropped the same way rather than leave a deadlock.
+
+// What a load leaves behind is settled in settleLoad: services it loaded
+// that hold an edge on a record a failure took out of the set are
+// unloaded too (dropDangling); a loop with no edge a systemd unit
+// declared refuses the load (a loop of dependencies, or a slinit
+// description's after:/before:, as dinit refuses them); and the loops
+// left are broken. Loading a before: target unmarks the service that
+// declared it (resolveDependencies), which is what lets the first two
+// happen at all: they are caught here, once the tree is in, rather than
+// at the edge.
+
+// settleLoad finishes LoadService: see above. svc and err are what
+// loading returned; the error returned is the load's.
+func (dl *DirLoader) settleLoad(svc service.Service, err error) error {
+	dl.dropDangling()
+	if err == nil {
+		for _, r := range dl.touchedInSet() {
+			path := findStartCycle(r)
+			if path == nil || dl.systemdOrderingEdge(path) != nil {
+				continue
+			}
+			err = &ServiceLoadError{ServiceName: r.Name(),
+				Message: "cyclic dependency: " + cycleString(path)}
+			for _, e := range path {
+				if slices.Contains(dl.touched, e.From) {
+					dl.unloadLoaded(e.From)
+				}
+			}
+			dl.dropDangling()
+			break
+		}
+	}
+	if err == nil && dl.set.FindService(svc.Name(), false) != svc {
+		// Unloaded above as part of, or behind, a refused loop.
+		err = &ServiceLoadError{ServiceName: svc.Name(), Message: "a dependency of it was refused"}
+	}
+	dl.breakOrderingCycles(dl.touchedInSet())
+	return err
+}
+
+// touchedInSet returns the services this call loaded that are still in
+// the set.
+func (dl *DirLoader) touchedInSet() []service.Service {
+	var out []service.Service
+	for _, s := range dl.touched {
+		if dl.set.FindService(s.Name(), false) == s {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// dropDangling unloads each service this call loaded that holds an edge
+// on a record no longer in the set (one a later failure took out while
+// this service, loading as its before: target's dependency, could take
+// an edge on it), and so on to what depends on those.
+func (dl *DirLoader) dropDangling() {
+	for changed := true; changed; {
+		changed = false
+		for _, s := range dl.touchedInSet() {
+			for _, d := range s.Record().Dependencies() {
+				if dl.set.FindService(d.To.Name(), false) != d.To {
+					dl.unloadLoaded(s)
+					changed = true
+					break
+				}
+			}
+		}
+	}
+}
+
+// unloadLoaded takes a service this call loaded back out: its edges, on
+// both ends, and its entry in the set. Under queueMu or not (chain-to
+// loads under it), so not ServiceSet.UnloadService, which takes it; the
+// service is new and STOPPED, with nothing to stop.
+func (dl *DirLoader) unloadLoaded(s service.Service) {
+	if dl.set.FindService(s.Name(), false) != s {
+		return
+	}
+	dl.set.RemoveService(s)
+	for _, d := range ownedDeps(s) {
+		rmResolvedDep(s, d)
+	}
+	// What this call loaded behind it goes too; anything else holding
+	// an edge on it (an ordering edge) only loses the edge.
+	for _, d := range s.Record().Dependents() {
+		if slices.Contains(dl.touched, d.From) && d.DepType != service.DepBefore {
+			dl.unloadLoaded(d.From)
+		} else {
+			d.From.Record().RmDep(s, d.DepType)
+		}
+	}
+	if dl.set.OnServiceUnloaded != nil {
+		dl.set.OnServiceUnloaded(s)
+	}
+}
+
+// systemdOrderingEdge returns an ordering edge of the loop that a
+// systemd unit declared, or nil.
+func (dl *DirLoader) systemdOrderingEdge(path []*service.ServiceDep) *service.ServiceDep {
+	for _, e := range path {
+		if e.IsOnlyOrdering() && dl.systemdLoaded[edgeDeclarer(e).Name()] {
+			return e
+		}
+	}
+	return nil
+}
 
 // orderingCycleWarn reports a removed edge. Separate so tests can watch.
 var orderingCycleWarn = func(msg string) {
@@ -42,22 +152,29 @@ var orderingCycleWarn = func(msg string) {
 // targets up to date, which loading put off while a loop could stand.
 func (dl *DirLoader) breakOrderingCycles(roots []service.Service) {
 	defer func() {
-		var updater service.DepDepthUpdater
 		for _, r := range roots {
-			if !dl.systemdLoaded[r.Name()] {
+			if !dl.systemdLoaded[r.Name()] || dl.set.FindService(r.Name(), false) != r {
 				continue
 			}
+			var updater service.DepDepthUpdater
+			var before []resolvedDep
 			for _, d := range ownedDeps(r) {
 				if d.depType == service.DepBefore {
 					updater.AddPotentialUpdate(d.to)
+					before = append(before, d)
 				}
 			}
-		}
-		if err := updater.ProcessUpdates(); err != nil {
-			updater.Rollback()
-			orderingCycleWarn(fmt.Sprintf("dependency depth: %v", err))
-		} else {
-			updater.Commit()
+			if err := updater.ProcessUpdates(); err != nil {
+				// A slinit description's before: is refused here; an
+				// ordering edge of a unit is dropped, as the loop's is.
+				updater.Rollback()
+				for _, d := range before {
+					rmResolvedDep(r, d)
+				}
+				orderingCycleWarn(fmt.Sprintf("%s: dropped its before: edges: %v", r.Name(), err))
+			} else {
+				updater.Commit()
+			}
 		}
 	}()
 	for _, r := range roots {

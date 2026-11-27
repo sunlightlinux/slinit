@@ -68,6 +68,8 @@ type ServiceSet struct {
 	// stopsLastBlocker is the service releaseStopsLastLocked last found
 	// still running; checked first on the next call. Under queueMu.
 	stopsLastBlocker Service
+	// partOfGen numbers part-of restart waves (partof.go).
+	partOfGen uint64
 
 	// queueMu protects the processing queues, console queue, and
 	// activeServices counter, plus service-state fields mutated during
