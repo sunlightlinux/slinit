@@ -23,7 +23,9 @@ package:
 | `pkg/hostname` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease` |
 | `pkg/journal` | `FuzzParseSyslog`, `FuzzAppendJSONMatchesMarshal` |
 | `pkg/process` | `FuzzMatchFDName` |
-| `pkg/control` | `FuzzControlServer` |
+| `pkg/control` | `FuzzControlServer`, `FuzzParseShutdownTime` |
+| `cmd/slinit` | `FuzzScanSysArgs` |
+| `cmd/slinit-journalctl` | `FuzzRenderSenderFields` |
 
 So `go test -fuzz=... ./tests/fuzz/` reaches about three fifths of the
 fuzzing surface. CI fuzzes every package in its matrix
