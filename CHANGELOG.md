@@ -149,6 +149,14 @@ verified with `git tag -v`.
   start process ran on, untracked. Only dependents still waiting for
   the service are failed now.
 
+- **A stray word on the kernel command line hid every slinit option
+  after it**, `-t` included, which slinit(8) says is always honoured.
+  As PID 1, option parsing stopped at the first word that was not an
+  option, and the kernel passes init every word it does not know
+  (`splash`, LILO's `auto`, the value of sysvinit's `-z`): with
+  `splash -t rescue-shell` the boot went on with the default `boot`.
+  The whole line is now scanned, as dinit does. *Compat:* options after
+  such a word, ignored until now, take effect.
 - **Why a service could not be loaded over the control socket was
   logged nowhere.** The reply is an opcode, so `slinitctl start svc`
   could only print "could not be loaded" or "load error", and the

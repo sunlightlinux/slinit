@@ -31,7 +31,7 @@ func TestParseArgs_PID1IgnoresKernelWords(t *testing.T) {
 		{[]string{"-h", "-v", "--version"}, []string{}},
 		{[]string{"--version", "-b"}, []string{}},
 		{[]string{"--version", "-a"}, []string{}},
-		{[]string{"--nosuch=1", "--version", "nopti", "-z"}, []string{"nopti", "-z"}},
+		{[]string{"--nosuch=1", "--version", "nopti", "-z"}, []string{"nopti"}},
 		{[]string{"-z", "--version", "--", "-z"}, []string{"-z"}},
 	} {
 		fs, _, ver, _ := sysArgsFlagSet()
@@ -54,6 +54,22 @@ func TestParseArgs_PID1KeepsKnownOptions(t *testing.T) {
 		t.Errorf("b=%q a=%q", *cg, *aff)
 	}
 	if got := fs.Args(); !reflect.DeepEqual(got, []string{"single"}) {
+		t.Errorf("positional = %q", got)
+	}
+}
+
+// TestParseArgs_PID1OptionsAfterAWord: the kernel passes init words
+// it does not know (`splash`, LILO's `auto`, the value of sysvinit's
+// `-z`). Flag parsing stops at the first of them, so every option after
+// it, `-t` included, was silently dropped. dinit scans the whole line;
+// so must slinit.
+func TestParseArgs_PID1OptionsAfterAWord(t *testing.T) {
+	fs, cg, ver, aff := sysArgsFlagSet()
+	parseArgs(fs, []string{"-z", "junk", "splash", "-b", "/sys/fs/cgroup/x", "single", "--version", "--a=0-3"}, true)
+	if *cg != "/sys/fs/cgroup/x" || !*ver || *aff != "0-3" {
+		t.Errorf("after a naked word: b=%q version=%v a=%q", *cg, *ver, *aff)
+	}
+	if got := fs.Args(); !reflect.DeepEqual(got, []string{"junk", "splash", "single"}) {
 		t.Errorf("positional = %q", got)
 	}
 }
