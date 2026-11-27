@@ -661,6 +661,15 @@ verified with `git tag -v`.
   allocations. `slinit-journalctl` queries answered from the ring use
   the same encoder.
 
+- **An event emitted with no slinit-journald listening still read the
+  clock twice and took three locks for its IDs**: PID 1 stamped each
+  event's time, then read the clock again to check its redial backoff,
+  unwrapped the last dial error, and read the boot ID, machine ID and
+  hostname under three separate read locks. One clock reading now serves
+  both and the IDs come under one lock. Benchmark without a listener:
+  373 to 298 ns per state event, 332 to 255 ns per 100-byte output line.
+  What is delivered, and when the emitter redials, is unchanged.
+
 - **A rotated or filtered logfile wrote each line with its own
   write(2)**: a service whose `logfile` goes through the log rotator
   (`log-max-size`, filters, rate limit, alert file...) cost PID 1 one

@@ -184,7 +184,11 @@ type Event struct {
 // never by clients — clients passing pre-populated timestamps risk
 // out-of-order journals if system time steps.
 func (e *Event) Now() {
-	now := time.Now()
+	e.setTime(time.Now())
+}
+
+// setTime sets Ts + Mts to now, which must carry a monotonic reading.
+func (e *Event) setTime(now time.Time) {
 	e.Ts = now.UnixNano()
 	e.Mts = monotonicAt(now)
 }

@@ -131,6 +131,18 @@ func BootID() string {
 	return idCache.boot
 }
 
+// trustedIDs returns BootID(), MachineID() and Hostname(), and panics
+// as BootID does, under one read lock instead of three: every emit
+// stamps all three.
+func trustedIDs() (boot, machine, hostname string) {
+	idCache.mu.RLock()
+	defer idCache.mu.RUnlock()
+	if !idCache.initDone {
+		panic("journal: BootID() called before InitIDs — cmd/slinit must call InitIDs early in boot")
+	}
+	return idCache.boot, idCache.machine, idCache.hostname
+}
+
 // MachineID returns the persistent host identity.
 func MachineID() string {
 	idCache.mu.RLock()
