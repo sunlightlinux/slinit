@@ -69,7 +69,9 @@ func TestInhibitReplyFDIsItsOwn(t *testing.T) {
 		t.Fatalf("%d locks held while the client holds its descriptor, want 1", got)
 	}
 	unix.Close(client)
-	waitUntil(t, 2*time.Second, "the lock to be released", func() bool {
+	// Generous: the release is seen by a goroutine reading the pipe
+	// through the poller, which a loaded test host can schedule late.
+	waitUntil(t, 10*time.Second, "the lock to be released", func() bool {
 		return len(m.inhibitors.list()) == 0
 	})
 }

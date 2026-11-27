@@ -129,8 +129,22 @@ func TestInhibitorsCapLeavesDescriptors(t *testing.T) {
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &orig); err != nil {
 		t.Fatal(err)
 	}
+	// Sized from what the process already has open: earlier tests'
+	// inhibitor pipes are closed asynchronously, by goroutines that may
+	// lag under load, and with an absolute 512 the registry ran out of
+	// descriptors before reaching its cap. The cap is a quarter of the
+	// limit and a lock holds two descriptors here, so the limit must be
+	// at least twice what is already open for the cap to be reachable;
+	// in logind that baseline is a handful of descriptors.
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skip("no /proc/self/fd:", err)
+	}
 	lowered := orig
-	lowered.Cur = 512
+	lowered.Cur = 2*uint64(len(ents)) + 512
+	if lowered.Cur > orig.Cur {
+		t.Skip("soft NOFILE limit too low to test the cap")
+	}
 	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &lowered); err != nil {
 		t.Skip("cannot lower RLIMIT_NOFILE:", err)
 	}
@@ -141,7 +155,6 @@ func TestInhibitorsCapLeavesDescriptors(t *testing.T) {
 	capInhibitorsToFDs()
 
 	r := newInhibitRegistry()
-	var err error
 	for i := 0; i < old; i++ {
 		var c *os.File
 		if c, _, err = r.add("sleep", "w", "y", "delay", 1000, 1); err != nil {
@@ -150,7 +163,7 @@ func TestInhibitorsCapLeavesDescriptors(t *testing.T) {
 		t.Cleanup(func() { c.Close() })
 	}
 	if !errors.Is(err, errTooManyInhibitors) {
-		t.Fatalf("filling the registry under a 512-fd limit ended with %v, want the cap", err)
+		t.Fatalf("filling the registry under a %d-fd limit ended with %v, want the cap", lowered.Cur, err)
 	}
 	f, err := os.Open("/proc/self/status")
 	if err != nil {
