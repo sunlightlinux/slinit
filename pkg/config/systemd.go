@@ -122,6 +122,7 @@ type SystemdConfig struct {
 	waitsFor    []string // waits-for: X
 	after       []string // after: X (ordering only)
 	partOf      []string // part-of: X
+	socketUnits []string // Sockets=: the socket units to read (systemd_socket.go)
 	before      []string // before: X (ordering only)
 	aliases     []string // [Install] Alias= .service names, bare
 	conditions  []condDir
@@ -301,6 +302,7 @@ func ConvertSystemdUnitIn(path string, unitDirs []string) (*SystemdConfig, []Sys
 	}
 
 	warns := parseSystemdUnit(cfg, string(data), dropins...)
+	warns = append(warns, applySystemdSockets(cfg, unitDirs)...)
 	if len(applied) > 0 {
 		warns = append(warns, SystemdWarning{"NOTE", "drop-ins applied: " + strings.Join(applied, " ")})
 		cfg.comments = append(cfg.comments, "With drop-ins: "+strings.Join(applied, " "))

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -1542,7 +1543,12 @@ func (s *ProcessService) openOneSocket(path string) (*os.File, error) {
 		return fd, nil
 	}
 
-	// Unix domain socket
+	// Unix domain socket. Its directory is created as systemd creates
+	// it (DirectoryMode=0755): a socket under /run/<daemon>/ is commonly
+	// listened on before the daemon has ever run to make the directory.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("socket directory: %w", err)
+	}
 	info, err := os.Stat(path)
 	if err == nil {
 		if info.Mode()&os.ModeSocket == 0 {

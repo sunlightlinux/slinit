@@ -125,7 +125,6 @@ func init() {
 			"give those commands slinit's \"+\" prefix to run them as root",
 		"ExecReloadPost":         "slinit's reload is a signal (reload-signal) and runs no command after it",
 		"RefreshOnReload":        "slinit's reload does not refresh credentials or extension images",
-		"Sockets":                "slinit does not read .socket units; give the service socket-listen settings for the socket it is passed",
 		"USBFunctionDescriptors": "slinit does not set up USB FunctionFS endpoints; write the descriptors from an ExecStartPre= script",
 		"USBFunctionStrings":     "slinit does not set up USB FunctionFS endpoints; write the strings from an ExecStartPre= script",
 	} {
@@ -144,6 +143,20 @@ func init() {
 	}})
 	registerService("RestartMaxDelaySec", sdRule{custom: func(cfg *SystemdConfig, _, val string) []SystemdWarning {
 		lcStateOf(cfg).restartMaxDelay = strings.TrimSpace(val)
+		return nil
+	}})
+	// The socket units to read with the service (systemd_socket.go).
+	registerService("Sockets", sdRule{custom: func(cfg *SystemdConfig, _, val string) []SystemdWarning {
+		f := strings.Fields(val)
+		if len(f) == 0 {
+			cfg.socketUnits = nil
+		}
+		for _, n := range f {
+			if !strings.HasSuffix(n, ".socket") {
+				return []SystemdWarning{{"WARN", "Sockets=" + n + " is not a .socket unit — ignored, as systemd does"}}
+			}
+			cfg.socketUnits = append(cfg.socketUnits, n)
+		}
 		return nil
 	}})
 	registerFinisher(lcFinish)

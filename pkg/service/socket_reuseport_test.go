@@ -3,6 +3,8 @@ package service
 import (
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -129,4 +131,23 @@ func TestSocketReusePortIgnoredForUnixSocket(t *testing.T) {
 		t.Fatalf("a Unix socket with socket-reuseport set should still open: %v", err)
 	}
 	defer svc.closeSocket()
+}
+
+// A Unix socket's directory is created, as systemd creates it: a socket
+// under /run/<daemon>/ is listened on before the daemon made the
+// directory.
+func TestUnixSocketDirectoryIsCreated(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "unix-dir")
+	svc.SetCommand([]string{"/bin/sleep", "60"})
+	sockPath := t.TempDir() + "/run/daemon/s.sock"
+	svc.Record().SetSocketDetails(sockPath, 0660, -1, -1)
+	set.AddService(svc)
+	if err := svc.openSocket(); err != nil {
+		t.Fatalf("socket in a missing directory: %v", err)
+	}
+	defer svc.closeSocket()
+	if st, err := os.Stat(filepath.Dir(sockPath)); err != nil || st.Mode().Perm() != 0o755 {
+		t.Errorf("directory: %v %v, want mode 0755", st, err)
+	}
 }

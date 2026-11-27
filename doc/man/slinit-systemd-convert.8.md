@@ -165,7 +165,12 @@ does); **Wants** becomes **waits-for**; **After** and **Before** become
 through 4.0 **After** became **waits-for** and so also started the
 other service, and **Before** was dropped; a loop they close is broken
 when the units are loaded, see **slinit**(8)); **Requisite** becomes
-**assert-service-started**. Only **.service** and **.socket** references become
+**assert-service-started**. The service's own socket unit
+(*foo.socket*, or those **Sockets=** names) is read beside it and
+becomes **socket-listen** and the other **socket-** settings, as when
+**slinit**(8) loads the unit; the conversion notes say which listeners
+and settings it left out, and a **SocketUser=**/**SocketGroup=** name
+is written as the number it has on the converting host. Only **.service** and **.socket** references become
 dependencies, a socket as the service it activates
 (**Requires=dm-event.socket** is **depends-on: dm-event**); a unit's
 reference to itself, such as its own socket, is dropped with a note. A

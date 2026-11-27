@@ -51,6 +51,16 @@ verified with `git tag -v`.
 
 ### Added
 
+- **A service's `.socket` unit is read with it.** Loading or converting
+  `foo.service` reads `foo.socket` (or what `Sockets=` names, with its
+  drop-ins): `ListenStream=`/`ListenDatagram=` become `socket-listen`,
+  `SocketMode=`/`SocketUser=`/`SocketGroup=`/`ReusePort=` the matching
+  `socket-*` settings, so a daemon written to be handed its sockets
+  (cups, docker, avahi, mariadb among this host's 20 pairs) starts with
+  them. Listeners slinit cannot open, and `Accept=yes` sockets (for a
+  template), are left out with a warning. Also, slinit now creates a
+  Unix `socket-listen` path's directory (0755) as systemd does.
+
 - **`restart-steps = N`**, systemd's `RestartSteps=`: the restart delay
   grows geometrically from `restart-delay` to `restart-delay-cap` over N
   restarts (1s, 2.3s, 5.1s, 11.7s, 26.5s, then 1m for 1s/1m/5), the

@@ -620,6 +620,23 @@ facilities — **cron=**, path-activation directives, the boot service
 graph — and translating them mechanically would produce a service
 that starts and does the wrong thing.
 
+A service's socket unit is read with it, though (since 4.1.0):
+*foo.socket*, or the units its **Sockets=** names, with their
+drop-ins, from the unit's directory or the unit directories. Its
+**ListenStream=** and **ListenDatagram=** become **socket-listen**
+(a path is a Unix stream socket, a port or *host*:*port* is *tcp:* or
+*udp:*, a port alone on every address), **SocketMode=**,
+**SocketUser=** and **SocketGroup=** become **socket-permissions**,
+**socket-uid** and **socket-gid**, and **ReusePort=** becomes
+**socket-reuseport**, so a daemon written to be handed its sockets
+(**LISTEN_FDS**) is started with them. It starts with the service
+rather than on the first connection; **socket-activation** =
+*on-demand* in an override gives the lazy start. Listeners slinit
+cannot open (Unix datagram, abstract, FIFO, netlink, ...) are left out
+with a warning, and a socket with **Accept=yes**, which is for a
+template service, is not read. slinit also creates the directory of a
+Unix socket, as systemd does.
+
 A unit's **Wants=** becomes **waits-for:**, and **After=** and
 **Before=** become **after:** and **before:**, which order two services
 when both start and start neither (since 4.1.0; through 4.0 **After=**
