@@ -298,6 +298,22 @@ service name or rejected.
     swallowing the flag silently, so a scripter reaching for it out of
     **systemctl** habit notices and drops it.
 
+**clean** [**\--what**=*kind*[,*kind*...]] *service*... (since 4.1.0)
+:   Remove what a stopped service keeps between runs, as **systemctl
+    clean**: the directories of its **runtime-directory**,
+    **state-directory**, **cache-directory**, **logs-directory** and
+    **configuration-directory** settings, and the descriptors in its fd
+    store. *kind* is **runtime**, **state**, **cache**, **logs**,
+    **configuration**, **fdstore** or **all**; **\--what** repeats and
+    adds up, and an empty **\--what=** returns to the default,
+    **runtime**,**cache**,**fdstore**: what the next start rebuilds.
+    State, logs and configuration go only when named. A service that is
+    not stopped, or waits out a **restart-delay**, is refused, since
+    its process may hold them. Prints each path removed, or *nothing to
+    clean*; exits non-zero if a service was refused or a removal failed.
+
+        slinitctl clean --what=state,cache dnsmasq
+
 **rusage** **self**|**children**|*service* (since 3.1.6)
 :   Report resource usage as *Key=Value* lines, the same
     machine-readable shape as **show**. This is **launchctl

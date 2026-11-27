@@ -190,6 +190,26 @@ const (
 	// UTF-8 `Key=Value\n` body, same shape as CmdServiceShow.
 	// Additive, per STABILITY.md.
 	CmdServiceRusage uint8 = 68
+	// CmdCleanService removes a stopped service's directories and fd
+	// store: systemd's `systemctl clean`. Payload: [handle(4)][what(1)],
+	// what a mask of the Clean* bits below. Reply: RplyCleanResult with
+	// the removed paths, one per line (empty: nothing to remove), or
+	// RplyNAK with the reason. Additive, per STABILITY.md.
+	CmdCleanService uint8 = 69
+)
+
+// What CmdCleanService removes; systemctl clean --what's six kinds.
+const (
+	CleanRuntime       uint8 = 1 << 0
+	CleanState         uint8 = 1 << 1
+	CleanCache         uint8 = 1 << 2
+	CleanLogs          uint8 = 1 << 3
+	CleanConfiguration uint8 = 1 << 4
+	CleanFDStore       uint8 = 1 << 5
+	// CleanDefault is systemctl clean's default: what the next start
+	// rebuilds.
+	CleanDefault = CleanRuntime | CleanCache | CleanFDStore
+	CleanAll     = CleanRuntime | CleanState | CleanCache | CleanLogs | CleanConfiguration | CleanFDStore
 )
 
 // Scopes for CmdServiceRusage. self and children are launchd's two
@@ -267,6 +287,9 @@ const (
 	RplyStartAllResult uint8 = 119
 	// RplyServiceRusage: CmdServiceRusage's UTF-8 `Key=Value\n` body.
 	RplyServiceRusage uint8 = 120
+	// RplyCleanResult: CmdCleanService's removed paths, UTF-8, one per
+	// line.
+	RplyCleanResult uint8 = 121
 )
 
 // Info codes (server → client, unsolicited).

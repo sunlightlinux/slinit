@@ -65,6 +65,7 @@ var dinitCmdNames = map[uint8]string{
 	control.CmdServiceShow:         "show",
 	control.CmdStartAll:            "start-all",
 	control.CmdServiceRusage:       "rusage",
+	control.CmdCleanService:        "clean",
 }
 
 // dinitConn makes a dinit daemon look like a slinit one to the rest of

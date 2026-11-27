@@ -2202,7 +2202,7 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 // volatile (removed on stop). Modes default to 0755.
 func resolveServiceDirs(desc *ServiceDescription) []process.ServiceDir {
 	var out []process.ServiceDir
-	add := func(names []string, base string, mode *uint32, volatile bool) {
+	add := func(names []string, base string, mode *uint32, volatile bool, kind string) {
 		m := os.FileMode(0o755)
 		if mode != nil {
 			m = os.FileMode(*mode)
@@ -2212,14 +2212,15 @@ func resolveServiceDirs(desc *ServiceDescription) []process.ServiceDir {
 				Path:     filepath.Join(base, n),
 				Mode:     m,
 				Volatile: volatile,
+				Kind:     kind,
 			})
 		}
 	}
-	add(desc.RuntimeDirs, "/run", desc.RuntimeDirMode, true)
-	add(desc.StateDirs, "/var/lib", desc.StateDirMode, false)
-	add(desc.CacheDirs, "/var/cache", desc.CacheDirMode, false)
-	add(desc.LogsDirs, "/var/log", desc.LogsDirMode, false)
-	add(desc.ConfigDirs, "/etc", desc.ConfigDirMode, false)
+	add(desc.RuntimeDirs, "/run", desc.RuntimeDirMode, true, "runtime")
+	add(desc.StateDirs, "/var/lib", desc.StateDirMode, false, "state")
+	add(desc.CacheDirs, "/var/cache", desc.CacheDirMode, false, "cache")
+	add(desc.LogsDirs, "/var/log", desc.LogsDirMode, false, "logs")
+	add(desc.ConfigDirs, "/etc", desc.ConfigDirMode, false, "configuration")
 	return out
 }
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/control"
 )
 
 // `slinitctl cat` prints what the daemon loaded the service from and
@@ -48,5 +50,34 @@ func TestCatShowsTheServiceFiles(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "type = internal\n") || !strings.Contains(got, "plain.override\ndescription = x\n") {
 		t.Errorf("slinit file and its override:\n%s", got)
+	}
+}
+
+func TestParseCleanArgs(t *testing.T) {
+	for _, tc := range []struct {
+		args  []string
+		what  uint8
+		names []string
+		bad   bool
+	}{
+		{args: []string{"a"}, what: control.CleanDefault, names: []string{"a"}},
+		{args: []string{"--what=state,cache", "a", "b"}, what: control.CleanState | control.CleanCache, names: []string{"a", "b"}},
+		{args: []string{"--what", "logs", "--what=fdstore", "a"}, what: control.CleanLogs | control.CleanFDStore, names: []string{"a"}},
+		{args: []string{"--what=state", "--what=", "a"}, what: control.CleanDefault, names: []string{"a"}},
+		{args: []string{"--what=all", "a"}, what: control.CleanAll, names: []string{"a"}},
+		{args: []string{"--what=bogus", "a"}, bad: true},
+		{args: []string{"--what=state"}, bad: true},
+		{args: []string{"-x", "a"}, bad: true},
+	} {
+		what, names, err := parseCleanArgs(tc.args)
+		if tc.bad {
+			if err == nil {
+				t.Errorf("%q: accepted", tc.args)
+			}
+			continue
+		}
+		if err != nil || what != tc.what || strings.Join(names, ",") != strings.Join(tc.names, ",") {
+			t.Errorf("%q: what=%b names=%q err=%v, want what=%b names=%q", tc.args, what, names, err, tc.what, tc.names)
+		}
 	}
 }

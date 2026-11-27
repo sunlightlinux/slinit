@@ -9,6 +9,7 @@ var BuiltinOpcodes = []string{
 	"CmdBootTime",
 	"CmdCancelShutdown",
 	"CmdCatLog",
+	"CmdCleanService",
 	"CmdCloseHandle",
 	"CmdContinueService",
 	"CmdDisableService",

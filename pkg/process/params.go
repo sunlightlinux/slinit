@@ -70,6 +70,9 @@ type ServiceDir struct {
 	Path     string
 	Mode     os.FileMode
 	Volatile bool
+	// Kind is the setting it came from: runtime, state, cache, logs or
+	// configuration (slinitctl clean --what).
+	Kind string
 }
 
 // ExecParams holds the parameters for starting a child process.

@@ -51,6 +51,15 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`slinitctl clean [--what=KIND] SERVICE...`**, systemd's `systemctl
+  clean`: removes what a stopped service keeps between runs, the
+  directories of its runtime-, state-, cache-, logs- and
+  configuration-directory settings and its fd store. The default is
+  runtime, cache and fdstore, what the next start rebuilds; state, logs
+  and configuration go only when named (or `all`). A service that is
+  not stopped, or waits out a restart-delay, is refused. New opcode
+  `CmdCleanService` (69), reply `RplyCleanResult` (121), additive.
+
 - **`send-sighup = yes`**, systemd's `SendSIGHUP=`: SIGHUP right after
   the stop signal, to the same processes, so a shell or anything else
   that ends only on a hangup goes at once instead of at the stop

@@ -122,6 +122,7 @@ var ctlFuzzCmds = []uint8{
 	CmdJournalSubscribe, CmdDisableServiceV7, CmdQueryServiceLoadDir,
 	CmdSwitchRoot, CmdSuspend, CmdServiceShow, CmdStartAll,
 	CmdServiceRusage,
+	CmdCleanService,
 	// Unassigned.
 	31, 32, 33, 34, 69, 99, 200, 255,
 }

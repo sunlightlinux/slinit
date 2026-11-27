@@ -535,6 +535,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleServiceShow(payload)
 	case CmdServiceRusage:
 		return c.handleServiceRusage(payload)
+	case CmdCleanService:
+		return c.handleCleanService(payload)
 	case CmdRunAction:
 		return c.handleRunAction(payload)
 	case CmdListActions:
@@ -670,6 +672,40 @@ func (c *Connection) handleFreezeService(payload []byte, freeze bool) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 	return c.writePacket(RplyACK, nil)
+}
+
+// handleCleanService removes a stopped service's directories and fd
+// store (`slinitctl clean`): [handle(4)][what(1)].
+func (c *Connection) handleCleanService(payload []byte) error {
+	if len(payload) != 5 || payload[4] == 0 || payload[4]&^CleanAll != 0 {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	handle, err := DecodeHandle(payload[:4])
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	what := payload[4]
+	kinds := map[string]bool{
+		"runtime":       what&CleanRuntime != 0,
+		"state":         what&CleanState != 0,
+		"cache":         what&CleanCache != 0,
+		"logs":          what&CleanLogs != 0,
+		"configuration": what&CleanConfiguration != 0,
+	}
+	removed, err := c.server.services.CleanService(svc, kinds, what&CleanFDStore != 0)
+	if err != nil && len(removed) == 0 {
+		return c.writePacket(RplyNAK, []byte(err.Error()))
+	}
+	body := strings.Join(removed, "\n")
+	if err != nil {
+		// Some removed, some not: report both rather than hide either.
+		body += "\n!" + err.Error()
+	}
+	return c.writePacket(RplyCleanResult, []byte(body))
 }
 
 // handleResetFailed clears startFailed on a single service (payload is a
