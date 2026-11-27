@@ -905,7 +905,13 @@ error. Repeat the line for several targets.
 
 **runtime-max-sec**=*duration*, **runtime-randomized-extra**=*duration*
 :   Force-stop the service after *runtime-max-sec* elapsed since
-    start. **runtime-max-sec** requires a unit (*30s*, *5m*);
+    start. The run ends as a timeout, a failure, as systemd's
+    **RuntimeMaxSec=** ends it: **restart** = *yes* or *on-failure*
+    starts the service again (a daily restart of a leaky daemon is
+    *runtime-max-sec = 24h* with *restart = yes*), and otherwise it stays
+    stopped, failed for **slinitctl is-failed** and **failure-action**
+    (since 4.1.0; before, it was stopped as on request, so no restart
+    setting brought it back). **runtime-max-sec** requires a unit (*30s*, *5m*);
     **runtime-randomized-extra** takes decimal seconds. **runtime-randomized-extra** adds fleet jitter so a
     thousand identical services don't all hit the runtime cap at
     the same wallclock instant.

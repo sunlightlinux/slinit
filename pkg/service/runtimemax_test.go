@@ -72,3 +72,48 @@ func TestRuntimeMaxDisabledByDefault(t *testing.T) {
 		t.Error("no timer should be armed when runtime-max-sec is unset")
 	}
 }
+
+// runtime-max-sec ends the run as a timeout: with restart = yes the
+// service comes back, as with systemd's RuntimeMaxSec= and Restart=
+// (the daily-restart idiom); with restart = no it stays down and is
+// failed. It was an operator stop, which no restart setting undoes.
+func TestRuntimeMaxEndsTheRunAsAFailure(t *testing.T) {
+	t.Run("restart = yes brings it back", func(t *testing.T) {
+		set, _ := newTestSet()
+		svc := NewProcessService(set, "daily")
+		svc.SetCommand([]string{"/bin/sleep", "60"})
+		svc.SetAutoRestart(RestartAlways)
+		svc.Record().SetRuntimeMax(150 * time.Millisecond)
+		set.AddService(svc)
+		set.StartService(svc)
+		defer func() {
+			svc.Record().SetRuntimeMax(0)
+			set.StopService(svc)
+			waitForState(t, svc, StateStopped, 5*time.Second)
+		}()
+		waitForState(t, svc, StateStarted, 2*time.Second)
+		first := svc.PID()
+		deadline := time.Now().Add(3 * time.Second)
+		for svc.PID() == first || svc.State() != StateStarted {
+			if time.Now().After(deadline) {
+				t.Fatalf("not restarted after runtime-max-sec: state %v pid %d (first %d)", svc.State(), svc.PID(), first)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	t.Run("restart = no leaves it failed", func(t *testing.T) {
+		set, _ := newTestSet()
+		svc := NewProcessService(set, "once")
+		svc.SetCommand([]string{"/bin/sleep", "60"})
+		svc.Record().SetRuntimeMax(100 * time.Millisecond)
+		set.AddService(svc)
+		set.StartService(svc)
+		waitForState(t, svc, StateStarted, 2*time.Second)
+		if got := waitForState(t, svc, StateStopped, 3*time.Second); got != StateStopped {
+			t.Fatalf("still %v after runtime-max-sec", got)
+		}
+		if !svc.Record().IsFailed() {
+			t.Error("a run ended by runtime-max-sec is not failed")
+		}
+	})
+}

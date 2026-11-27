@@ -1002,9 +1002,23 @@ func (sr *ServiceRecord) armRuntimeMaxTimer() {
 		if svc.State() != StateStarted {
 			return
 		}
-		set.logger.Info("Service '%s': runtime-max-sec (%s) reached, stopping",
+		// The run ends as a timeout, a failure, as systemd's
+		// RuntimeMaxSec= ends it (result "timeout"): restart = yes or
+		// on-failure brings the service back, as a watchdog expiry does,
+		// and otherwise it is left stopped and failed. It used to be an
+		// operator stop, so RuntimeMaxSec=1d with Restart=always, the
+		// usual way to restart a leaky daemon daily, stopped it for good.
+		set.logger.Error("Service '%s': runtime-max-sec (%s) reached, stopping",
 			name, d)
-		svc.Record().Stop(true)
+		rec := svc.Record()
+		withRestart := false
+		switch rec.autoRestartThisRun() {
+		case RestartAlways, RestartOnFailure:
+			withRestart = rec.checkRestartOnce()
+		}
+		rec.stopReason = ReasonTimedOut
+		rec.forceStop = true
+		rec.doStop(withRestart)
 		set.processQueuesLocked()
 	})
 	sr.runtimeMaxTimer = t

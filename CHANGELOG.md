@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Changed
+
+- **`runtime-max-sec` ends the run as a failure.** When the cap passed,
+  slinit stopped the service as an operator would: not failed, and no
+  `restart` setting brought it back, so `runtime-max-sec = 24h` with
+  `restart = yes` (systemd's `RuntimeMaxSec=1d` + `Restart=always`, the
+  usual daily restart of a leaky daemon) stopped it for good after a
+  day. The run now ends as a timeout, as in systemd: `restart = yes` or
+  `on-failure` starts the service again, and otherwise it stays stopped
+  and counts as failed (`slinitctl is-failed`, `failure-action`).
+  *Compat:* a service that relied on staying down needs `restart = no`.
+
 ### Added
 
 - **`log-type = journal`**: a process service's output goes to the
