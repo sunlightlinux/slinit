@@ -142,6 +142,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`TestDo_EndToEnd` (pkg/switchroot) failed on CI** (unreleased, test
+  only): Do's SIGKILL sweep is asynchronous and its reap is `WNOHANG`, so
+  on a loaded 2-CPU runner the holdout was still a zombie when the test
+  probed it with `kill(pid, 0)`, which succeeds on a zombie (40/40
+  failures on one loaded CPU). The test now waits for the holdout to be
+  reaped and checks it died of SIGKILL. Its readiness marker also lived
+  at a fixed name in the shared `/tmp`: once left behind, the test no
+  longer waited for the SIGTERM trap and passed without the SIGKILL sweep.
+
 - **A service loaded and started just as a shutdown began was never
   stopped** (unreleased): the shutdown listed the services before it
   took the lock that marks the shutdown, so a service loaded in between
