@@ -63,9 +63,15 @@ func (ss *ServiceSet) WithGraphLock(fn func()) {
 // goroutines adding opposite edges could each pass a check against the
 // pre-add graph and then both append, building the cycle that neither of
 // them was allowed to build.
+//
+// A before: is given as declared, from before to, and stored on to (see
+// DepBefore).
 func (ss *ServiceSet) AddDependency(from, to Service, depType DependencyType) error {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
+	if depType == DepBefore {
+		from, to = to, from
+	}
 	return ss.addDependencyLocked(from, to, depType)
 }
 
@@ -109,6 +115,9 @@ func (ss *ServiceSet) addDependencyLocked(from, to Service, depType DependencyTy
 func (ss *ServiceSet) RemoveDependency(from, to Service, depType DependencyType) bool {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
+	if depType == DepBefore {
+		from, to = to, from // stored on its target, as AddDependency does
+	}
 
 	if !from.Record().RmDep(to, depType) {
 		return false

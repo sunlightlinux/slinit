@@ -6,14 +6,15 @@ import "testing"
 // TestStopOrderWaitsForHardDependentToActuallyStop, which was written
 // for the bug it found).
 //
-// Mapping note, because this is where a port goes quietly wrong:
-// dinit's BEFORE is "specified via the to service" (service-constants.h),
-// so a link stored on s2 pointing at s1 with BEFORE means **s1 starts
-// before s2** — the stored direction is the inverse of the declared one.
-// slinit's DepBefore keeps the declared direction ("this starts before
-// target"), so the faithful translation of dinit's `s2{{s1, BEFORE}}` is
-// `s2.AddDep(s1, DepAfter)`. dinit's own assertions confirm it: starting
-// s3 brings s1 up first.
+// Mapping note: dinit's BEFORE is "specified via the to service"
+// (service-constants.h), so a link stored on s2 pointing at s1 with
+// BEFORE means s1 starts before s2 — the holder waits for its target, as
+// for AFTER; the type records which service declared the edge. slinit's
+// DepBefore is the same edge (see DepBefore in types.go), so these ports
+// keep dinit's types: `s2{{s1, BEFORE}}` is `s2.AddDep(s1, DepBefore)`.
+// An earlier note claimed slinit's DepBefore kept the declared direction
+// and swapped the types here; the runtime never did, and the loader
+// installed `a: before: x` on a, so a started after x.
 
 // test_order1: an ordering constraint sequences the start of two hard
 // dependencies of the same service, and the stop unwinds in reverse.
@@ -25,7 +26,7 @@ func TestPortedOrder1(t *testing.T) {
 		s.autoStart = false
 		s.autoStop = false
 	}
-	s2.Record().AddDep(s1, DepAfter) // s1 before s2
+	s2.Record().AddDep(s1, DepBefore) // s1 before s2
 	s3.Record().AddDep(s2, DepRegular)
 	s3.Record().AddDep(s1, DepRegular)
 
@@ -103,7 +104,7 @@ func TestPortedOrder2(t *testing.T) {
 		s.autoStart = false
 		s.autoStop = false
 	}
-	s2.Record().AddDep(s1, DepAfter) // s1 before s2, ordering only
+	s2.Record().AddDep(s1, DepBefore) // s1 before s2, ordering only
 	s3.Record().AddDep(s2, DepRegular)
 
 	set.StartService(s3)
@@ -130,10 +131,9 @@ func TestPortedOrder2(t *testing.T) {
 	}
 }
 
-// test_order3: the AFTER form of the same constraint. dinit's AFTER is
-// "specified via the from service", so it keeps the declared direction
-// and maps to slinit's DepBefore — the mirror of the note above. Like
-// ordering generally, it pulls nothing up: s1 stays STOPPED throughout.
+// test_order3: the AFTER form of the same constraint, declared by the
+// holder: s2{{s1, AFTER}} is s2 after s1. Like ordering generally, it
+// pulls nothing up: s1 stays STOPPED throughout.
 func TestPortedOrder3(t *testing.T) {
 	set, _ := newTestSet()
 	svcs := addTestSvcs(t, set, "test-service-1", "test-service-2", "test-service-3")
@@ -142,7 +142,7 @@ func TestPortedOrder3(t *testing.T) {
 		s.autoStart = false
 		s.autoStop = false
 	}
-	s2.Record().AddDep(s1, DepBefore)
+	s2.Record().AddDep(s1, DepAfter)
 	s3.Record().AddDep(s2, DepRegular)
 
 	set.StartService(s3)

@@ -52,6 +52,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`before:` ordered the other way round.** `a: before: x` was stored
+  on `a`, and the service holding an ordering edge waits for its target,
+  so `a` started after `x`, the opposite of what it says;
+  `slinitctl add-dep a before x` did the same. As in dinit, the edge is
+  now held by `x`, which waits while `a` starts; a reload keeps or
+  removes it with `a`'s description, also when `a` changes type, and
+  `slinitctl graph` draws it from `a`. Present since `before:` was
+  added; `after:` was right all along.
+
 - **A systemd unit naming one service in both `Wants=` and `After=`**,
   as most do, gave that service two identical `waits-for:` edges. Each
   name is now one dependency.
