@@ -1512,7 +1512,7 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 				}
 			}
 			if IsSystemdUnit(path) {
-				desc, err := SystemdUnitToServiceDescription(path, name)
+				desc, err := SystemdUnitToServiceDescription(path, name, dl.systemdDirs...)
 				if err != nil {
 					return nil, "", &ServiceLoadError{
 						ServiceName: name,

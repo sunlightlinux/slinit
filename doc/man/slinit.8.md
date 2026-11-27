@@ -631,6 +631,15 @@ unit leaves out each one that names no service, init.d script or unit,
 and logs a note saying so. **Requires=** on a missing unit still fails,
 as it does under systemd.
 
+The unit's drop-ins are applied on top of it, found in the same
+directories as systemd finds them: *NAME*.service.d/\*.conf, the
+dash-prefix directories (*foo-.service.d* for *foo-bar.service*), the
+template's for an instance, and the top-level *service.d*. A file in a
+higher-priority directory replaces one of the same name in a lower one,
+a symlink to */dev/null* masks it, and the files apply in the order of
+their names, so an override written by **systemctl edit** takes effect
+(since 4.1.0).
+
 Directives with no slinit equivalent are reported to the log at
 warning level rather than dropped silently, naming the unit and the
 directive. Use **slinit-systemd-convert**(8) to see the same notes on

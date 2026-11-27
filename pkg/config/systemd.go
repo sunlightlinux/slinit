@@ -240,6 +240,13 @@ type condDir struct {
 // --- Convert entry point ---
 
 func ConvertSystemdUnit(path string) (*SystemdConfig, []SystemdWarning, error) {
+	return ConvertSystemdUnitIn(path, nil)
+}
+
+// ConvertSystemdUnitIn converts the unit at path together with its
+// drop-ins found in unitDirs (systemdDropins), the unit directories in
+// priority order. With no unitDirs the unit is read alone.
+func ConvertSystemdUnitIn(path string, unitDirs []string) (*SystemdConfig, []SystemdWarning, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, nil, err
@@ -271,7 +278,22 @@ func ConvertSystemdUnit(path string) (*SystemdConfig, []SystemdWarning, error) {
 		restart:  "no",      // systemd default is Restart=no
 	}
 
-	warns := parseSystemdUnit(cfg, string(data))
+	var dropins []string
+	var applied []string
+	for _, p := range systemdDropins(unitDirs, strings.TrimSuffix(base, ".in")) {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil, nil, fmt.Errorf("drop-in: %w", err)
+		}
+		dropins = append(dropins, string(b))
+		applied = append(applied, p)
+	}
+
+	warns := parseSystemdUnit(cfg, string(data), dropins...)
+	if len(applied) > 0 {
+		warns = append(warns, SystemdWarning{"NOTE", "drop-ins applied: " + strings.Join(applied, " ")})
+		cfg.comments = append(cfg.comments, "With drop-ins: "+strings.Join(applied, " "))
+	}
 	if len(cfg.errs) > 0 {
 		return nil, nil, fmt.Errorf("%s", strings.Join(cfg.errs, "; "))
 	}
@@ -347,17 +369,32 @@ func joinSystemdLines(content string) []string {
 // `continuation` as one logical assignment). Only [Unit] and
 // [Service] sections influence the output; [Install] is read for
 // the WantedBy note but doesn't drive any directive.
-func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
+//
+// dropins are the contents of the unit's drop-in files, in the order
+// systemd applies them (systemdDropins): read after the unit, as more
+// assignments to the same keys, so an empty ExecStart= followed by a new
+// one replaces the command and a list directive adds to the unit's list.
+// The whole-unit folds below run once, over everything.
+func parseSystemdUnit(cfg *SystemdConfig, content string, dropins ...string) []SystemdWarning {
 	var warns []SystemdWarning
-	section := ""
-
-	joined := joinSystemdLines(content)
 
 	// State for the multiple-ExecStartPre check.
 	preStartCount := 0
 	postStartCount := 0
 
-	for _, raw := range joined {
+	for _, file := range append([]string{content}, dropins...) {
+		warns = append(warns, parseSystemdFile(cfg, file, &preStartCount, &postStartCount)...)
+	}
+	return append(warns, finishSystemdUnit(cfg)...)
+}
+
+// parseSystemdFile applies the assignments of one unit file or drop-in.
+// Each file starts outside any section, as in systemd: a drop-in's keys
+// before its first [Section] header are ignored.
+func parseSystemdFile(cfg *SystemdConfig, content string, preStartCount, postStartCount *int) []SystemdWarning {
+	var warns []SystemdWarning
+	section := ""
+	for _, raw := range joinSystemdLines(content) {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
@@ -389,12 +426,20 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		case "Unit":
 			warns = append(warns, applyUnitKey(cfg, key, val)...)
 		case "Service":
-			w := applyServiceKey(cfg, key, val, &preStartCount, &postStartCount)
+			w := applyServiceKey(cfg, key, val, preStartCount, postStartCount)
 			warns = append(warns, w...)
 		case "Install":
 			warns = append(warns, applyInstallKey(cfg, key, val)...)
 		}
 	}
+	return warns
+}
+
+// finishSystemdUnit runs the folds that need the whole unit, drop-ins
+// included: capability and address-family sets, the syscall filter, and
+// the settings that depend on Type=.
+func finishSystemdUnit(cfg *SystemdConfig) []SystemdWarning {
+	var warns []SystemdWarning
 	if cfg.capBounding.set {
 		switch cfg.capBounding.mask {
 		case allCaps:
@@ -2014,8 +2059,9 @@ func systemdUnitMasked(path string) bool {
 // keeps one mapping in the tree instead of two that drift, and the
 // description picks up every default Parse applies — the same reason
 // InitDToServiceDescription routes through NewServiceDescription.
-func SystemdUnitToServiceDescription(unitPath, name string) (*ServiceDescription, error) {
-	cfg, warns, err := ConvertSystemdUnit(unitPath)
+// unitDirs are searched for the unit's drop-ins (see systemdDropins).
+func SystemdUnitToServiceDescription(unitPath, name string, unitDirs ...string) (*ServiceDescription, error) {
+	cfg, warns, err := ConvertSystemdUnitIn(unitPath, unitDirs)
 	if err != nil {
 		return nil, fmt.Errorf("systemd unit %q: %w", unitPath, err)
 	}

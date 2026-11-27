@@ -40,6 +40,18 @@ verified with `git tag -v`.
 
 ### Added
 
+- **systemd drop-ins are applied.** A `.service` unit loaded directly, or
+  converted with `slinit-systemd-convert`, was read alone: an override
+  written by `systemctl edit` (`/etc/systemd/system/foo.service.d/
+  override.conf`) or a drop-in shipped by a distribution changed nothing.
+  Drop-ins are now found and applied as systemd does: `foo.service.d`,
+  the dash prefixes (`foo-.service.d` for `foo-bar.service`), the
+  template's for an instance and the top-level `service.d`, in every
+  unit directory; a file in `/etc` overrides the one of the same name in
+  `/usr/lib`, a `/dev/null` symlink masks it, and the files apply in the
+  order of their names. `slinit-systemd-convert` takes `--unit-dir` and
+  `--no-dropins`.
+
 - **`BindsTo=`** (and its old spelling `BindTo=`) becomes `depends-on:`,
   which stops the service when its dependency stops, as `BindsTo=`
   does; the obsolete `RequiresOverridable=` and `RequisiteOverridable=`

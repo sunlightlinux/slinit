@@ -223,6 +223,20 @@ suffix stripped.
     target dependencies and manual follow-ups. Warnings are printed
     without it.
 
+**-unit-dir** *DIR*
+:   A directory to search for the unit's drop-ins (*NAME*.service.d/\*.conf,
+    the dash-prefix and template forms, and *service.d*), highest priority
+    first; repeat it for several. Without it the unit's own directory is
+    searched first, then */etc/systemd/system*, */run/systemd/system*,
+    */usr/lib/systemd/system* and */lib/systemd/system*. Drop-ins apply on
+    top of the unit as systemd applies them: a file in a higher-priority
+    directory replaces one of the same name in a lower one, a symlink to
+    */dev/null* masks it, and the files are read in the order of their
+    names (since 4.1.0).
+
+**-no-dropins**
+:   Convert the unit file alone, ignoring its drop-ins.
+
 # EXAMPLES
 
 Convert a single unit and inspect the result:

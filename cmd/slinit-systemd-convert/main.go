@@ -7,11 +7,11 @@
 // cron= for timers, boot service graph for targets) rather than
 // mechanical translation. Warn and skip if pointed at one of those.
 //
-// Directive coverage: about 40 [Service] and [Unit] settings
-// (User, Group, ExecStart, Restart, EnvironmentFile, PIDFile,
-// LimitNOFILE, CapabilityBoundingSet, ProtectSystem, After,
-// Requires, Wants, ConditionPathExists, etc.). Everything else
-// generates a WARN so the operator knows what needs manual review.
+// Every directive systemd defines for a .service unit is either mapped,
+// or reported with what to do instead (pkg/config's directive registry,
+// checked against systemd's own table). The unit's drop-ins
+// (foo.service.d/*.conf, as `systemctl edit` writes them) are applied
+// on top, from the systemd unit directories and the unit's own one.
 //
 // Usage:
 //
@@ -47,10 +47,14 @@ func main() {
 		outputDir string
 		dryRun    bool
 		verbose   bool
+		noDropins bool
+		unitDirs  multiFlag
 	)
 	flag.StringVar(&outputDir, "output-dir", "", "batch mode: write one slinit file per input into DIR")
 	flag.BoolVar(&dryRun, "dry-run", false, "print what would be written without touching the filesystem")
 	flag.BoolVar(&verbose, "verbose", false, "also print conversion notes to stderr (warnings are always printed)")
+	flag.BoolVar(&noDropins, "no-dropins", false, "convert the unit file alone, without its drop-ins")
+	flag.Var(&unitDirs, "unit-dir", "a unit directory to search for drop-ins, highest priority first; repeatable\n(default: the unit's own directory, then "+strings.Join(config.DefaultSystemdDirs, ", ")+")")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `slinit-systemd-convert — port a systemd .service unit to a slinit service file
 
@@ -86,7 +90,11 @@ Flags:
 
 	var hadErrors bool
 	for _, in := range inputs {
-		cfg, warns, err := config.ConvertSystemdUnit(in)
+		var dirs []string
+		if !noDropins {
+			dirs = dropinDirs(in, unitDirs)
+		}
+		cfg, warns, err := config.ConvertSystemdUnitIn(in, dirs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "slinit-systemd-convert: %s: %v\n", in, err)
 			hadErrors = true
@@ -126,4 +134,32 @@ Flags:
 	if hadErrors {
 		os.Exit(1)
 	}
+}
+
+// multiFlag collects a repeatable string flag.
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// dropinDirs returns the directories searched for in's drop-ins. Given
+// --unit-dir, those, in the order given. Otherwise systemd's unit
+// directories, with the unit's own directory first when it is not one of
+// them: converting a copy of a unit next to its foo.service.d should
+// apply that directory's drop-ins, and an override in /etc should still
+// apply to a unit converted from /usr/lib.
+func dropinDirs(in string, given []string) []string {
+	if len(given) > 0 {
+		return given
+	}
+	own, err := filepath.Abs(filepath.Dir(in))
+	if err != nil {
+		return config.DefaultSystemdDirs
+	}
+	for _, d := range config.DefaultSystemdDirs {
+		if d == own {
+			return config.DefaultSystemdDirs
+		}
+	}
+	return append([]string{own}, config.DefaultSystemdDirs...)
 }
