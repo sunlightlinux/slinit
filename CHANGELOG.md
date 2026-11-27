@@ -229,6 +229,10 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`no-boot-marker = yes` was lost to a later `options =` line**, which
+  cleared every flag, its own and that one; `options =` now replaces
+  only what `options` sets. Present in 4.0.x.
+
 - **A prepared-by dependency was restarted twice for one crash.** When
   the dependency crashed and restarted itself, the dependent its crash
   stopped then restarted it again on the way back up: the fresh run was
