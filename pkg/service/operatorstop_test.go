@@ -90,3 +90,20 @@ func TestFailedStartClearsOperatorStop(t *testing.T) {
 		t.Fatal("a failed start left an earlier stop request standing")
 	}
 }
+
+// A start the operator's own stop pin refuses is the operator's will, not
+// a failure: an earlier stop request stands.
+func TestPinRefusedStartKeepsOperatorStop(t *testing.T) {
+	set, _ := newTestSet()
+	db := NewInternalService(set, "db")
+	app := NewInternalService(set, "app")
+	set.AddService(db)
+	set.AddService(app)
+	app.Record().AddDep(db, DepRegular)
+	set.PinStopService(db)
+	set.MarkOperatorStop()
+	set.StartService(app) // db's start, as app's dependency, is refused by the pin
+	if !set.OperatorStopRequested() {
+		t.Fatal("a start refused by the operator's stop pin took back the stop request")
+	}
+}

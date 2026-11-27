@@ -948,6 +948,14 @@ func (ss *ServiceSet) PokeInactive() {
 	}
 }
 
+// RestartPending reports whether svc is STOPPED but waiting out a restart
+// delay, still counted active.
+func (ss *ServiceSet) RestartPending(svc Service) bool {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	return svc.Record().restartPending
+}
+
 // ClientRestartPending reports whether a client is between the stop and
 // the start of a restart.
 func (ss *ServiceSet) ClientRestartPending() bool { return ss.clientRestarts.Load() > 0 }

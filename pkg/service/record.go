@@ -3218,7 +3218,7 @@ func (sr *ServiceRecord) doStart() {
 
 	if sr.pinnedStopped {
 		if !wasActive {
-			sr.failedToStart(false, false)
+			sr.refuseStart(false)
 		}
 		return
 	}
@@ -3443,7 +3443,7 @@ func (sr *ServiceRecord) callBringUp() {
 	if sr.services.OnConfirmSpawn != nil && !sr.services.OnConfirmSpawn(sr.serviceName) {
 		sr.services.logger.Info("Service '%s': skipped by confirm-spawn", sr.serviceName)
 		sr.state.Store(StateStopping)
-		sr.failedToStart(false, true)
+		sr.refuseStart(true)
 		return
 	}
 	if !sr.self.BringUp() {
@@ -3815,6 +3815,17 @@ func (sr *ServiceRecord) cancelDependentsStart(onlyWaiting bool) {
 }
 
 // failedToStart handles start failure.
+// refuseStart is failedToStart for a start an operator refused (a stop
+// pin, a "no" at confirm-spawn): that is the operator's will, not a
+// failure, so an earlier stop request stands.
+func (sr *ServiceRecord) refuseStart(immediateStop bool) {
+	marked := sr.services.OperatorStopRequested()
+	sr.failedToStart(false, immediateStop)
+	if marked {
+		sr.services.MarkOperatorStop()
+	}
+}
+
 func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 	// A start that failed on its own is a failure, not a stop on
 	// request: a container that ends now must not report an operator's

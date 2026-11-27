@@ -148,3 +148,26 @@ func TestRestartDuringRestartDelayHolds(t *testing.T) {
 		t.Fatal("the start did not end the hold")
 	}
 }
+
+// A plain stop of a service that is simply down changes nothing and is
+// not a stop on request.
+func TestStopOfStoppedServiceDoesNotMark(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	svc := service.NewInternalService(server.services, "idle")
+	server.services.AddService(svc)
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	if err := WritePacket(conn, CmdFindService, EncodeServiceName("idle")); err != nil {
+		t.Fatal(err)
+	}
+	_, payload := readReply(t, conn)
+	h := binary.LittleEndian.Uint32(payload[1:5])
+	if err := WritePacket(conn, CmdStopService, append(EncodeHandle(h), 0)); err != nil {
+		t.Fatal(err)
+	}
+	readReply(t, conn)
+	if server.services.OperatorStopRequested() {
+		t.Fatal("stopping a service that was already down counted as a stop on request")
+	}
+}

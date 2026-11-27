@@ -168,9 +168,20 @@ func TestReserveCutLowersGOMAXPROCSGradually(t *testing.T) {
 // --sys naming a container runtime marks a container even without -o or
 // the runtime's own marks (the holistic review's F4).
 func TestLooksLikeContainerHonoursSys(t *testing.T) {
-	for _, s := range []string{"docker", "lxc", "podman"} {
+	for _, s := range []string{"docker", "lxc", "podman", "Docker", "systemd-nspawn", "openvz", "vserver", "rkt"} {
 		if !looksLikeContainer(s) {
 			t.Errorf("--sys %s not taken for a container", s)
+		}
+	}
+}
+
+func TestLooksLikeContainerNotForVMs(t *testing.T) {
+	t.Setenv("container", "")
+	for _, s := range []string{"wsl", "xen0", "xenu", "none"} {
+		if looksLikeContainer(s) && os.Getenv("container") == "" {
+			if _, err := os.Stat("/.dockerenv"); err != nil {
+				t.Errorf("--sys %s taken for a container", s)
+			}
 		}
 	}
 }

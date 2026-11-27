@@ -964,7 +964,9 @@ func (c *Connection) handleStopService(payload []byte) error {
 		// otherwise the stop is one an operator asked for.
 		if flags&StopFlagRestarting != 0 && !restart {
 			c.holdRestart()
-		} else if !restart {
+		} else if !restart && c.server.services.RestartPending(svc) {
+			// Only a stop that drops something counts: one of a
+			// service that is simply down changes nothing.
 			c.server.services.MarkOperatorStop()
 		}
 		// Drop its activation anyway, as dinit's stop always does: a

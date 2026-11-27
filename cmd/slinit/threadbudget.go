@@ -286,13 +286,13 @@ func statusUIDThreads(status string) (uid, threads int, ok bool) {
 // looksLikeContainer reports the marks container runtimes leave for the
 // processes they start: the container environment variable (systemd's
 // convention, set by podman, LXC, systemd-nspawn) and Docker's and
-// podman's marker files, and a --sys naming a container runtime. PID 1
+// podman's marker files, and a --sys naming a container platform. PID 1
 // of a container started without -o is
 // then not taken for PID 1 of a machine, whose unreadable task limits
 // mean none.
 func looksLikeContainer(sysOverride string) bool {
-	switch sysOverride {
-	case "docker", "lxc", "podman":
+	switch strings.ToLower(sysOverride) {
+	case "docker", "podman", "lxc", "systemd-nspawn", "openvz", "vserver", "rkt":
 		return true
 	}
 	if os.Getenv("container") != "" {
