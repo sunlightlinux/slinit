@@ -28,7 +28,7 @@ is `busybox:1.37-musl` plus statically built `slinit`, `slinitctl` and
 the working tree on every run unless `KEEP_IMAGE=1`.
 
 `CONTAINER_RUNTIME=podman` selects Podman, and both runtimes are
-exercised: 24/24 under Docker (2026-11-27), 22/23 under rootless Podman 6.0 (before case 24 existed), where
+exercised: 25/25 under Docker (2026-11-27), 22/23 under rootless Podman 6.0 (before cases 24-25 existed), where
 `17-memory-limit` skips itself. Rootless is the more searching of the two,
 because the container's root is a mapped uid with no real CAP_SYS_ADMIN.
 
@@ -72,6 +72,7 @@ against the same PID 1 contract these cases pin.
 | 22-shutdown-haste | the four degrees of shutdown haste (plain, `now`, `--fast`, `--superfast`) against a service that ignores SIGTERM |
 | 23-metrics | the Prometheus endpoint scraped from outside the container; a service's restart counter moves after it is killed and does not reset |
 | 24-machine-id-variants | an empty, an `uninitialized` and a malformed `/etc/machine-id`: the container boots and survives service events; the first two do not even warn (v4.0.3 died at start, exit 111, on all three) |
+| 25-pid1-argv | slinit's own argv as PID 1: `--syslog-socket=` (empty) switches /dev/log off while the default serves it, and `-t NAME` picks the boot service (guards 67bb49c: without it the empty value was ignored) |
 
 `soak.sh` runs the lifecycle over and over against a tree with a
 worker, an orphan generator and a SIGTERM-ignoring service. It rotates
