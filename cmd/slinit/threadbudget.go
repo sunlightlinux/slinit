@@ -20,7 +20,9 @@ import (
 //
 // So the reserve takes at most a quarter of the tasks the pids cgroup
 // still allows (cgroup v2, or the v1 pids controller of a v1 or hybrid
-// host) and an eighth of RLIMIT_NPROC when that binds. When it is cut
+// host) and a quarter of what RLIMIT_NPROC leaves the uid when that
+// binds (an eighth of the limit if the uid's tasks cannot be counted).
+// When it is cut
 // that far, GOMAXPROCS is lowered with it, to half the reserve: the
 // runtime wants a thread per P running at once (GC workers, a burst of
 // work), and Ps it cannot back with reserved threads would bring the
@@ -42,16 +44,22 @@ func sizeThreadReserve(procs int, machinePID1 bool) (reserve, newProcs int) {
 	want := procs + threadReserveExtra
 	pidsMax, pidsCur, pidsOK, pidsSeen := pidsCgroupLimit()
 	nproc, nprocOK := nprocLimit()
+	var used uint64
+	usedOK := false
+	if nprocOK {
+		used, usedOK = uidTasks(os.Getuid())
+	}
 	known := machinePID1 || pidsSeen || nprocOK
-	return capThreadReserve(want, procs, known, pidsMax, pidsCur, pidsOK, nproc, nprocOK)
+	return capThreadReserve(want, procs, known, pidsMax, pidsCur, pidsOK, nproc, nprocOK, used, usedOK)
 }
 
 // capThreadReserve is sizeThreadReserve's arithmetic. pidsMax/pidsCur are
 // the pids cgroup limit with the least room left and its current count;
-// nproc is RLIMIT_NPROC when it binds this process. known says whether
+// nproc is RLIMIT_NPROC when it binds this process, used the tasks the
+// uid already has (when they could be counted). known says whether
 // anything tells how many tasks there are: PID 1 of a machine, a pids
 // cgroup that could be read (if only to say "max"), a finite RLIMIT_NPROC.
-func capThreadReserve(want, procs int, known bool, pidsMax, pidsCur int64, pidsOK bool, nproc uint64, nprocOK bool) (reserve, newProcs int) {
+func capThreadReserve(want, procs int, known bool, pidsMax, pidsCur int64, pidsOK bool, nproc uint64, nprocOK bool, used uint64, usedOK bool) (reserve, newProcs int) {
 	reserve = want
 	if pidsOK {
 		free := pidsMax - pidsCur
@@ -63,7 +71,17 @@ func capThreadReserve(want, procs int, known bool, pidsMax, pidsCur int64, pidsO
 		}
 	}
 	if nprocOK {
-		if c := nproc / 8; c < uint64(reserve) {
+		// RLIMIT_NPROC counts every task of the uid, not this process's:
+		// a quarter of what the uid has left, as for the pids cgroup, or
+		// an eighth of the limit when the tasks could not be counted.
+		c := nproc / 8
+		if usedOK {
+			c = 0
+			if used < nproc {
+				c = (nproc - used) / 4
+			}
+		}
+		if c < uint64(reserve) {
 			reserve = int(c)
 		}
 	}
@@ -190,4 +208,54 @@ func identityUIDMap() bool {
 		return true
 	}
 	return strings.Join(strings.Fields(string(b)), " ") == "0 0 4294967295"
+}
+
+// uidTasks counts the tasks (threads) of the processes whose real uid is
+// uid, which is what RLIMIT_NPROC is checked against. ok is false when
+// /proc cannot be read.
+func uidTasks(uid int) (n uint64, ok bool) {
+	ents, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0, false
+	}
+	for _, e := range ents {
+		if c := e.Name()[0]; c < '0' || c > '9' {
+			continue
+		}
+		b, err := os.ReadFile("/proc/" + e.Name() + "/status")
+		if err != nil {
+			continue // gone meanwhile
+		}
+		if u, t, ok := statusUIDThreads(string(b)); ok && u == uid {
+			n += uint64(t)
+		}
+	}
+	return n, true
+}
+
+// statusUIDThreads reads the real uid and the thread count from a
+// /proc/PID/status text.
+func statusUIDThreads(status string) (uid, threads int, ok bool) {
+	var haveU, haveT bool
+	for _, l := range strings.Split(status, "\n") {
+		k, v, found := strings.Cut(l, ":")
+		if !found {
+			continue
+		}
+		f := strings.Fields(v)
+		if len(f) == 0 {
+			continue
+		}
+		switch k {
+		case "Uid":
+			if n, err := strconv.Atoi(f[0]); err == nil {
+				uid, haveU = n, true
+			}
+		case "Threads":
+			if n, err := strconv.Atoi(f[0]); err == nil {
+				threads, haveT = n, true
+			}
+		}
+	}
+	return uid, threads, haveU && haveT
 }

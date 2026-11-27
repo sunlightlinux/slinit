@@ -23,20 +23,25 @@ func TestCapThreadReserve(t *testing.T) {
 		pidsOK           bool
 		nproc            uint64
 		nprocOK          bool
+		used             uint64 // tasks the uid already has
+		usedOK           bool
 		reserve, procs   int
 	}{
-		{"PID 1 of a machine, no limits readable", want, true, 0, 0, false, 0, false, want, procs},
-		{"container, nothing readable", want, false, 0, 0, false, 0, false, threadReserveUnknown, threadReserveUnknown / 2},
-		{"roomy pids cgroup", want, true, 4096, 10, true, 0, false, want, procs},
-		{"docker --pids-limit 25", want, true, 25, 6, true, 0, false, 4, 2},
-		{"pids cgroup already full", want, true, 25, 25, true, 0, false, 0, 1},
-		{"pids cgroup over its max", want, true, 25, 30, true, 0, false, 0, 1},
-		{"tight RLIMIT_NPROC", want, true, 0, 0, false, 100, true, 12, 6},
-		{"roomy RLIMIT_NPROC (overnight harness)", want, true, 0, 0, false, 1260, true, want, procs},
-		{"pids.max reads max (user session, no limit)", want, true, 0, 0, false, 0, false, want, procs},
-		{"64-CPU host, the tighter of the two limits", 80, true, 1000, 0, true, 400, true, 50, procs},
+		{"PID 1 of a machine, no limits readable", want, true, 0, 0, false, 0, false, 0, false, want, procs},
+		{"container, nothing readable", want, false, 0, 0, false, 0, false, 0, false, threadReserveUnknown, threadReserveUnknown / 2},
+		{"roomy pids cgroup", want, true, 4096, 10, true, 0, false, 0, false, want, procs},
+		{"docker --pids-limit 25", want, true, 25, 6, true, 0, false, 0, false, 4, 2},
+		{"pids cgroup already full", want, true, 25, 25, true, 0, false, 0, false, 0, 1},
+		{"pids cgroup over its max", want, true, 25, 30, true, 0, false, 0, false, 0, 1},
+		{"tight RLIMIT_NPROC, tasks not counted", want, true, 0, 0, false, 100, true, 0, false, 12, 6},
+		{"tight RLIMIT_NPROC, 20 tasks used", want, true, 0, 0, false, 100, true, 20, true, 20, 10},
+		{"roomy RLIMIT_NPROC (overnight harness)", want, true, 0, 0, false, 1260, true, 460, true, want, procs},
+		{"RLIMIT_NPROC nearly used up by the uid", want, true, 0, 0, false, 4096, true, 4000, true, 24, 12},
+		{"RLIMIT_NPROC already exceeded by the uid", want, true, 0, 0, false, 100, true, 150, true, 0, 1},
+		{"pids.max reads max (user session, no limit)", want, true, 0, 0, false, 0, false, 0, false, want, procs},
+		{"64-CPU host, the tighter of the two limits", 80, true, 1000, 0, true, 400, true, 0, false, 50, procs},
 	} {
-		r, p := capThreadReserve(c.want, procs, c.known, c.pidsMax, c.pidsCur, c.pidsOK, c.nproc, c.nprocOK)
+		r, p := capThreadReserve(c.want, procs, c.known, c.pidsMax, c.pidsCur, c.pidsOK, c.nproc, c.nprocOK, c.used, c.usedOK)
 		if r != c.reserve || p != c.procs {
 			t.Errorf("%s: reserve %d GOMAXPROCS %d, want %d and %d", c.name, r, p, c.reserve, c.procs)
 		}
@@ -120,4 +125,22 @@ func TestPidsLimitFrom(t *testing.T) {
 			t.Fatalf("ok %v seen %v with no cgroup mount", ok, seen)
 		}
 	})
+}
+
+func TestStatusUIDThreads(t *testing.T) {
+	st := "Name:\tslinit\nUmask:\t0022\nState:\tS (sleeping)\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nThreads:\t7\n"
+	if u, n, ok := statusUIDThreads(st); !ok || u != 1000 || n != 7 {
+		t.Fatalf("got uid %d threads %d ok %v", u, n, ok)
+	}
+	if _, _, ok := statusUIDThreads("Name:\tx\nUid:\t0\t0\t0\t0\n"); ok {
+		t.Fatal("ok without a Threads line")
+	}
+}
+
+// uidTasks finds at least this process's own threads.
+func TestUIDTasksCountsThisProcess(t *testing.T) {
+	n, ok := uidTasks(os.Getuid())
+	if !ok || n < 1 {
+		t.Fatalf("uidTasks = %d, %v", n, ok)
+	}
 }

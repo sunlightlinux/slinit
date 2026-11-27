@@ -669,9 +669,10 @@ kernel panic for PID 1 — so slinit creates the threads it will need
 later at start-up and keeps them idle: GOMAXPROCS + 16, but at most a
 quarter of the tasks its pids cgroup still allows (*pids.max* minus
 *pids.current*, the tightest from its own cgroup up to the root, on
-cgroup v2 or through the v1 *pids* controller) and an eighth of
-**RLIMIT_NPROC** when that limit applies (it does not to root of the
-initial user namespace; it does to root in a rootless container). When
+cgroup v2 or through the v1 *pids* controller) and a quarter of what
+**RLIMIT_NPROC** leaves the user, whose every task it counts, when
+that limit applies (it does not to root of the initial user namespace;
+it does to root in a rootless container). When
 the reserve is cut that far, GOMAXPROCS is lowered to half of it, so the
 runtime never wants more threads at once than it holds. When no limit
 can be read at all and slinit is not PID 1 of a machine (a container
