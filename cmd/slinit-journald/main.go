@@ -542,7 +542,11 @@ Flags:
 	// via slinit-journalctl (no --file). Accepting the tradeoff over
 	// the more elaborate seq-based dedup design.
 	if *controlSock != "" && !*dryRun {
-		if n, err := replayBacklog(*controlSock, sink); err != nil {
+		var skip func(*journal.Event) bool
+		if guarded != nil {
+			skip = replaySkip(guarded.markerPath, guarded.currentDir, guarded.format)
+		}
+		if n, err := replayBacklog(*controlSock, sink, skip); err != nil {
 			fmt.Fprintf(os.Stderr,
 				"slinit-journald: WARN backlog replay from %s failed (%v) — pre-daemon events not persisted\n",
 				*controlSock, err)
@@ -752,7 +756,7 @@ func adminSenderAllowed(uid uint32) bool {
 	return uid == 0 || uid == uint32(os.Geteuid())
 }
 
-func replayBacklog(sockPath string, sink journald.Sink) (int, error) {
+func replayBacklog(sockPath string, sink journald.Sink, skip func(*journal.Event) bool) (int, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		return 0, fmt.Errorf("dial %s: %w", sockPath, err)
@@ -778,6 +782,9 @@ func replayBacklog(sockPath string, sink journald.Sink) (int, error) {
 			evt, err := journal.UnmarshalEvent(body)
 			if err != nil {
 				continue // one bad entry doesn't sink the whole replay
+			}
+			if skip != nil && skip(evt) {
+				continue // persisted by an earlier run of this daemon
 			}
 			if err := sink.Handle(evt); err != nil {
 				continue
@@ -814,5 +821,36 @@ func byteSize(n int64) string {
 		return fmt.Sprintf("%dKiB", n/KiB)
 	default:
 		return fmt.Sprintf("%dB", n)
+	}
+}
+
+// replaySkip returns the filter that keeps a restarted daemon from writing
+// PID 1's backlog a second time, or nil when nothing says what an earlier
+// run already persisted.
+//
+// The backlog is PID 1's whole event ring, and every start replayed all
+// of it: a clean restart doubled the journal (442 entries became 884, the
+// same events with new sequence numbers), and a daemon that crashes and
+// is restarted added up to 4096 duplicates each time. The persisted
+// marker (journald.PersistedMarker, written after every fsync and on
+// Close) names the boot and monotonic time of the last event an earlier
+// run made durable, in which directory and format. When it describes the
+// journal this run writes to, events of that boot strictly older than it
+// are already on disk and are skipped. An event at exactly the marker's
+// time is replayed: several can share one (a burst of kernel lines), and
+// a duplicate is better than a lost event. Events after the last fsync of
+// a daemon that died are replayed too, as they may not have reached the
+// disk. Senders cannot move the marker: the receiver restamps the
+// monotonic time of every unprivileged event.
+func replaySkip(markerPath, dir, format string) func(*journal.Event) bool {
+	if markerPath == "" {
+		return nil
+	}
+	m, err := journald.ReadPersistedMarker(markerPath)
+	if err != nil || m.BootID == "" || m.Dir != dir || m.Format != format {
+		return nil
+	}
+	return func(evt *journal.Event) bool {
+		return evt.BootID == m.BootID && evt.Mts < m.Mts
 	}
 }

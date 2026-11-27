@@ -26,6 +26,20 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **Restarting slinit-journald no longer writes PID 1's backlog
+  again.** At every start the daemon replays PID 1's event ring so that
+  events from before it listened are persisted, and it replayed all of
+  it: a clean restart doubled the journal (442 entries became 884, the
+  same events with new sequence numbers), and a daemon restarted after a
+  crash added up to 4096 duplicates each time. The binary journal is
+  now read first, and the backlog events of this boot already in it
+  (same time to the microsecond, priority, pid, unit, message and
+  sender fields) are skipped; any other is replayed, so an event that
+  never reached the journal (lost while the daemon was down or
+  starting) still is. A journal that
+  cannot be read, and the jsonl format, replay the whole backlog as
+  before.
+
 - **4.0.4 died at start in a container with a small pids limit.** The
   thread reserve that 4.0.4 makes at start-up (GOMAXPROCS+16 threads,
   28 on 12 CPUs, 80 on 64) was sized by the host's CPUs alone: under

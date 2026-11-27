@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (330 cases)
+# Run all tests (331 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -457,6 +457,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 325 | journald-dirty-file-rotated | a binary `slinit-journald` killed with SIGKILL and restarted sets the file left online aside and starts a new one; the directory still reads |
 | 326 | stop-pin-spares-reached-milestone | a stop pin refusing a stopping service's restart fails the dependent waiting on it, but spares a `depends-ms` dependent already past its milestone, which goes on to STARTED (v4.0.3 fails on the first, c83cad8; without 5afa5d2 on the second) |
 | 327 | user-instance-low-nproc | a `slinit --user` run as nobody under `ulimit -u 20` starts, runs its service and answers (without 0f1c71d the thread reserve alone exceeded the limit and it died at start) |
+| 328 | journald-restart-no-duplicates | a binary slinit-journald restarted cleanly, then after SIGKILL, does not write PID 1's backlog again (v4.0.3: 442 entries became 884, then 1326); and on PID 1's own events socket, through a racing restart and a clean one, every event of PID 1's ring ends up in the journal (a high-water-mark filter lost 6) |
 | 329 | more-fifos-do-not-freeze-pid1 | a FIFO as lock-file, condition-file-value source, load-credential source and as the service description itself: PID 1 keeps answering after each (v4.0.3 stopped answering) |
 | 330 | prepared-by-reruns-on-restart | prep (scripted, `prepared-by` of app) runs before each of app's runs: the first, an automatic restart after a crash, and a `slinitctl restart` (with the prepared-by restart taken out of Stopped() the log reads prep app app) |
 | 331 | start-delay-and-hook-timeout | a `start-delay = 4` service waits in STARTING while another starts at once, then starts after the delay; a 3 s pre-start-command fails the start with `hook-timeout = 1` (within 2 s) and is let finish with 10 (fails with either setter made a no-op) |
