@@ -142,6 +142,11 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **An empty or `uninitialized` `/etc/machine-id` is treated like a
+  missing one**, as systemd treats it: such a file (how images ship one
+  to be filled on first boot) was reported as malformed, which brought
+  the transient-ID warning back on every container start.
+
 - **A milestone dependent already past its milestone was failed with
   its start still running** (unreleased): the fix that fails the
   dependents of a stop-pinned service also failed a dependent whose

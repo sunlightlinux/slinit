@@ -76,3 +76,30 @@ func TestInitIDsMalformedMachineIDStillInitialises(t *testing.T) {
 		}
 	}()
 }
+
+// An empty /etc/machine-id, or one holding "uninitialized", is how
+// images ship one to be filled on first boot; systemd treats both as a
+// missing file. Reported as malformed, they brought back the warning a
+// container is meant to be spared on every start.
+func TestUnsetMachineIDIsLikeMissing(t *testing.T) {
+	var buf bytes.Buffer
+	oldOut, oldOn, oldPath := warnOut, transientIDWarning, MachineIDPath
+	t.Cleanup(func() {
+		warnOut, transientIDWarning, MachineIDPath = oldOut, oldOn, oldPath
+	})
+	warnOut = &buf
+	SetTransientIDWarning(false)
+	MachineIDPath = filepath.Join(t.TempDir(), "machine-id")
+	for _, content := range []string{"", "\n", "uninitialized\n"} {
+		if err := os.WriteFile(MachineIDPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		id, err := resolveMachineID()
+		if err != nil || !isValidID(id) {
+			t.Errorf("machine-id %q: %q, %v; want a transient ID and no error", content, id, err)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Errorf("warned with warnings silenced: %q", buf.String())
+	}
+}

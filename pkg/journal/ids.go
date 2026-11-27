@@ -207,7 +207,7 @@ func resolveBootID() (string, error) {
 func resolveMachineID() (string, error) {
 	if existing, err := readIDFile(MachineIDPath); err == nil {
 		return existing, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	} else if !errors.Is(err, fs.ErrNotExist) && !machineIDUnset(MachineIDPath) {
 		return "", fmt.Errorf("read %s: %w", MachineIDPath, err)
 	}
 
@@ -218,6 +218,18 @@ func resolveMachineID() (string, error) {
 			MachineIDPath)
 	}
 	return newRandomID()
+}
+
+// machineIDUnset reports whether the machine-id file is empty or holds
+// "uninitialized": how an image ships one meant to be filled on first
+// boot. systemd treats both as a missing file.
+func machineIDUnset(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	t := strings.TrimSpace(string(b))
+	return t == "" || t == "uninitialized"
 }
 
 // readIDFile parses a 32-hex-char ID file (systemd machine-id format).
