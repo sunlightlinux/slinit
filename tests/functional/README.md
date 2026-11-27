@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (329 cases)
+# Run all tests (330 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -460,6 +460,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 329 | more-fifos-do-not-freeze-pid1 | a FIFO as lock-file, condition-file-value source, load-credential source and as the service description itself: PID 1 keeps answering after each (v4.0.3 stopped answering) |
 | 330 | prepared-by-reruns-on-restart | prep (scripted, `prepared-by` of app) runs before each of app's runs: the first, an automatic restart after a crash, and a `slinitctl restart` (with the prepared-by restart taken out of Stopped() the log reads prep app app) |
 | 331 | start-delay-and-hook-timeout | a `start-delay = 4` service waits in STARTING while another starts at once, then starts after the delay; a 3 s pre-start-command fails the start with `hook-timeout = 1` (within 2 s) and is let finish with 10 (fails with either setter made a no-op) |
+| 332 | condition-service-started | with the named service down, a `condition-service-started` service is skipped (its command never runs) and an `assert-service-started` one fails, and neither starts it; with it up both run (fails with the check made always true) |
 
 ## How It Works
 
