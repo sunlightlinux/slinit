@@ -181,8 +181,10 @@ since slinit has no such services (and **sysroot.mount** is no
 dependency of any kind does not exist, so each name written must exist
 as a slinit service (or a unit slinit can load) on the target system.
 A unit loaded directly is more forgiving, as systemd is: see
-**slinit**(8). **PartOf** becomes **part-of** (a target in it is
-dropped). **Upholds**, **PropagatesReloadTo**,
+**slinit**(8). **PartOf** becomes **part-of**, **Conflicts**
+**conflicts** and **OnFailure** **on-failure** (a target in any of
+them is dropped; **OnFailure=emergency.target** is a
+**failure-action**'s job). **Upholds**, **PropagatesReloadTo**,
 **PropagatesStopTo**, **JoinsNamespaceOf**, **RequiresMountsFor** and
 **OnSuccess** have no slinit equivalent and are reported with what to
 use instead; **WantedBy** / **RequiredBy** produce a note suggesting

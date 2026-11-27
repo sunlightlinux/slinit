@@ -269,7 +269,11 @@ type ServiceRecord struct {
 	// services part of this one.
 	partOfGen            uint64
 	partOfRestartOnStart bool
-	inPartOfWave         bool // this restart came from a part-of wave (partOfGen)
+	// conflicts and onFailure name services by name, as partOf does:
+	// see conflicts.go and onfailure.go.
+	conflicts    []string
+	onFailure    []string
+	inPartOfWave bool // this restart came from a part-of wave (partOfGen)
 
 	// Service alias (alternative name for lookup)
 	provides string
@@ -1180,6 +1184,24 @@ func (sr *ServiceRecord) chooseStoppedAction(willRestart bool) SystemAction {
 	if willRestart || sr.services.IsShuttingDown() {
 		return ActionNone
 	}
+	switch sr.stoppedAs() {
+	case endFailed:
+		return sr.failureAction
+	case endClean:
+		return sr.successAction
+	}
+	return ActionNone
+}
+
+// How a stop that does not restart ended, for failure-action /
+// success-action and on-failure.
+const (
+	endOther = iota
+	endFailed
+	endClean
+)
+
+func (sr *ServiceRecord) stoppedAs() int {
 	// Failure path: start never succeeded, or post-start failure
 	// surfaced (signal/non-zero exit/timeout) — anything other than a
 	// clean operator-issued stop or a clean post-run finish.
@@ -1192,7 +1214,7 @@ func (sr *ServiceRecord) chooseStoppedAction(willRestart bool) SystemAction {
 		sr.stopReason == ReasonTimedOut ||
 		(sr.stopReason == ReasonTerminated && sr.processEndIsFailure(exitStatus, !cleanFinish)) ||
 		(sr.stopReason == ReasonDepFailed && sr.failureConditions.Dependency) {
-		return sr.failureAction
+		return endFailed
 	}
 	// failure-conditions = none can leave a non-clean end that is
 	// neither: it is not a failure, and it is not a success either.
@@ -1200,9 +1222,9 @@ func (sr *ServiceRecord) chooseStoppedAction(willRestart bool) SystemAction {
 	// with a clean exit. Operator-issued stops (ReasonNormal without a
 	// terminated process) do not count.
 	if cleanFinish {
-		return sr.successAction
+		return endClean
 	}
-	return ActionNone
+	return endOther
 }
 
 // processEndIsFailure applies failure-conditions to the end of a process
@@ -1581,9 +1603,16 @@ func (sr *ServiceRecord) IsNormalExit(es ExitStatus) bool {
 	}
 	return false
 }
-func (sr *ServiceRecord) SetChainTo(name string)             { sr.chainTo = name }
-func (sr *ServiceRecord) SetPartOf(names []string)           { sr.partOf = names }
-func (sr *ServiceRecord) PartOf() []string                   { return sr.partOf }
+func (sr *ServiceRecord) SetChainTo(name string)   { sr.chainTo = name }
+func (sr *ServiceRecord) SetPartOf(names []string) { sr.partOf = names }
+func (sr *ServiceRecord) PartOf() []string         { return sr.partOf }
+func (sr *ServiceRecord) SetConflicts(names []string) {
+	sr.conflicts = names
+	if len(names) > 0 {
+		sr.services.anyConflicts.Store(true)
+	}
+}
+func (sr *ServiceRecord) SetOnFailure(names []string)        { sr.onFailure = names }
 func (sr *ServiceRecord) SetServiceDscDir(dir string)        { sr.serviceDscDir = dir }
 func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)   { sr.termSignal = sig }
 func (sr *ServiceRecord) SetSendSIGHUP(v bool)               { sr.sendSIGHUP = v }
@@ -3392,6 +3421,9 @@ func (sr *ServiceRecord) doStart() {
 }
 
 func (sr *ServiceRecord) initiateStart() {
+	if len(sr.conflicts) > 0 || sr.services.anyConflicts.Load() {
+		sr.services.stopConflicting(sr.self)
+	}
 	wave := sr.inPartOfWave
 	sr.inPartOfWave = false
 	if sr.partOfRestartOnStart {
@@ -3913,6 +3945,9 @@ func (sr *ServiceRecord) Stopped() {
 	// applies and let main's shutdown initiator handle it. The hook is
 	// invoked AFTER state is STOPPED so a reboot-action service is
 	// reported as STOPPED to listeners that fire before the reboot.
+	if len(sr.onFailure) > 0 && !willRestart && !sr.services.IsShuttingDown() && sr.stoppedAs() == endFailed {
+		sr.services.startOnFailure(sr.self)
+	}
 	if action := sr.chooseStoppedAction(willRestart); action != ActionNone {
 		if cb := sr.services.OnSystemAction; cb != nil {
 			kind := "success"

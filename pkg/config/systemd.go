@@ -13,11 +13,12 @@
 // means — the worst possible outcome for a compatibility layer. It
 // also means the live path inherits every default Parse applies.
 //
-// Only .service is handled. Timer, socket, path, mount and target
-// units are systemd abstractions that land on different slinit
-// facilities (cron=, path activation directives, the boot graph),
-// and mechanical translation would produce something that looks
-// right and behaves wrong.
+// Only .service is handled. Timer, path, mount and target units are
+// systemd abstractions that land on different slinit facilities
+// (cron=, path activation directives, the boot graph), and mechanical
+// translation would produce something that looks right and behaves
+// wrong. A service's own socket unit is the exception: it is read with
+// the service and becomes its socket-listen (systemd_socket.go).
 package config
 
 import (
@@ -122,6 +123,8 @@ type SystemdConfig struct {
 	waitsFor    []string // waits-for: X
 	after       []string // after: X (ordering only)
 	partOf      []string // part-of: X
+	conflicts   []string // conflicts: X
+	onFailure   []string // on-failure: X
 	socketUnits []string // Sockets=: the socket units to read (systemd_socket.go)
 	before      []string // before: X (ordering only)
 	aliases     []string // [Install] Alias= .service names, bare
@@ -691,10 +694,22 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		cfg.waitsFor = append(cfg.waitsFor, deps...)
 		warns = append(warns, noteDroppedTargets(key, targets, self)...)
-	case "Conflicts":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Unit `Conflicts=%s` — slinit has no negative dep; managed via stop-command / start-limit-action", val)})
-	case "OnFailure":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Unit `OnFailure=%s` — map to slinit failure-action directive if the target is a system action", val)})
+	case "Conflicts", "OnFailure":
+		// conflicts: and on-failure:, by name like part-of: (a name that
+		// is not installed changes nothing, as in systemd). A target in
+		// them is dropped: slinit has no targets to stop or start
+		// (OnFailure=emergency.target is failure-action's job).
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
+		list := &cfg.conflicts
+		if key == "OnFailure" {
+			list = &cfg.onFailure
+		}
+		for _, d := range deps {
+			if !slices.Contains(*list, d) {
+				*list = append(*list, d)
+			}
+		}
+		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 	default:
 		if g, ok := sdUnitNoEquivalent[key]; ok {
 			warns = append(warns, gapWarning("Unit", key, val, g)...)
@@ -2043,6 +2058,12 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	}
 	for _, d := range c.partOf {
 		fmt.Fprintf(w, "part-of: %s\n", d)
+	}
+	for _, d := range c.conflicts {
+		fmt.Fprintf(w, "conflicts: %s\n", d)
+	}
+	for _, d := range c.onFailure {
+		fmt.Fprintf(w, "on-failure: %s\n", d)
 	}
 }
 

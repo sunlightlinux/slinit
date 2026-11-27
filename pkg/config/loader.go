@@ -2287,6 +2287,8 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetReloadSignal(desc.ReloadSignal)
 	rec.SetChainTo(desc.ChainTo)
 	rec.SetPartOf(desc.PartOf)
+	rec.SetConflicts(desc.Conflicts)
+	rec.SetOnFailure(desc.OnFailure)
 	if desc.SocketPath != "" {
 		rec.SetSocketDetails(desc.SocketPath, desc.SocketPerms, desc.SocketUID, desc.SocketGID)
 		rec.SetSocketPaths(desc.SocketPaths)

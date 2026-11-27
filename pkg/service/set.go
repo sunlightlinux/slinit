@@ -70,6 +70,10 @@ type ServiceSet struct {
 	stopsLastBlocker Service
 	// partOfGen numbers part-of restart waves (partof.go).
 	partOfGen uint64
+	// anyConflicts says some loaded service names others in conflicts,
+	// so a start has to look for services that conflict with it
+	// (conflicts.go); without any, the look is skipped.
+	anyConflicts atomic.Bool
 
 	// queueMu protects the processing queues, console queue, and
 	// activeServices counter, plus service-state fields mutated during

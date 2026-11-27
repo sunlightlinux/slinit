@@ -618,6 +618,25 @@ error. Repeat the line for several targets.
     across a reload of either. A loop of **part-of** restarts each
     service once.
 
+**conflicts**: *service* (since 4.1.0)
+:   Starting this service stops *service*, and starting *service* stops
+    this one: either side may name the other. It orders nothing; the
+    stop and the start run side by side, as in systemd. The stop is the
+    one **slinitctl stop** makes, so what depends on the stopped service
+    stops with it. If both are wanted at once, the one that starts last
+    stays up, with each stop logged and its reason: two services that
+    cannot run together should not both be dependencies of the boot.
+    systemd's **Conflicts=**; by name, like **part-of**.
+
+**on-failure**: *service* (since 4.1.0)
+:   Start *service* when this one ends failed with no restart to come:
+    its **restart** policy declined, or **restart-limit-count** ran out.
+    "Failed" is what **failure-action** reads as failed, so the two
+    always agree; a clean exit, a stop that was asked for and the stops
+    of a shutdown start nothing. systemd's **OnFailure=**; a template
+    instance such as *notify@web* works, as *notify@%n.service* does in
+    a unit.
+
 **chain-to**=*service*
 :   Start *service* when this one finishes. Three conditions, all
     required: this service **terminated on its own** rather than being

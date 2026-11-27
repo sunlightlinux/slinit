@@ -13,6 +13,7 @@ func TestSystemdDependencyMapping(t *testing.T) {
 		depends, waits           []string
 		after, before            []string
 		partOf                   []string
+		conflicts, onFailure     []string
 		asserts                  []string
 		stopWhenUnneeded         bool
 		noteContains, notWarnFor string
@@ -61,6 +62,18 @@ func TestSystemdDependencyMapping(t *testing.T) {
 			after: []string{"db"},
 		},
 		{
+			name:         "Conflicts= is conflicts, a target dropped",
+			unit:         "[Unit]\nConflicts=tlp.service shutdown.target\n",
+			conflicts:    []string{"tlp"},
+			noteContains: "shutdown.target",
+		},
+		{
+			name:         "OnFailure= is on-failure, emergency.target dropped",
+			unit:         "[Unit]\nOnFailure=notify@x.service emergency.target\n",
+			onFailure:    []string{"notify@x"},
+			noteContains: "emergency.target",
+		},
+		{
 			name:         "PartOf= is part-of, a target in it dropped",
 			unit:         "[Unit]\nPartOf=db.service graphical.target\nPartOf=db.service web.service\n",
 			partOf:       []string{"db", "web"},
@@ -99,6 +112,8 @@ func TestSystemdDependencyMapping(t *testing.T) {
 			eq("after", desc.After, tc.after)
 			eq("before", desc.Before, tc.before)
 			eq("part-of", desc.PartOf, tc.partOf)
+			eq("conflicts", desc.Conflicts, tc.conflicts)
+			eq("on-failure", desc.OnFailure, tc.onFailure)
 			var asserts []string
 			for _, p := range desc.Predicates {
 				if strings.Contains(p.String(), "service-started") {

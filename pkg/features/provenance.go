@@ -163,6 +163,8 @@ var provenanceTable = []Feature{
 	{Name: "depends-ms", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "milestone dep (start after but doesn't cause target start)"},
 	{Name: "before", Kind: KindDirective, Source: SourceSystemd, Category: CatDependency, Notes: "systemd After= / Before= ordering (no activation)"},
 	{Name: "after", Kind: KindDirective, Source: SourceSystemd, Category: CatDependency},
+	{Name: "conflicts", Kind: KindDirective, Source: SourceSystemd, Category: CatDependency, Notes: "starting either of two services stops the other (Conflicts=)"},
+	{Name: "on-failure", Kind: KindDirective, Source: SourceSystemd, Category: CatDependency, Notes: "start services when this one ends failed, no restart to come (OnFailure=)"},
 	{Name: "part-of", Kind: KindDirective, Source: SourceSystemd, Category: CatDependency, Notes: "stopped and restarted with the named service, without depending on it (PartOf=)"},
 	{Name: "chain-to", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "start target after this service reaches STOPPED (oneshot chaining)"},
 	{Name: "consumer-of", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "auto-pipe stdout of another service to this one's stdin"},

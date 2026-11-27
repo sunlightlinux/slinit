@@ -36,23 +36,31 @@ func (ss *ServiceSet) partOfMembers(svc Service) []Service {
 // what depends on them, as systemd's stop job does.
 func (ss *ServiceSet) propagatePartOfStop(svc Service) {
 	for _, m := range ss.partOfMembers(svc) {
-		r := m.Record()
-		if r.desired.Load() == StateStopped {
-			continue // already on its way down: also ends a part-of loop
-		}
-		if r.state.Load() == StateStopped && !r.restartPending {
-			continue
-		}
-		ss.logger.Info("Service '%s': stopping, as it is part of '%s'", m.Name(), svc.Name())
-		r.desired.Store(StateStopped)
-		if r.startExplicit {
-			r.startExplicit = false
-			r.Release(true)
-		}
-		r.stopReason = ReasonNormal
-		r.propStop = true
-		ss.AddPropQueue(m)
+		ss.stopForAnother(m, "it is part of '"+svc.Name()+"'")
 	}
+}
+
+// stopForAnother stops m because of another service (part-of,
+// conflicts), as `slinitctl stop` would: its explicit activation goes
+// and what depends on it stops too. One already stopped or on its way
+// down is left alone, which also ends a loop. Caller holds queueMu.
+func (ss *ServiceSet) stopForAnother(m Service, why string) {
+	r := m.Record()
+	if r.desired.Load() == StateStopped {
+		return
+	}
+	if r.state.Load() == StateStopped && !r.restartPending {
+		return
+	}
+	ss.logger.Info("Service '%s': stopping, as %s", m.Name(), why)
+	r.desired.Store(StateStopped)
+	if r.startExplicit {
+		r.startExplicit = false
+		r.Release(true)
+	}
+	r.stopReason = ReasonNormal
+	r.propStop = true
+	ss.AddPropQueue(m)
 }
 
 // propagatePartOfRestart restarts the running services part of svc,

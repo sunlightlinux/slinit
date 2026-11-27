@@ -51,6 +51,16 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`conflicts: X`** and **`on-failure: X`**, systemd's `Conflicts=` and
+  `OnFailure=`. Starting a service stops what it conflicts with, either
+  side naming the other (tlp, tuned, auto-cpufreq and
+  power-profiles-daemon conflict this way), with no ordering implied,
+  as in systemd. A service that ends failed with no restart to come
+  (its restart policy declined or its limit ran out) starts its
+  on-failure services, by the same reading of "failed" as
+  failure-action. Both by name, like `part-of`; a unit's lines map onto
+  them, targets dropped. Before, both were a note in the conversion.
+
 - **A service's `.socket` unit is read with it.** Loading or converting
   `foo.service` reads `foo.socket` (or what `Sockets=` names, with its
   drop-ins): `ListenStream=`/`ListenDatagram=` become `socket-listen`,
