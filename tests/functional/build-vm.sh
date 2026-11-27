@@ -137,6 +137,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}
 # tests 202+ that exercise the systemd-journalctl parity surface and
 # runit/openrc/systemd migration paths.
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-supports" ./cmd/slinit-supports
+# slinit-notify: systemd-notify for shell scripts run as sd-notify services.
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-notify" ./cmd/slinit-notify
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-journalctl" ./cmd/slinit-journalctl
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-journald" ./cmd/slinit-journald
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-runit-convert" ./cmd/slinit-runit-convert
@@ -363,6 +365,7 @@ install -m 755 "${BUILD_DIR}/slinit-tmpfiles" "${ROOTFS_DIR}/usr/bin/slinit-tmpf
 install -m 755 "${BUILD_DIR}/slinit-sysusers" "${ROOTFS_DIR}/usr/bin/slinit-sysusers"
 install -m 755 "${BUILD_DIR}/slinit-cgtop" "${ROOTFS_DIR}/usr/bin/slinit-cgtop"
 install -m 755 "${BUILD_DIR}/slinit-supports" "${ROOTFS_DIR}/usr/bin/slinit-supports"
+install -m 755 "${BUILD_DIR}/slinit-notify" "${ROOTFS_DIR}/usr/bin/slinit-notify"
 install -m 755 "${BUILD_DIR}/slinit-journalctl" "${ROOTFS_DIR}/usr/bin/slinit-journalctl"
 install -m 755 "${BUILD_DIR}/slinit-journald" "${ROOTFS_DIR}/usr/bin/slinit-journald"
 install -m 755 "${BUILD_DIR}/slinit-runit-convert" "${ROOTFS_DIR}/usr/bin/slinit-runit-convert"

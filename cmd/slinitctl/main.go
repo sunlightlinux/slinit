@@ -361,6 +361,8 @@ doneFlags:
 		err = cmdSuspend(conn, cmdArgs)
 	case "edit":
 		err = cmdEdit(conn, cmdArgs)
+	case "cat":
+		err = cmdCat(conn, cmdArgs, os.Stdout)
 	case "trigger":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdTrigger(conn, name)
@@ -623,6 +625,8 @@ Commands:
   unload <service>         Unload a stopped service from memory
   boot-time                Show boot timing analysis
   catlog [--clear] <svc>   Show buffered service output
+  cat <svc>                Show the service's files: description, overrides,
+                           drop-ins, and what a systemd unit reads as
   setenv <svc> KEY=VALUE   Set environment variable for service
   unsetenv <svc> KEY       Remove environment variable
   getallenv <svc>          List all runtime environment variables
@@ -732,6 +736,7 @@ var commands = map[string]cmdArity{
 	"suspend": {max: 1, usage: "Error: usage: slinitctl suspend [--no-coordination] [STATE]",
 		flags: []string{"--no-coordination"}},
 	"edit":            {min: 1, max: 1, usage: "Error: usage: slinitctl edit NAME"},
+	"cat":             {min: 1, max: 1, usage: "Error: usage: slinitctl cat NAME"},
 	"signal":          {min: 2, max: -1, usage: "Usage: slinitctl signal [-l|--list] <signal> <service>"},
 	"catlog":          {min: 1, max: -1, usage: "Usage: slinitctl catlog [--clear] <service>", flags: []string{"--clear"}},
 	"setenv":          {min: 2, max: -1, usage: "Usage: slinitctl setenv <service> KEY=VALUE"},
@@ -3377,6 +3382,82 @@ func editDescriptionPath(conn net.Conn, name string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("edit: no description file for %s in %s", name, dir)
+}
+
+// cmdCat implements `slinitctl cat NAME`, as `systemctl cat`: the file
+// the daemon loaded the service from, then each file applied on top of
+// it, each under a "# path" header. For a systemd unit loaded directly,
+// those are its drop-ins, and the slinit description the unit reads as
+// comes last with the conversion's notes, which a live load only sends
+// to the log; for a slinit description, its sibling .override and its
+// overlay in the default conf.d directory.
+//
+// The drop-ins and the conversion are worked out here from the default
+// unit directories (and the unit's own), not asked of the daemon, so a
+// daemon started with other directories may apply a different set.
+func cmdCat(conn net.Conn, args []string, w io.Writer) error {
+	if len(args) != 1 {
+		return usagef("usage: slinitctl cat NAME")
+	}
+	name := args[0]
+	path, err := editDescriptionPath(conn, name)
+	if err != nil {
+		return errors.New(strings.Replace(err.Error(), "edit:", "cat:", 1))
+	}
+	show := func(p string) error {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("cat: %w", err)
+		}
+		fmt.Fprintf(w, "# %s\n%s", p, b)
+		if len(b) > 0 && b[len(b)-1] != '\n' {
+			fmt.Fprintln(w)
+		}
+		return nil
+	}
+	if err := show(path); err != nil {
+		return err
+	}
+	if !strings.HasSuffix(path, ".service") {
+		for _, p := range []string{path + ".override", filepath.Join("/etc/slinit.conf.d", name)} {
+			if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
+				fmt.Fprintln(w)
+				if err := show(p); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	dirs := config.DefaultSystemdDirs
+	if own := filepath.Dir(path); !slices.Contains(dirs, own) {
+		dirs = append([]string{own}, dirs...)
+	}
+	for _, p := range config.SystemdDropins(dirs, filepath.Base(path)) {
+		fmt.Fprintln(w)
+		if err := show(p); err != nil {
+			return err
+		}
+	}
+	cfg, warns, err := config.ConvertSystemdUnitIn(path, dirs)
+	fmt.Fprintln(w)
+	if err != nil {
+		fmt.Fprintf(w, "# slinit cannot load this unit: %v\n", err)
+		return nil
+	}
+	fmt.Fprintln(w, "# slinit reads it as:")
+	for _, n := range warns {
+		fmt.Fprintf(w, "# %s: %s\n", n.Level, n.Msg)
+	}
+	var buf bytes.Buffer
+	config.EmitSlinitFile(&buf, cfg)
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue // the converter's own header comments
+		}
+		fmt.Fprintln(w, line)
+	}
+	return nil
 }
 
 // cmdEdit implements `slinitctl edit NAME`: fetch the service's
@@ -6147,7 +6228,7 @@ const bashCompletion = `# Bash completion for slinitctl
 # Usage: eval "$(slinitctl completion bash)"
 
 _slinitctl_commands() {
-    echo "list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all start-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv reset-env setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
+    echo "list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all start-all reload-signal unload boot-time analyze catlog cat setenv unsetenv getallenv reset-env setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
 }
 
 _slinitctl_services() {
@@ -6186,7 +6267,7 @@ _slinitctl() {
     fi
 
     case "$cmd" in
-        start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|reload-signal|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv|status5|attach)
+        start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|reload-signal|unload|unpin|enable|disable|query-name|getallenv|catlog|cat|dependents|setenv|unsetenv|status5|attach)
             COMPREPLY=( $(compgen -W "$(_slinitctl_services)" -- "$cur") ) ;;
         shutdown)
             COMPREPLY=( $(compgen -W "halt poweroff reboot kexec softreboot" -- "$cur") ) ;;
@@ -6264,6 +6345,7 @@ _slinitctl() {
         'boot-time:Boot timing analysis'
         'analyze:Boot timing analysis'
         'catlog:Show service log buffer'
+        'cat:Show the service description, its drop-ins and overrides'
         'setenv:Set service env var'
         'unsetenv:Remove service env var'
         'getallenv:List service env vars'
@@ -6306,7 +6388,7 @@ _slinitctl() {
         command) _describe 'command' commands ;;
         args)
             case ${words[1]} in
-                start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|reload-signal|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv|status5|attach)
+                start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|reload-signal|unload|unpin|enable|disable|query-name|getallenv|catlog|cat|dependents|setenv|unsetenv|status5|attach)
                     _slinitctl_services ;;
                 shutdown) _describe 'type' '(halt poweroff reboot kexec softreboot)' ;;
                 signal) case $CURRENT in 2) _describe 'signal' '(SIGHUP SIGINT SIGQUIT SIGKILL SIGUSR1 SIGUSR2 SIGTERM)' ;; 3) _slinitctl_services ;; esac ;;
@@ -6327,7 +6409,7 @@ function __slinitctl_services
     slinitctl --system list 2>/dev/null | string replace -r '^\[.*\] ' '' | string replace -r ' \(.*' ''
 end
 
-set -l cmds list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all start-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv reset-env setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+set -l cmds list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all start-all reload-signal unload boot-time analyze catlog cat setenv unsetenv getallenv reset-env setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
 
 complete -c slinitctl -f
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s p -l socket-path -rF -d 'Socket path'
@@ -6340,11 +6422,11 @@ complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s q -l quiet -
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s h -l help -d 'Help'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -l version -d 'Version'
 
-for cmd in list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all start-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv reset-env setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+for cmd in list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all start-all reload-signal unload boot-time analyze catlog cat setenv unsetenv getallenv reset-env setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
     complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -a $cmd
 end
 
-for cmd in start stop wake release restart status is-started is-failed trigger untrigger pause continue cont once reload reload-signal unload unpin enable disable query-name getallenv reset-env catlog dependents setenv unsetenv status5 attach
+for cmd in start stop wake release restart status is-started is-failed trigger untrigger pause continue cont once reload reload-signal unload unpin enable disable query-name getallenv reset-env catlog cat dependents setenv unsetenv status5 attach
     complete -c slinitctl -n "__fish_seen_subcommand_from $cmd" -a '(__slinitctl_services)'
 end
 

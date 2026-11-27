@@ -118,3 +118,9 @@ func systemdDropins(unitDirs []string, unit string) []string {
 	}
 	return out
 }
+
+// SystemdDropins returns the drop-in files that apply to the unit file
+// named unit (NAME.service) in unitDirs, in the order they are applied.
+func SystemdDropins(unitDirs []string, unit string) []string {
+	return systemdDropins(unitDirs, unit)
+}

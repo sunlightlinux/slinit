@@ -1,0 +1,5 @@
+[Unit]
+Description=notify unit
+[Service]
+Type=notify
+ExecStart=/bin/sh -c "sleep 2; slinit-notify --ready; exec sleep 1000"

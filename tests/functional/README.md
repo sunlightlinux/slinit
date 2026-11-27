@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (331 cases)
+# Run all tests (332 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -462,6 +462,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 330 | prepared-by-reruns-on-restart | prep (scripted, `prepared-by` of app) runs before each of app's runs: the first, an automatic restart after a crash, and a `slinitctl restart` (with the prepared-by restart taken out of Stopped() the log reads prep app app) |
 | 331 | start-delay-and-hook-timeout | a `start-delay = 4` service waits in STARTING while another starts at once, then starts after the delay; a 3 s pre-start-command fails the start with `hook-timeout = 1` (within 2 s) and is let finish with 10 (fails with either setter made a no-op) |
 | 332 | condition-service-started | with the named service down, a `condition-service-started` service is skipped (its command never runs) and an `assert-service-started` one fails, and neither starts it; with it up both run (fails with the check made always true) |
+| 333 | sd-notify-readiness | `ready-notification = sd-notify`: a service stays STARTING through an early `WATCHDOG=1` and is STARTED on `READY=1` sent with `slinit-notify`; a systemd `Type=notify` unit loaded directly does the same (fails with the notify dispatch removed) |
 
 ## How It Works
 

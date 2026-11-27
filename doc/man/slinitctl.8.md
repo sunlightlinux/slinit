@@ -788,6 +788,19 @@ service name or rejected.
     a non-zero editor exit aborts without touching the daemon.
     finit-parity (`initctl edit NAME`) polish.
 
+**cat** *NAME*
+:   Print the files the service was loaded from, each under a `# path`
+    header, as **systemctl cat** does (since 4.1.0): the description,
+    then what applies on top of it. For a slinit description, its
+    sibling *NAME*`.override` and */etc/slinit.conf.d/NAME*, when they
+    exist. For a systemd unit loaded directly, its drop-ins in the order
+    they are applied, then the slinit description the unit reads as,
+    with the conversion's notes and warnings as comments, which a live
+    load only writes to the log. The drop-ins and the translation are
+    worked out from the default unit directories and the unit's own;
+    the daemon searches only those that existed when it started, so a
+    drop-in directory created later can show here before it applies.
+
 **switch-root** *NEWROOT* [*INIT*]
 :   Transition from an initramfs to the real root filesystem.
     Only meaningful when slinit is running as PID 1 inside an

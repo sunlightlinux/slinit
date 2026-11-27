@@ -38,6 +38,12 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`slinitctl cat NAME`**, as `systemctl cat`: the service's
+  description and what applies on top of it (`.override`, the conf.d
+  overlay), and for a systemd unit loaded directly its drop-ins and the
+  slinit description it reads as, with the conversion's notes — which a
+  live load only writes to the log.
+
 - **sd_notify readiness: `ready-notification = sd-notify`.** The service
   is started when it sends `READY=1` on `$NOTIFY_SOCKET`, as a systemd
   `Type=notify` unit is; `WATCHDOG=1` feeds `watchdog-timeout`, which
