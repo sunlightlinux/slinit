@@ -3597,7 +3597,11 @@ func applyLogType(desc *ServiceDescription, value string) error {
 
 func applyOptions(desc *ServiceDescription, value string, append bool) error {
 	if !append {
+		// = replaces the flags options sets, not those of other
+		// settings: no-boot-marker before an options line was lost.
+		keep := desc.Flags.NoBootMarker
 		desc.Flags = service.ServiceFlags{}
+		desc.Flags.NoBootMarker = keep
 	}
 	for _, opt := range strings.Fields(value) {
 		switch opt {
