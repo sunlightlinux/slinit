@@ -139,3 +139,50 @@ func TestReplayWholeBacklogWhenDiskSaysNothing(t *testing.T) {
 		t.Errorf("no filter: replayed %d, want 2", len(sink.got))
 	}
 }
+
+// Two backlog events in the same microsecond, with the same unit and
+// message but from different streams, are different events: only the
+// one that reached the journal is skipped (the second review found the
+// first key, time/unit/message only, skipped the wrong one).
+func TestReplayKeyTellsStreamsApart(t *testing.T) {
+	dir := t.TempDir()
+	out := ev(100, "same line")
+	out.Prio = journal.PriorityInfo
+	out.Fields = map[string]string{"STREAM": "stdout"}
+	errl := ev(100, "same line")
+	errl.Prio = journal.PriorityWarning
+	errl.Fields = map[string]string{"STREAM": "stderr"}
+	writeJournal(t, dir, out)
+
+	var sink collectSink
+	if _, err := replayBacklog(fakeRing(t, []*journal.Event{errl, out}), &sink, dedupAgainstDisk(dir, testBoot)); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.got) != 1 || sink.got[0].Fields["STREAM"] != "stderr" {
+		var got []string
+		for _, e := range sink.got {
+			got = append(got, e.Fields["STREAM"])
+		}
+		t.Fatalf("replayed streams %q, want only the stderr line, which is not on disk", got)
+	}
+}
+
+// Files whose last entry is older than the whole backlog are not read,
+// newer ones are.
+func TestReplaySkipsOlderFiles(t *testing.T) {
+	dir := t.TempDir()
+	w, err := journalbin.NewWriter(filepath.Join(dir, "old.journal"), testBoot, testMach)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Append(ev(10, "long ago"))
+	w.Close()
+	writeJournal(t, dir, ev(100, "a"))
+	var sink collectSink
+	if _, err := replayBacklog(fakeRing(t, []*journal.Event{ev(100, "a"), ev(200, "b")}), &sink, dedupAgainstDisk(dir, testBoot)); err != nil {
+		t.Fatal(err)
+	}
+	if got := msgs(sink.got); !sameMsgs(got, []string{"b"}) {
+		t.Fatalf("replayed %q, want [b]", got)
+	}
+}

@@ -23,6 +23,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -858,11 +859,34 @@ func byteSize(n int64) string {
 // and says so: a duplicate is better than a lost event.
 func dedupAgainstDisk(dir, boot string) func([]*journal.Event) []*journal.Event {
 	type key struct {
-		ts, mts   int64
-		unit, msg string
+		ts, mts           int64
+		prio, pid         int
+		unit, msg, fields string
 	}
 	type when struct{ ts, mts int64 }
-	keyOf := func(e *journal.Event) key { return key{e.Ts / 1000, e.Mts / 1000, e.Unit, e.Msg} }
+	// The sender's own fields belong in the key (two lines in the same
+	// microsecond, one on stdout and one on stderr, differ only there);
+	// the "_" ones the journal adds on the way to disk (_SEQNUM) do not.
+	senderFields := func(e *journal.Event) string {
+		var ks []string
+		for k := range e.Fields {
+			if !strings.HasPrefix(k, "_") {
+				ks = append(ks, k)
+			}
+		}
+		sort.Strings(ks)
+		var b strings.Builder
+		for _, k := range ks {
+			b.WriteString(k)
+			b.WriteByte('=')
+			b.WriteString(e.Fields[k])
+			b.WriteByte(0)
+		}
+		return b.String()
+	}
+	keyOf := func(e *journal.Event) key {
+		return key{e.Ts / 1000, e.Mts / 1000, int(e.Prio), e.Pid, e.Unit, e.Msg, senderFields(e)}
+	}
 	return func(ring []*journal.Event) []*journal.Event {
 		if boot == "" {
 			return ring
@@ -871,13 +895,16 @@ func dedupAgainstDisk(dir, boot string) func([]*journal.Event) []*journal.Event 
 		// (cheap to read from an entry) and then by full key.
 		want := map[key]int{}
 		times := map[when]bool{}
-		minMts, ours := int64(0), 0
+		minMts, minTs, ours := int64(0), int64(0), 0
 		for _, e := range ring {
 			if e.BootID != boot {
 				continue
 			}
 			if ours == 0 || e.Mts < minMts {
 				minMts = e.Mts
+			}
+			if ours == 0 || e.Ts < minTs {
+				minTs = e.Ts
 			}
 			ours++
 			want[keyOf(e)]++
@@ -900,8 +927,18 @@ func dedupAgainstDisk(dir, boot string) func([]*journal.Event) []*journal.Event 
 		defer mr.Close()
 		have := map[key]int{}
 		found := 0
+		// Newest file first, and none whose last entry is older than the
+		// oldest backlog event: rotated files of earlier days would
+		// otherwise each be listed in full to read one entry.
+		readers := append([]*journalbin.Reader(nil), mr.Readers()...)
+		sort.Slice(readers, func(i, j int) bool {
+			return readers[i].Header().TailEntryRealtime > readers[j].Header().TailEntryRealtime
+		})
 	files:
-		for _, r := range mr.Readers() {
+		for _, r := range readers {
+			if int64(r.Header().TailEntryRealtime) < minTs/1000 {
+				break
+			}
 			offs, err := r.EntryOffsets()
 			if err != nil {
 				return giveUp(err)
