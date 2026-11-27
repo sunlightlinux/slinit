@@ -299,10 +299,18 @@ func (e *Emitter) publishToSocket(evt *Event) error {
 	if err != nil {
 		return err
 	}
-	// Marshal only once there is somewhere to send it.
-	data, err := evt.MarshalJSONL()
-	if err != nil {
-		return err
+	// Marshal only once there is somewhere to send it, into a pooled
+	// buffer: the write copies it into the socket.
+	bp := sendBufPool.Get().(*[]byte)
+	data := evt.appendJSON((*bp)[:0])
+	defer func() {
+		if cap(data) <= maxPooledSendBuf {
+			*bp = data[:0]
+			sendBufPool.Put(bp)
+		}
+	}()
+	if len(data) > MaxEventSize {
+		return ErrEventTooLarge
 	}
 
 	// One datagram per event. UDP-like semantics: the receiver either

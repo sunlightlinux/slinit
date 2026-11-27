@@ -651,6 +651,16 @@ verified with `git tag -v`.
 
 ### Changed
 
+- **Every event sent to slinit-journald went through `encoding/json`**:
+  PID 1 encoded each journal event (every state transition, every
+  captured service output line) by reflection, into a fresh buffer it
+  then copied. Events are now encoded by hand into a reused buffer; the
+  bytes on the wire are json.Marshal's, held to it by a differential
+  test and a fuzz target. Benchmark with a listener bound: 2.58 to 1.60
+  us per state event, 2.15 to 1.45 us per 100-byte output line, 13 to 4
+  allocations. `slinit-journalctl` queries answered from the ring use
+  the same encoder.
+
 - **A rotated or filtered logfile wrote each line with its own
   write(2)**: a service whose `logfile` goes through the log rotator
   (`log-max-size`, filters, rate limit, alert file...) cost PID 1 one

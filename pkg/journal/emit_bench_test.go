@@ -94,3 +94,41 @@ func BenchmarkConnectNoListener(b *testing.B) {
 		_, _ = e.connect()
 	}
 }
+
+// benchLogLineEvent is the shape of the event a captured service output
+// line emits (pkg/service emitJournalLogLinePID).
+func benchLogLineEvent(line []byte) *Event {
+	return &Event{
+		Unit:      "sshd",
+		Prio:      PriorityInfo,
+		Transport: TransportStdout,
+		Msg:       string(line),
+		Fields:    map[string]string{"SLINIT_TARGET_PID": "1234"},
+	}
+}
+
+// BenchmarkEmitLogLine measures one captured-output-line emit (100-byte
+// line), the path a chatty service's stdout takes through PID 1.
+func BenchmarkEmitLogLine(b *testing.B) {
+	if err := InitIDs("h"); err != nil {
+		b.Skip(err)
+	}
+	line := []byte("2026-11-27T01:02:03Z worker[42]: processed request id=1234567 status=200 bytes=5120 dur=3.2ms ok")
+	b.Run("nolistener", func(b *testing.B) {
+		e := NewEmitter(NewEventBuffer(4096), filepath.Join(b.TempDir(), "none.sock"))
+		b.SetBytes(int64(len(line)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = e.Emit(benchLogLineEvent(line))
+		}
+	})
+	b.Run("listener", func(b *testing.B) {
+		e := NewEmitter(NewEventBuffer(4096), benchListener(b))
+		defer e.Close()
+		b.SetBytes(int64(len(line)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = e.Emit(benchLogLineEvent(line))
+		}
+	})
+}
