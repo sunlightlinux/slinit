@@ -172,6 +172,14 @@ type ServiceRecord struct {
 	deptPinnedStarted bool
 	markedDown        bool // 'down' file exists — don't auto-start
 
+	// countedActive is whether this service is in the set's active
+	// count, so that it is counted once and taken off once. A start
+	// pin can let a service stop with a hard dependent still holding
+	// it (see Release): counted when it started, it was counted again
+	// when it started anew, and the release that came once it was
+	// STOPPED did not take it off at all.
+	countedActive bool
+
 	// depsStartedFrom is where checkDepsStarted resumes: every edge in
 	// dependsOn[:depsStartedFrom] has WaitingOn false. Anything that
 	// sets WaitingOn on one of our edges, or removes an edge, resets it
@@ -1318,7 +1326,9 @@ func (sr *ServiceRecord) CheckRequiredPaths() error {
 			return fmt.Errorf("required file %q is a directory", f)
 		}
 		// Readability check: open O_RDONLY and immediately close.
-		rf, err := os.Open(f)
+		// O_NONBLOCK so a FIFO does not block PID 1 in open(2)
+		// waiting for a writer.
+		rf, err := os.OpenFile(f, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			return fmt.Errorf("required file %q is not readable: %w", f, err)
 		}
@@ -2835,20 +2845,21 @@ func (sr *ServiceRecord) Unpin() {
 			return
 		}
 
-		for _, dep := range sr.dependsOn {
-			if dep.IsHard() {
-				toRec := dep.To.Record()
-				if toRec.deptPinnedStarted {
-					toRec.propPinDpt = true
-					sr.services.AddPropQueue(dep.To)
-				}
-			}
-		}
+		sr.unpinDependencies()
 
-		if sr.state.Load() == StateStarted {
+		// STARTING as well as STARTED (dinit acts on STARTED only): a
+		// stop or release put off by the pin while the service was
+		// still starting is owed just the same. Left to Started, it
+		// never came for a service that does not start on its own (a
+		// triggered service waiting for its trigger), and the
+		// shutdown, which unpins everything, waited out its timeout.
+		if st := sr.state.Load(); st == StateStarted || st == StateStarting {
 			if sr.requiredBy == 0 {
-				sr.propRelease = true
-				sr.services.AddPropQueue(sr.self)
+				sr.propRelease = !sr.propRequire
+				sr.propRequire = false
+				if sr.propRelease {
+					sr.services.AddPropQueue(sr.self)
+				}
 			}
 			if sr.desired.Load() == StateStopped || sr.forceStop {
 				sr.doStop(false)
@@ -2856,10 +2867,42 @@ func (sr *ServiceRecord) Unpin() {
 				// (e.g. StopAllServices calls processQueuesLocked,
 				// handleUnpinService calls ProcessQueues).
 			}
+		} else if st == StateStopped && sr.requiredBy == 0 && sr.countedActive && !sr.restartPending {
+			// Pinned while STOPPING (a `start --pin` that could not
+			// interrupt the stop), it stopped with the pin up: the
+			// release its activation made was put off by the pin, so
+			// it is still counted active, and may hold its
+			// dependencies. Settle it now.
+			for _, dep := range sr.dependsOn {
+				if dep.HoldingAcq {
+					sr.propRelease = true
+					sr.services.AddPropQueue(sr.self)
+					break
+				}
+			}
+			sr.countedActive = false
+			sr.services.ServiceInactive(sr.self)
 		}
 	}
 	if sr.pinnedStopped {
 		sr.pinnedStopped = false
+	}
+}
+
+// unpinDependencies has the dependencies this service's start pin
+// reached recompute theirs, once the pin is gone.
+func (sr *ServiceRecord) unpinDependencies() {
+	// A milestone counts although it may be soft by now: the pin
+	// reached its target while the edge was still hard, and the
+	// target must recompute it (see carriesPin).
+	for _, dep := range sr.dependsOn {
+		if dep.carriesPin() {
+			toRec := dep.To.Record()
+			if toRec.deptPinnedStarted {
+				toRec.propPinDpt = true
+				sr.services.AddPropQueue(dep.To)
+			}
+		}
 	}
 }
 
@@ -2914,7 +2957,17 @@ func (sr *ServiceRecord) Release(issueStop bool) {
 			// STOPPED because a restart-delay timer was going to bring
 			// it back, that restart is now pointless — call it off, so
 			// the active-service count it is still holding comes down.
-			sr.abandonPendingRestart()
+			if sr.restartPending {
+				sr.abandonPendingRestart()
+			} else if sr.countedActive {
+				// Stopped while still required: a start-pinned
+				// dependent STARTING but waiting for another
+				// dependency counts as stopped, and holds this one
+				// until its own stop releases it, here. Stopped kept
+				// the service counted for that holder.
+				sr.countedActive = false
+				sr.services.ServiceInactive(sr.self)
+			}
 		}
 	}
 }
@@ -2933,7 +2986,23 @@ func (sr *ServiceRecord) settleInactive() {
 		sr.startExplicit = false
 		sr.Release(false)
 	} else if sr.requiredBy == 0 {
-		sr.services.ServiceInactive(sr.self)
+		// Nothing requires it, so it must not hold its dependencies
+		// either. It could: a start pin puts off the release that the
+		// count reaching 0 propagates, and Unpin used to make up for
+		// it only on a STARTED service, so one unpinned while STARTING
+		// (the shutdown unpins everything) stopped once started and
+		// kept its dependencies up for good.
+		for _, dep := range sr.dependsOn {
+			if dep.HoldingAcq {
+				sr.propRelease = true
+				sr.services.AddPropQueue(sr.self)
+				break
+			}
+		}
+		if sr.countedActive {
+			sr.countedActive = false
+			sr.services.ServiceInactive(sr.self)
+		}
 	}
 }
 
@@ -2968,6 +3037,34 @@ func (sr *ServiceRecord) abandonPendingRestart() {
 	if sr.startExplicit {
 		sr.startExplicit = false
 		sr.requiredBy--
+	}
+	// Dependents that started while this service was stopping hold it
+	// too. Break the soft links, as Stopped() does for a service that is
+	// not restarting.
+	for _, dept := range sr.dependents {
+		if !dept.IsHard() {
+			if dept.WaitingOn {
+				dept.WaitingOn = false
+				dept.From.Record().dependencyStarted()
+			}
+			if dept.HoldingAcq {
+				dept.HoldingAcq = false
+				sr.Release(false)
+			}
+		}
+	}
+	if sr.requiredBy > 0 {
+		// A hard dependent still holds it: it stays counted active,
+		// still marked so, and the release that frees it settles it.
+		// Settled now, that release would find a STOPPED service with
+		// nothing pending, and the count would never come down.
+		sr.restartPending = true
+		// Tell that dependent, as doStop would (dinit stops the
+		// hard dependents here): left waiting for a restart that
+		// will not come, it stayed STARTING for good and never let
+		// go.
+		sr.stopDependents(false, false)
+		return
 	}
 	sr.settleInactive()
 }
@@ -3038,7 +3135,7 @@ func (sr *ServiceRecord) DoPropagation() {
 		if deptPin != sr.deptPinnedStarted {
 			sr.deptPinnedStarted = deptPin
 			for _, dep := range sr.dependsOn {
-				if dep.IsHard() {
+				if dep.carriesPin() {
 					toRec := dep.To.Record()
 					if toRec.deptPinnedStarted != deptPin {
 						toRec.propPinDpt = true
@@ -3048,7 +3145,9 @@ func (sr *ServiceRecord) DoPropagation() {
 			}
 
 			if !sr.deptPinnedStarted && !sr.pinnedStarted {
-				if (sr.desired.Load() == StateStopped || sr.forceStop) && sr.state.Load() == StateStarted {
+				// STARTING too, as in Unpin.
+				if st := sr.state.Load(); (sr.desired.Load() == StateStopped || sr.forceStop) &&
+					(st == StateStarted || st == StateStarting) {
 					sr.doStop(false)
 				}
 			}
@@ -3161,7 +3260,8 @@ func (sr *ServiceRecord) doStart() {
 			// restart rather than counting it twice: disarm the timer
 			// and fall through to initiateStart below.
 			sr.self.CancelPendingRestart()
-		} else {
+		} else if !sr.countedActive {
+			sr.countedActive = true
 			sr.services.ServiceActive(sr.self)
 		}
 		sr.propRequire = !sr.propRelease
@@ -3523,6 +3623,16 @@ func (sr *ServiceRecord) Stopped() {
 	sr.forceStop = false
 
 	willRestart := sr.desired.Load() == StateStarted && !sr.pinnedStopped
+	if sr.desired.Load() == StateStarted && sr.pinnedStopped {
+		// A dependent asked for a start while this service was
+		// stopping; the stop pin refuses it now, as doStart refuses one
+		// on a STOPPED service. Fail it: left alone, the dependents
+		// waited for good, and their hold kept this service counted
+		// active even once they let go of it, as a release reaching 0
+		// on a STOPPED service does not mark it inactive.
+		sr.desired.Store(StateStopped)
+		sr.cancelDependentsStart(true)
+	}
 	// restart-limit-count exhausted overrides willRestart: settle into
 	// the FAILED stable state instead of trying initiateStart again.
 	if sr.restartLimitExhausted {
@@ -3670,25 +3780,20 @@ func (sr *ServiceRecord) Stopped() {
 	sr.notifyListeners(EventStopped)
 }
 
-// failedToStart handles start failure.
-func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
-	// Release start limiter slot or cancel waiting
-	sr.dropStartSlot()
-
-	sr.desired.Store(StateStopped)
-
-	if sr.waitingForConsole {
-		sr.services.UnqueueConsole(sr.self)
-		sr.waitingForConsole = false
-	}
-
-	if sr.startExplicit {
-		sr.startExplicit = false
-		sr.Release(false)
-	}
-
-	// Cancel start of dependents
+// cancelDependentsStart fails the start of the hard dependents waiting
+// for this service, lets the soft ones go on without it, and releases
+// what every dependent holds on it.
+//
+// onlyWaiting skips a milestone dependent no longer waiting for this
+// service: Stopped() calls it for a service that had started, so such a
+// dependent's milestone was reached and its own start is under way.
+// failedToStart passes false: a service that never started has no
+// reached milestones, and dinit fails every STARTING milestone there.
+func (sr *ServiceRecord) cancelDependentsStart(onlyWaiting bool) {
 	for _, dept := range sr.dependents {
+		if onlyWaiting && dept.DepType == DepMilestone && !dept.WaitingOn {
+			continue
+		}
 		switch dept.DepType {
 		case DepRegular, DepPreparedBy, DepMilestone:
 			if dept.From.Record().state.Load() == StateStarting {
@@ -3707,6 +3812,26 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 			sr.Release(false)
 		}
 	}
+}
+
+// failedToStart handles start failure.
+func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
+	// Release start limiter slot or cancel waiting
+	sr.dropStartSlot()
+
+	sr.desired.Store(StateStopped)
+
+	if sr.waitingForConsole {
+		sr.services.UnqueueConsole(sr.self)
+		sr.waitingForConsole = false
+	}
+
+	if sr.startExplicit {
+		sr.startExplicit = false
+		sr.Release(false)
+	}
+
+	sr.cancelDependentsStart(false)
 
 	// A start that failed is over: STOPPING until the process, if any,
 	// is gone (dinit's failed_to_start). Left in STARTING, the process's
@@ -3718,7 +3843,15 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 	sr.startFailed = true
 	sr.services.logger.ServiceFailed(sr.serviceName, depFailed)
 	sr.notifyListeners(EventFailedStart)
-	sr.pinnedStarted = false
+	if sr.pinnedStarted {
+		sr.pinnedStarted = false
+		// The pin reached the dependencies too: dropped here alone, it
+		// kept them pinned by a dependent that pinned nothing, and they
+		// could not be stopped again, at shutdown either.
+		if !sr.deptPinnedStarted {
+			sr.unpinDependencies()
+		}
+	}
 
 	if immediateStop {
 		sr.Stopped()
@@ -4117,6 +4250,20 @@ func (sr *ServiceRecord) rmDepByIndex(i int) {
 
 	sr.dependsOn = append(sr.dependsOn[:i], sr.dependsOn[i+1:]...)
 	sr.depsStartedFrom = 0
+
+	// A pin that came down this edge has to be recomputed, as Unpin
+	// does: left alone, the target stayed pinned by a dependent it no
+	// longer had, and could not be stopped again, at shutdown either.
+	if dep.carriesPin() && toRec.deptPinnedStarted {
+		toRec.propPinDpt = true
+		sr.services.AddPropQueue(dep.To)
+	}
+	// A target stopping may have been waiting for this dependent to
+	// stop: let it check again, as dependentStopped does, or it waited
+	// for a dependent it no longer had.
+	if toRec.state.Load() == StateStopping && toRec.waitingForDeps {
+		sr.services.AddTransitionQueue(dep.To)
+	}
 
 	// A start waiting on this dependency has nothing left to wait for
 	// from it: let the start re-check the dependencies it still has,

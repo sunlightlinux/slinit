@@ -1438,7 +1438,7 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 	for _, dir := range dl.dirs {
 		for _, sn := range searchNames {
 			path := filepath.Join(dir, sn)
-			f, err := os.Open(path)
+			f, err := openConfigFile(path)
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
@@ -1560,7 +1560,7 @@ func (dl *DirLoader) applyOverlays(desc *ServiceDescription, name, baseName stri
 			if applied[path] {
 				continue
 			}
-			f, err := os.Open(path)
+			f, err := openConfigFile(path)
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
@@ -1581,6 +1581,34 @@ func (dl *DirLoader) applyOverlays(desc *ServiceDescription, name, baseName stri
 	return nil
 }
 
+// openConfigFile opens a service description, overlay, override,
+// include or init.d script for reading, refusing anything
+// but a regular file. Loading runs with the loader's lock held (and a
+// start or reload waits for it), so a FIFO at one of these paths would
+// block the open until something opened its other end. O_NONBLOCK makes
+// that open return at once; it has no effect on a regular file's reads.
+// A missing file still reports an error os.IsNotExist recognises, and
+// a symlink to /dev/null still reads as an empty file.
+func openConfigFile(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if null, nerr := os.Stat(os.DevNull); nerr == nil && os.SameFile(fi, null) {
+		return f, nil
+	}
+	if !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("%s: not a regular file (%s)", path, fi.Mode().Type())
+	}
+	return f, nil
+}
+
 // applySiblingOverride applies an optional "<basePath>.override" file that
 // sits in the same directory as the service file. This is upstart's
 // `.override` mechanism: a drop-in that modifies stanzas of an existing
@@ -1592,7 +1620,7 @@ func (dl *DirLoader) applyOverlays(desc *ServiceDescription, name, baseName stri
 // parse error inside one is fatal.
 func (dl *DirLoader) applySiblingOverride(desc *ServiceDescription, name, basePath string, serviceArg *string) error {
 	overridePath := basePath + ".override"
-	f, err := os.Open(overridePath)
+	f, err := openConfigFile(overridePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -1875,6 +1903,10 @@ func resolveAlertLevel(alertFile string, parsed int) int {
 // applyLogSettings applies log type configuration to a process-based service.
 func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 	switch desc.LogType {
+	case service.LogNone:
+		// Set too: a reload of a stopped service updates the record in
+		// place, and a log type the file no longer names must go.
+		svc.SetLogType(desc.LogType)
 	case service.LogToBuffer:
 		svc.SetLogType(desc.LogType)
 		svc.SetLogBufMax(desc.LogBufMax)
@@ -1887,10 +1919,11 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 		// bgprocess services do not run the stdio plumbing it hooks
 		// into. Asserted rather than added to logSettable so the
 		// interface keeps describing what every type can do.
+		// Set even when empty, so a reload that drops it takes it away.
+		if ps, ok := svc.(interface{ SetStderrLogFile(string) }); ok {
+			ps.SetStderrLogFile(desc.StderrLogFile)
+		}
 		if desc.StderrLogFile != "" {
-			if ps, ok := svc.(interface{ SetStderrLogFile(string) }); ok {
-				ps.SetStderrLogFile(desc.StderrLogFile)
-			}
 			if ps, ok := svc.(interface {
 				SetStderrLogRotation(int64, int, time.Duration)
 			}); ok {

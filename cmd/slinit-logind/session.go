@@ -14,8 +14,9 @@
 // child process the shell forks inherits the scope for accounting
 // and kill-tree semantics.
 //
-// Runtime directory /run/user/<uid> is created if absent (mode 0700,
-// owned by the user); subsequent sessions for the same UID reuse it
+// Runtime directory /run/user/<uid> is a tmpfs mounted at the user's
+// first session (mode 0700, owned by the user, a plain directory where
+// the mount is refused); subsequent sessions for the same UID reuse it
 // so per-user apps can co-locate socket/state files there.
 package main
 
@@ -461,11 +462,12 @@ func (m *manager) CreateSession(
 	// portals) fail with EACCES on the parent lookup, and every
 	// desktop session comes up broken (no menus, no notifications,
 	// no polkit agent).
+	//
+	// The user's first session mounts a tmpfs of its own there, as
+	// systemd-logind does (makeRuntimeDir).
 	_ = os.MkdirAll("/run/user", 0755)
 	_ = os.Chmod("/run/user", 0755)
-	if err := os.MkdirAll(runtimePath, 0700); err == nil {
-		_ = os.Chown(runtimePath, int(uid), int(uid))
-	}
+	makeRuntimeDir(runtimePath, uid, !fileExists(userFile(uid)))
 
 	rec := SessionRecord{
 		ID:          id,
@@ -586,6 +588,7 @@ func (m *manager) releaseSession(id string) *dbus.Error {
 	}
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
+	m.stopLeaderWatch(id)
 
 	var rec SessionRecord
 	if !readJSON(sessionFile(id), &rec) {
@@ -625,6 +628,70 @@ func (m *manager) releaseSession(id string) *dbus.Error {
 	return nil
 }
 
+// runtimeDirFallback logs, once, that runtime directories could not be
+// given a tmpfs of their own.
+var runtimeDirFallback sync.Once
+
+// makeRuntimeDir prepares the user's runtime directory. On the user's
+// first session it mounts a tmpfs there, as systemd-logind does
+// (user-runtime-dir.c): mode 0700, owned by the user, nodev, nosuid,
+// capped at the RuntimeDirectorySize and RuntimeDirectoryInodesMax the
+// Manager advertises. A plain directory on /run let any user who could
+// log in fill /run, which holds the sockets, pid files and credentials
+// of PID 1 and every system service.
+//
+// A directory that is already a mount point is left as it is, and so is
+// one of a user with sessions already open, or one that is not empty: a
+// session that predates this slinit-logind, or a user instance that
+// outlives its sessions (turnstile, slinit -u), keeps its sockets in the
+// plain directory, and a mount over it would hide them. Where the mount
+// is refused (no CAP_SYS_ADMIN in a container) it stays a plain
+// directory, as before.
+//
+// Unlike systemd-logind, the directory is not removed at the user's last
+// logout: slinit-logind does not implement linger, and a user instance
+// running past the last session still uses it. The tmpfs stays mounted,
+// capped, until reboot.
+func makeRuntimeDir(path string, uid uint32, first bool) {
+	if err := os.MkdirAll(path, 0700); err != nil {
+		return
+	}
+	if first && !isMountPoint(path) && dirEmpty(path) {
+		size := runtimeDirectorySize()
+		opts := fmt.Sprintf("mode=0700,uid=%d,gid=%d,size=%d,nr_inodes=%d",
+			uid, lookupGID(uid), size, size/4096)
+		err := unix.Mount("tmpfs", path, "tmpfs", unix.MS_NODEV|unix.MS_NOSUID, opts)
+		if err == nil {
+			return
+		}
+		runtimeDirFallback.Do(func() {
+			fmt.Fprintf(os.Stderr, "slinit-logind: cannot mount a tmpfs on %s: %v; user runtime directories stay plain directories on /run\n", path, err)
+		})
+	}
+	_ = os.Chown(path, int(uid), int(uid))
+}
+
+// dirEmpty reports whether the directory at path has no entries.
+func dirEmpty(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, _ := f.Readdirnames(1)
+	return len(names) == 0
+}
+
+// isMountPoint reports whether path is on a different filesystem from
+// its parent.
+func isMountPoint(path string) bool {
+	var st, parent unix.Stat_t
+	if unix.Lstat(path, &st) != nil || unix.Lstat(filepath.Dir(path), &parent) != nil {
+		return false
+	}
+	return st.Dev != parent.Dev
+}
+
 // watchSessionLeader drops the session once its leader process exits.
 //
 // Nothing else does this. A session whose leader is gone used to stay
@@ -634,26 +701,58 @@ func (m *manager) releaseSession(id string) *dbus.Error {
 // records are deleted by hand. elogind watches the leader's pidfd for
 // exactly this reason.
 //
-// One goroutine per session, parked in poll() on a pidfd, costs nothing
-// while the session lives and needs no timer.
+// One goroutine per session, parked in the netpoller on the leader's
+// pidfd (openPidWatch), so the watches cost no OS thread each. The pidfd
+// is kept in m.leaderWatches until releaseSession closes it, which ends
+// the wait: a session released while its leader lives on (a daemonised
+// or nohup'd process) leaves nothing behind.
 func (m *manager) watchSessionLeader(id string, leader uint32) {
 	if leader == 0 {
 		return
 	}
+	f, err := openPidWatch(leader)
+	if err != nil {
+		// ESRCH means the leader was already gone when we looked,
+		// which is a session to reap right now, not one to skip.
+		// Anything else means we can't watch it; say so rather
+		// than silently leaving a session unreaped.
+		if err != unix.ESRCH {
+			m.dbgf("session %s: cannot watch leader %d: %v", id, leader, err)
+			return
+		}
+		go func() {
+			m.dbgf("session %s: leader %d exited, releasing", id, leader)
+			_ = m.releaseSession(id)
+		}()
+		return
+	}
+	m.leaderMu.Lock()
+	if m.leaderWatches == nil {
+		m.leaderWatches = make(map[string]*os.File)
+	}
+	if old := m.leaderWatches[id]; old != nil {
+		old.Close()
+	}
+	m.leaderWatches[id] = f
+	m.leaderMu.Unlock()
 	go func() {
-		if err := waitForPidExit(leader); err != nil {
-			// ESRCH means the leader was already gone when we looked,
-			// which is a session to reap right now, not one to skip.
-			// Anything else means we can't watch it; say so rather
-			// than silently leaving a session unreaped.
-			if err != unix.ESRCH {
-				m.dbgf("session %s: cannot watch leader %d: %v", id, leader, err)
-				return
-			}
+		if err := waitPidWatch(f); err != nil {
+			return // released: releaseSession closed the watch
 		}
 		m.dbgf("session %s: leader %d exited, releasing", id, leader)
 		_ = m.releaseSession(id)
 	}()
+}
+
+// stopLeaderWatch closes the session's leader watch, ending its wait.
+func (m *manager) stopLeaderWatch(id string) {
+	m.leaderMu.Lock()
+	f := m.leaderWatches[id]
+	delete(m.leaderWatches, id)
+	m.leaderMu.Unlock()
+	if f != nil {
+		f.Close()
+	}
 }
 
 // reapDeadSessions drops any session whose leader is already gone, then

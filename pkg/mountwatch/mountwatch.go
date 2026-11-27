@@ -34,6 +34,19 @@ const mountInfoPath = "/proc/self/mountinfo"
 // does not deliver POLLPRI, and is also what makes Close responsive.
 const pollInterval = time.Second
 
+// At most mountRateBurst re-reads of the mount table per
+// mountRateInterval: systemd's DefaultMountRateLimitBurst= and
+// DefaultMountRateLimitIntervalSec=. Anyone may mount and unmount FUSE
+// filesystems in PID 1's namespace, and each change woke the loop for a
+// full parse of the table: 21000 a second, measured, from one process
+// looping mount and unmount. Changes past the burst are picked up by
+// the re-read that ends the wait, since each read is diffed against the
+// last.
+const (
+	mountRateBurst    = 5
+	mountRateInterval = time.Second
+)
+
 // AnyMount is the path registration that fires on every new mount,
 // whatever it is: launchd's StartOnMount is a boolean with exactly that
 // meaning.
@@ -191,6 +204,8 @@ func (w *Watcher) run() {
 		w.mu.Unlock()
 	}
 
+	var windowStart time.Time
+	inWindow := 0
 	for {
 		select {
 		case <-w.stop:
@@ -230,6 +245,19 @@ func (w *Watcher) run() {
 		//
 		// Re-reading costs an open and a few KB of parsing per second,
 		// which is not worth optimising away for a correctness guarantee.
+		now := time.Now()
+		if now.Sub(windowStart) >= mountRateInterval {
+			windowStart, inWindow = now, 0
+		}
+		if inWindow >= mountRateBurst {
+			select {
+			case <-w.stop:
+				return
+			case <-time.After(windowStart.Add(mountRateInterval).Sub(now)):
+			}
+			windowStart, inWindow = time.Now(), 0
+		}
+		inWindow++
 		w.dispatch()
 	}
 }

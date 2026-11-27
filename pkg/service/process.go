@@ -247,6 +247,11 @@ type ProcessService struct {
 	demandWake     *os.File   // write end of the watcher's wake pipe; closing it disarms
 	demandGen      uint64     // bumped on every arm/disarm; a stale watcher's activation is a no-op
 
+	// Recent on-demand launches, for the trigger limit (ondemand.go),
+	// and whether the last launch's process exited cleanly (code 0).
+	demandTriggers  []time.Time
+	demandLastClean bool
+
 	// Readiness notification
 	readyNotifyFD  int       // fd number child writes to (-1 if none)
 	readyNotifyVar string    // env var name ("" if none)
@@ -454,6 +459,24 @@ func (s *ProcessService) SetReadyCheckCommand(cmd []string, interval time.Durati
 
 // SetPreStopHook sets the pre-stop hook command.
 func (s *ProcessService) SetPreStopHook(cmd []string) { s.preStopHook = cmd }
+
+// openLogFile opens a service's log-file for appending, creating it with
+// perm, never through a symlink. O_NONBLOCK so a FIFO at the path with no
+// reader fails the start with ENXIO instead of blocking PID 1 in open(2)
+// with the service set's lock held; the service gets the fd back in
+// blocking mode, as a plain open would have given it.
+func openLogFile(path string, perm os.FileMode) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, uint32(perm.Perm()))
+	if err == nil {
+		if err = unix.SetNonblock(fd, false); err != nil {
+			unix.Close(fd)
+		}
+	}
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
 
 // SetEnvDir sets the environment directory path.
 func (s *ProcessService) SetEnvDir(dir string) { s.envDir = dir }
@@ -1864,6 +1887,8 @@ func (s *ProcessService) bringUpCheckedLocked() bool {
 	// which is all a dependent needs, so the service is STARTED now and
 	// the process waits for the first client (see ondemand.go).
 	if s.socketOnDemand && s.socketFD != nil {
+		s.demandTriggers = nil
+		s.demandLastClean = false
 		if err := s.armOnDemand(); err != nil {
 			s.services.logger.Error("Service '%s': socket activation: %v", s.serviceName, err)
 			return false
@@ -2914,7 +2939,7 @@ func (s *ProcessService) startProcess() error {
 			// O_NOFOLLOW + fchown-via-fd close the symlink-swap window
 			// where slinit (running as root) would otherwise write to —
 			// or chown — an attacker-pointed path.
-			f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, os.FileMode(s.logFilePerms))
+			f, err := openLogFile(s.logFile, os.FileMode(s.logFilePerms))
 			if err != nil {
 				return fmt.Errorf("failed to open logfile '%s': %w", s.logFile, err)
 			}
@@ -3126,6 +3151,14 @@ func (s *ProcessService) startProcess() error {
 	}
 
 	pid, exitCh, err := process.StartProcess(params)
+	// The drained fd-store entries now belong to the child (or are lost
+	// with a failed start, as the drain already decided): close our
+	// copies, or they stay open until a GC runs their finalizers.
+	for _, e := range params.StoredFDs {
+		if e.File != nil {
+			e.File.Close()
+		}
+	}
 	if err != nil {
 		// Record it before unwinding: the error names the stage and the
 		// errno, and without this the service was left with an empty
@@ -3140,6 +3173,8 @@ func (s *ProcessService) startProcess() error {
 			} else {
 				outputPipe.Close()
 			}
+		} else if outputPipe != nil && s.logType == LogToPipe && s.sharedLoggerName != "" {
+			outputPipe.Close() // the mux's pipe for this start
 		}
 		if s.stderrRotator != nil {
 			s.stderrRotator.Close()
@@ -3212,6 +3247,12 @@ func (s *ProcessService) startProcess() error {
 		// dup2 inside the runner; the reader goroutine (started in
 		// startProcess above) sees EOF once every child copy is
 		// closed, exiting the loop and letting the forwarder go.
+		outputPipe.Close()
+	} else if s.logType == LogToPipe && s.sharedLoggerName != "" && outputPipe != nil {
+		// A shared-logger producer gets a new pipe from the mux on
+		// every start, so the parent keeps nothing: holding the write
+		// end kept the mux's reader from ever seeing EOF, and left one
+		// fd per start open until a GC ran its finalizer.
 		outputPipe.Close()
 	}
 
@@ -3518,18 +3559,25 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	// group members, so this is safe for other managed services.
 	// SignalProcessOnly opts out of every pgroup signal for this service
 	// (dinit parity: baseproc-service.cc kill_pg gates on the same flag).
-	if !s.Flags.SignalProcessOnly {
+	// A reload rewrites the flags and the inittab id/line under queueMu;
+	// read them there, then do the killing without it.
+	s.services.queueMu.Lock()
+	flags := s.Flags
+	inittabID, inittabLine := s.inittabID, s.inittabLine
+	s.services.queueMu.Unlock()
+
+	if !flags.SignalProcessOnly {
 		process.KillProcessGroup(exit.PID)
 	}
 
 	// Kill entire cgroup tree to clean up any orphaned processes
-	if s.Flags.KillAllOnStop {
+	if flags.KillAllOnStop {
 		s.killCgroupTree(syscall.SIGKILL)
 	}
 
 	// Clear utmp entry
-	if s.HasUtmp() {
-		s.services.utmpClear(s.inittabID, s.inittabLine)
+	if inittabID != "" || inittabLine != "" {
+		s.services.utmpClear(inittabID, inittabLine)
 	}
 
 	s.services.queueMu.Lock()
@@ -3750,6 +3798,7 @@ func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit proces
 		if s.socketOnDemand {
 			// On-demand: the process ending is not the service ending.
 			// Its sockets stay open; the next client launches it again.
+			s.demandLastClean = exit.Exited() && exit.Status.ExitStatus() == 0
 			s.rearmOnDemandLocked()
 			s.services.processQueuesLocked()
 			return

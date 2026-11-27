@@ -138,3 +138,89 @@ func mustReachState(t *testing.T, svc Service, want ServiceState) {
 		t.Fatalf("service %s stuck in %v, want %v", svc.Name(), got, want)
 	}
 }
+
+// The same hole with a dependent holding the service. A dependent that
+// starts while the service is stopping takes an acquisition on it and
+// so asks for the restart, which is deferred to the delay timer.
+// Stopping the service then called the restart off with that
+// acquisition still in place, so it was not yet inactive; when the
+// dependent let go later, the service was STOPPED with no restart
+// pending, and nothing took the active count down, so shutdown waited
+// out its emergency timeout. Found by FuzzControlServer (reload-all
+// dropped a waits-for edge, start-all started the service's other
+// dependent, and after teardown every service was STOPPED with one
+// still counted active).
+func TestAbandonedRestartWithDependentReleasesActiveCount(t *testing.T) {
+	for _, depType := range []DependencyType{DepWaitsFor, DepRegular} {
+		t.Run(depType.String(), func(t *testing.T) {
+			set, _ := newTestSet()
+
+			svc := NewProcessService(set, "delayed")
+			svc.SetCommand([]string{"/bin/sleep", "3600"})
+			svc.SetRestartDelay(10 * time.Second)
+			dept := NewInternalService(set, "dependent")
+			set.AddService(svc)
+			set.AddService(dept)
+			dept.Record().AddDep(svc, depType)
+
+			set.StartService(svc)
+			mustReachState(t, svc, StateStarted)
+
+			// The dependent starts while the service is stopping: its
+			// acquisition wants the service back, after the delay.
+			set.StopService(svc)
+			set.StartService(dept)
+			mustReachState(t, svc, StateStopped)
+
+			set.StopService(svc) // calls the restart off
+			set.StopService(dept)
+
+			if st := dept.State(); st != StateStopped {
+				t.Fatalf("dependent is %v, want STOPPED", st)
+			}
+			if st := svc.State(); st != StateStopped {
+				t.Fatalf("service is %v, want STOPPED", st)
+			}
+			if got := set.CountActiveServices(); got != 0 {
+				t.Errorf("active count = %d with every service STOPPED, want 0 "+
+					"(shutdown would wait out the emergency timeout)", got)
+			}
+		})
+	}
+}
+
+// As above with a hard dependent, which waits for the service while it
+// sits out its restart delay. Stopping the service called the restart
+// off but left the acquisition in place, and nothing told the dependent:
+// it stayed STARTING for good, waiting for a service nothing would start
+// again, and kept the service counted active. A second stop changed
+// nothing. dinit's do_stop stops the hard dependents here, so the
+// dependent ends STOPPED and its release settles the service.
+func TestAbandonedRestartStopsHardDependentWaitingForIt(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "delayed")
+	svc.SetCommand([]string{"/bin/sleep", "3600"})
+	svc.SetRestartDelay(10 * time.Second)
+	dept := NewInternalService(set, "dependent")
+	set.AddService(svc)
+	set.AddService(dept)
+	dept.Record().AddDep(svc, DepRegular)
+
+	set.StartService(svc)
+	mustReachState(t, svc, StateStarted)
+	set.StopService(svc)
+	set.StartService(dept)
+	mustReachState(t, svc, StateStopped)
+	if st := dept.State(); st != StateStarting {
+		t.Fatalf("dependent is %v, want STARTING (waiting for the restart)", st)
+	}
+
+	set.StopService(svc) // calls the restart off
+
+	if st := dept.State(); st != StateStopped {
+		t.Errorf("dependent is %v after its hard dependency was stopped, want STOPPED", st)
+	}
+	if got := set.CountActiveServices(); got != 0 {
+		t.Errorf("active count = %d, want 0 (shutdown would wait out the emergency timeout)", got)
+	}
+}

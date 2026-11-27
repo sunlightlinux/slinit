@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"os"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -91,11 +90,7 @@ func (s *ProcessService) watchOnDemand(fds []int, wakeFD int, gen uint64) {
 	pfds = append(pfds, unix.PollFd{Fd: int32(wakeFD), Events: unix.POLLIN})
 
 	for {
-		_, err := unix.Poll(pfds, -1)
-		if err == syscall.EINTR {
-			continue
-		}
-		if err != nil {
+		if err := pollParked(pfds); err != nil {
 			return
 		}
 		if pfds[len(pfds)-1].Revents != 0 {
@@ -129,6 +124,42 @@ func (s *ProcessService) onDemandListening() bool {
 	return s.socketOnDemand && s.state.Load() == StateStarted
 }
 
+// The trigger limit: at most onDemandTriggerBurst launches within
+// onDemandTriggerInterval, systemd's TriggerLimitBurst= and
+// TriggerLimitIntervalSec= defaults for a socket with Accept=no. A
+// client the process never accepted stays in the backlog, so the
+// socket is readable again the moment the watcher re-arms: a process
+// that fails before it accepts was relaunched in a tight loop by PID 1
+// (about 1300 forks a second from a single connect). Like systemd, the
+// service is failed when the limit is hit.
+//
+// Unlike systemd, hitting the limit right after a launch whose process
+// exited 0 does not fail the service: the next launch waits until the
+// oldest launch leaves the window. A service that serves one client per
+// launch and exits must survive a burst of clients (slinit has no
+// TriggerLimitBurst= to raise the limit for it), and a process that
+// exits 0 without accepting is held to 20 launches every 2 seconds
+// rather than relaunched as fast as PID 1 can fork. A failed launch
+// (exec failure, non-zero exit, signal, failed pre-start) at the limit
+// fails the service, as in systemd.
+const (
+	onDemandTriggerBurst    = 20
+	onDemandTriggerInterval = 2 * time.Second
+)
+
+// allowOnDemandTrigger records a launch at now and reports whether it
+// is within the trigger limit. Caller must hold queueMu.
+func (s *ProcessService) allowOnDemandTrigger(now time.Time) bool {
+	if len(s.demandTriggers) == onDemandTriggerBurst {
+		if now.Sub(s.demandTriggers[0]) < onDemandTriggerInterval {
+			return false
+		}
+		s.demandTriggers = s.demandTriggers[1:]
+	}
+	s.demandTriggers = append(s.demandTriggers, now)
+	return true
+}
+
 // activateOnDemandLocked launches the process for the first client. The
 // steps BringUp defers for an on-demand service run here: pre-start
 // command, start-delay, fork/exec, post-start command. A failure goes
@@ -138,6 +169,30 @@ func (s *ProcessService) activateOnDemandLocked() {
 	if !s.onDemandListening() || s.pid > 0 {
 		return
 	}
+	now := time.Now()
+	if !s.allowOnDemandTrigger(now) {
+		if s.demandLastClean {
+			// Held back, not failed: launch once the oldest launch
+			// leaves the window.
+			wait := s.demandTriggers[0].Add(onDemandTriggerInterval).Sub(now)
+			gen := s.demandGen
+			time.AfterFunc(wait, func() {
+				s.services.queueMu.Lock()
+				defer s.services.queueMu.Unlock()
+				if s.demandGen != gen {
+					return // stopped or re-armed meanwhile
+				}
+				s.activateOnDemandLocked()
+				s.services.processQueuesLocked()
+			})
+			return
+		}
+		s.services.logger.Error("Service '%s': socket activated %d times in %v, stopping (trigger limit hit)",
+			s.serviceName, onDemandTriggerBurst, onDemandTriggerInterval)
+		s.handleTerminationLocked(ReasonFailed)
+		return
+	}
+	s.demandLastClean = false
 	s.services.logger.Info("Service '%s': socket activity, launching process", s.serviceName)
 
 	// The pre-start-command, and the env-generator, run off the lock as

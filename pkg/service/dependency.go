@@ -58,6 +58,18 @@ func (d *ServiceDep) IsHard() bool {
 		(d.DepType == DepMilestone && d.WaitingOn)
 }
 
+// carriesPin reports whether a start pin may have travelled along this
+// edge, so that an unpin has to travel along it too. A milestone is hard
+// only while its dependent waits for it: a pin set in that window
+// reaches the target, and the edge is soft by the time the unpin comes.
+// Walking only hard edges left the target pinned for good, past a
+// forced stop and past shutdown. The target recomputes its pin from its
+// hard edges, so a milestone already soft when the pin was set changes
+// nothing.
+func (d *ServiceDep) carriesPin() bool {
+	return d.IsHard() || d.DepType == DepMilestone
+}
+
 // IsOnlyOrdering returns true if this is just an ordering constraint (BEFORE or AFTER).
 func (d *ServiceDep) IsOnlyOrdering() bool {
 	return d.DepType == DepBefore || d.DepType == DepAfter

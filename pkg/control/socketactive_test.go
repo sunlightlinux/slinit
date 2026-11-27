@@ -6,7 +6,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 )
@@ -104,5 +106,74 @@ func TestReopen(t *testing.T) {
 	}
 	if !SocketActive(path) {
 		t.Fatal("Reopen did not bring the socket back")
+	}
+}
+
+// A control socket that could not be bound at boot (/run full: a local
+// user can exhaust its inodes) is recreated by SIGUSR1 once there is
+// room. The first connection to it then killed PID 1: Start had
+// returned before recording its context, and serve read a nil one.
+func TestReopenAfterFailedStart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "run")
+	path := filepath.Join(dir, "slinit.socket")
+	srv := NewServer(nil, path, logging.New(logging.LevelError))
+	if err := srv.Start(context.Background()); err == nil {
+		t.Fatal("setup: Start succeeded with no directory to bind in")
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Reopen(); err != nil {
+		t.Fatalf("Reopen once there is room: %v", err)
+	}
+	defer srv.Stop()
+
+	c, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial the reopened socket: %v", err)
+	}
+	defer c.Close()
+	if err := WritePacket(c, CmdQueryVersion, nil); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if rply, _, err := ReadPacket(c); err != nil || rply != RplyCPVersion {
+		t.Fatalf("version query on the reopened socket: reply %d, %v", rply, err)
+	}
+}
+
+// pass-cs-fd hands a service a control connection whether or not the
+// socket file could be bound; with the bind failed, serving it took the
+// same nil context.
+func TestPassCSFDAfterFailedStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "slinit.socket")
+	srv := NewServer(nil, path, logging.New(logging.LevelError))
+	if err := srv.Start(context.Background()); err == nil {
+		t.Fatal("setup: Start succeeded with no directory to bind in")
+	}
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := func(fd int) net.Conn {
+		f := os.NewFile(uintptr(fd), "cs")
+		defer f.Close()
+		c, err := net.FileConn(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	ours, theirs := conn(fds[0]), conn(fds[1])
+	defer theirs.Close()
+	srv.HandlePassCSFD(ours)
+	defer srv.Stop()
+
+	theirs.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := WritePacket(theirs, CmdQueryVersion, nil); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if rply, _, err := ReadPacket(theirs); err != nil || rply != RplyCPVersion {
+		t.Fatalf("version query on the pass-cs-fd connection: reply %d, %v", rply, err)
 	}
 }

@@ -341,7 +341,7 @@ func (s *ScriptedService) BringUp() bool {
 		// O_NOFOLLOW + fchown-via-fd: close the symlink-swap TOCTOU
 		// where root slinit could be tricked into writing/chowning an
 		// attacker-pointed path.
-		f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, os.FileMode(s.logFilePerms))
+		f, err := openLogFile(s.logFile, os.FileMode(s.logFilePerms))
 		if err != nil {
 			s.services.logger.Error("Service '%s': failed to open logfile '%s': %v",
 				s.serviceName, s.logFile, err)
@@ -379,6 +379,13 @@ func (s *ScriptedService) BringUp() bool {
 	s.Record().ApplyProcessAttrs(&params)
 
 	pid, exitCh, err := process.StartProcess(params)
+	// A shared-logger producer gets a new pipe from the mux on every
+	// start, and the child has its own copy of the write end now. Ours
+	// kept the mux's reader from ever seeing EOF and stayed open until
+	// a GC ran its finalizer.
+	if outputPipe != nil && s.logType == LogToPipe && s.sharedLoggerName != "" {
+		outputPipe.Close()
+	}
 	if err != nil {
 		s.exitStatus = noteStartExecFailure(s.Record(), err)
 		if outputPipe != nil && s.logType == LogToBuffer {
@@ -571,14 +578,21 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	// Kill remaining process group members (orphaned children of the script)
 	process.KillProcessGroup(exit.PID)
 
+	// A reload rewrites the flags and the inittab id/line under queueMu;
+	// read them there, then do the killing without it.
+	s.services.queueMu.Lock()
+	flags := s.Flags
+	inittabID, inittabLine := s.inittabID, s.inittabLine
+	s.services.queueMu.Unlock()
+
 	// Kill entire cgroup tree to clean up orphaned processes
-	if s.Flags.KillAllOnStop {
+	if flags.KillAllOnStop {
 		s.killCgroupTree(syscall.SIGKILL)
 	}
 
 	// Clear utmp entry
-	if s.HasUtmp() {
-		s.services.utmpClear(s.inittabID, s.inittabLine)
+	if inittabID != "" || inittabLine != "" {
+		s.services.utmpClear(inittabID, inittabLine)
 	}
 
 	s.services.queueMu.Lock()
@@ -664,8 +678,14 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 	// Kill remaining process group members
 	process.KillProcessGroup(exit.PID)
 
+	// A reload rewrites the flags under queueMu; read them there, then
+	// do the killing without it.
+	s.services.queueMu.Lock()
+	killAll := s.Flags.KillAllOnStop
+	s.services.queueMu.Unlock()
+
 	// Kill entire cgroup tree to clean up orphaned processes
-	if s.Flags.KillAllOnStop {
+	if killAll {
 		s.killCgroupTree(syscall.SIGKILL)
 	}
 

@@ -101,7 +101,10 @@ func doChild() {
 	// A process that ignores SIGTERM: the SIGKILL sweep has to end it. It
 	// says when the trap is in place; a SIGTERM before that would kill it
 	// and let a missing SIGKILL sweep pass unnoticed.
-	ready := filepath.Join(os.TempDir(), "holdout-ready")
+	// The marker lives on the fresh tmpfs: a fixed name in the shared
+	// os.TempDir() survives from an earlier run, the wait below then
+	// returns before the trap is set, and SIGTERM alone ends the holdout.
+	ready := filepath.Join(old, "holdout-ready")
 	holdout := exec.Command("/bin/sh", "-c",
 		"trap '' TERM; : > "+ready+"; while :; do sleep 1; done")
 	if err := holdout.Start(); err != nil {
@@ -172,8 +175,30 @@ func doChild() {
 	if strings.Join(seen, " ") != "/sbin/init /run/marker" {
 		fail("new init sees %v, want /sbin/init and /run/marker only", seen)
 	}
-	if err := unix.Kill(holdoutPid, 0); !errors.Is(err, unix.ESRCH) {
-		fail("SIGTERM-ignoring process %d survived the sweep (kill 0: %v)", holdoutPid, err)
+	// SIGKILL is delivered asynchronously and Do's reap is WNOHANG: on a
+	// loaded machine the holdout can still be dying, or be a zombie Do
+	// did not get to, when Do returns. Wait for it to be gone — reaped by
+	// Do (ECHILD) or reaped here, dead of SIGKILL — rather than probing
+	// once; kill(pid, 0) succeeds on a zombie.
+	for i := 0; ; i++ {
+		var ws unix.WaitStatus
+		pid, err := unix.Wait4(holdoutPid, &ws, unix.WNOHANG, nil)
+		if errors.Is(err, unix.ECHILD) {
+			break
+		}
+		if err != nil {
+			fail("wait4 holdout: %v", err)
+		}
+		if pid == holdoutPid {
+			if !ws.Signaled() || ws.Signal() != unix.SIGKILL {
+				fail("holdout %d ended with %v, want SIGKILL", holdoutPid, ws)
+			}
+			break
+		}
+		if i == 500 {
+			fail("SIGTERM-ignoring process %d survived the sweep", holdoutPid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	os.Stdout.WriteString("DO-OK\n")
 	os.Exit(0)

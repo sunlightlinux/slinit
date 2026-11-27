@@ -1,0 +1,4 @@
+# Needs /var/lib/ro-state created for it.
+type = process
+command = /bin/sleep 1000
+state-directory = ro-state

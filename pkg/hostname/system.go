@@ -89,8 +89,19 @@ func ValidDeployment(s string) bool {
 }
 
 // ReadStatic returns the static hostname: the first line of /etc/hostname
-// that is neither empty nor a comment.
+// that is neither empty nor a comment, normalised by Cleanup. As in
+// systemd's read_etc_hostname, a name that is still not Valid reads as
+// none, so it is never handed to the kernel.
 func ReadStatic() string {
+	if l := Cleanup(ReadStaticRaw()); Valid(l) {
+		return l
+	}
+	return ""
+}
+
+// ReadStaticRaw returns the first line of /etc/hostname that is neither
+// empty nor a comment, as written, before Cleanup.
+func ReadStaticRaw() string {
 	b, err := os.ReadFile(HostnamePath)
 	if err != nil {
 		return ""
@@ -102,6 +113,41 @@ func ReadStatic() string {
 		}
 	}
 	return ""
+}
+
+// Cleanup is systemd's hostname_cleanup: it keeps letters, digits, '-'
+// and '.', drops a '.' or '-' that would start a label or follow a dot,
+// strips trailing dots and hyphens (so "host.example.com." becomes
+// "host.example.com") and cuts the name at 64 bytes. '?' and '$' are kept
+// as systemd keeps them for its wildcards, which slinit does not
+// substitute, so Valid then refuses the name.
+func Cleanup(s string) string {
+	d := make([]byte, 0, len(s))
+	dot, hyphen := true, true
+	for i := 0; i < len(s) && len(d) < 64; i++ {
+		c := s[i]
+		switch {
+		case c == '.':
+			if dot || hyphen {
+				continue
+			}
+			d = append(d, c)
+			dot, hyphen = true, false
+		case c == '-':
+			if dot {
+				continue
+			}
+			d = append(d, c)
+			dot, hyphen = false, true
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '?', c == '$':
+			d = append(d, c)
+			dot, hyphen = false, false
+		}
+	}
+	for len(d) > 0 && (d[len(d)-1] == '-' || d[len(d)-1] == '.') {
+		d = d[:len(d)-1]
+	}
+	return string(d)
 }
 
 // WriteStatic writes /etc/hostname, or removes it for an empty name.

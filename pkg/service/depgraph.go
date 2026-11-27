@@ -36,6 +36,11 @@ var ErrDependencyCycle = errors.New("dependency would create a cycle")
 // ErrDependencySelf is returned for an edge from a service to itself.
 var ErrDependencySelf = errors.New("a service cannot depend on itself")
 
+// ErrDependencyContradicted is returned for a hard edge from a service
+// that is not stopped to one that is not started: the dependent would be
+// up without what it depends on. dinit refuses the same edge.
+var ErrDependencyContradicted = errors.New("hard dependency on a service that is not started")
+
 // WithGraphLock runs fn with the service-graph lock held, which makes
 // everything fn does one atomic step with respect to the state machine.
 //
@@ -50,7 +55,8 @@ func (ss *ServiceSet) WithGraphLock(fn func()) {
 }
 
 // AddDependency installs an edge from→to of the given type, rejecting a
-// self-edge, a cycle, or a graph deeper than MaxDepDepth.
+// self-edge, a hard edge the current states contradict, a cycle, or a
+// graph deeper than MaxDepDepth.
 //
 // The circularity check and the append are one atomic step, which is the
 // part that needs the lock rather than just mutual exclusion: two
@@ -67,6 +73,10 @@ func (ss *ServiceSet) AddDependency(from, to Service, depType DependencyType) er
 func (ss *ServiceSet) addDependencyLocked(from, to Service, depType DependencyType) error {
 	if from == to {
 		return ErrDependencySelf
+	}
+	if (depType == DepRegular || depType == DepPreparedBy) &&
+		from.State() != StateStopped && to.State() != StateStarted {
+		return ErrDependencyContradicted
 	}
 	if CheckCircularDep(from, to) {
 		return ErrDependencyCycle

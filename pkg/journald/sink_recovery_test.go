@@ -92,6 +92,9 @@ func checkJSONLFiles(t *testing.T, dir string) (lines int) {
 // later event, Flush and Rotate failed with it, long after space came
 // back (ok=0 of 10), and the file ended in a partial line.
 func TestFileSinkRecoversAfterWriteError(t *testing.T) {
+	if inFreshProcess(t) {
+		return
+	}
 	dir := t.TempDir()
 	s, err := NewFileSinkWithOptions(dir, FileSinkOptions{FsyncEvery: 1, MaxSize: 1 << 30})
 	if err != nil {
@@ -255,6 +258,9 @@ func countBinaryEntries(t *testing.T, dir string) int {
 // header (4096 bytes); every later start failed with "bad magic" and
 // the daemon exited for the rest of the UTC day.
 func TestBinarySinkStartsAfterFailedCreate(t *testing.T) {
+	if inFreshProcess(t) {
+		return
+	}
 	dir := t.TempDir()
 	restore := limitFileSize(t, 4096)
 	if _, err := NewBinarySink(BinarySinkOptions{Dir: dir}); err == nil {
@@ -335,6 +341,9 @@ func TestBinarySinkLeavesUnreadableJournalAlone(t *testing.T) {
 // A rotation on a full disk: the new file cannot be created. Once space
 // is back the sink resumes, where it used to stay closed.
 func TestBinarySinkRecoversAfterFailedReopen(t *testing.T) {
+	if inFreshProcess(t) {
+		return
+	}
 	dir := t.TempDir()
 	s, err := NewBinarySink(BinarySinkOptions{Dir: dir, FsyncEvery: 1})
 	if err != nil {
@@ -401,6 +410,9 @@ func checkIdxMatches(t *testing.T, path string) {
 // deleting the events that reached the file whole: 32 events, a 1000-byte
 // limit and FsyncEvery 32 kept 0 lines where 3 had been written in full.
 func TestFileSinkShortWriteKeepsWholeLines(t *testing.T) {
+	if inFreshProcess(t) {
+		return
+	}
 	dir := t.TempDir()
 	s, err := NewFileSinkWithOptions(dir, FileSinkOptions{FsyncEvery: 32, MaxSize: 1 << 30})
 	if err != nil {
@@ -481,6 +493,9 @@ func TestFileSinkFsyncErrorKeepsWrittenEvents(t *testing.T) {
 // A failed idx write is cut back to the last whole record: a partial one
 // left behind shifted every record after it.
 func TestFileSinkIdxWriteErrorCutsBack(t *testing.T) {
+	if inFreshProcess(t) {
+		return
+	}
 	dir := t.TempDir()
 	jsonl := filepath.Join(dir, currentFileName(time.Now().UTC()))
 	if err := os.WriteFile(jsonl, nil, 0o640); err != nil {

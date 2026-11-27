@@ -43,12 +43,18 @@ func captureStreams(t *testing.T, fn func() int) (string, string, int) {
 		doneErr <- b.String()
 	}()
 	// Rewire the applet stream table so dispatch() writes into our
-	// pipes. This mutation is safe because tests run serially.
-	for name := range applets {
-		a := applets[name]
-		if a.stream == oldOut {
+	// pipes. This mutation is safe because tests run serially. Match on
+	// the descriptor, not on os.Stdout/os.Stderr: under go test -json
+	// the testing package sets os.Stderr = os.Stdout after the table was
+	// built, so the stderr applets matched neither and wrote to the real
+	// fd 2 (TestDispatchEerrorReturnsOneAndUsesStderr failed every time).
+	saved := make(map[string]applet, len(applets))
+	for name, a := range applets {
+		saved[name] = a
+		switch a.stream.Fd() {
+		case 1:
 			a.stream = wOut
-		} else if a.stream == oldErr {
+		case 2:
 			a.stream = wErr
 		}
 		applets[name] = a
@@ -57,14 +63,7 @@ func captureStreams(t *testing.T, fn func() int) (string, string, int) {
 	wOut.Close()
 	wErr.Close()
 	os.Stdout, os.Stderr = oldOut, oldErr
-	// Restore.
-	for name := range applets {
-		a := applets[name]
-		if a.stream == wOut {
-			a.stream = oldOut
-		} else if a.stream == wErr {
-			a.stream = oldErr
-		}
+	for name, a := range saved {
 		applets[name] = a
 	}
 	return <-doneOut, <-doneErr, rc

@@ -1,8 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -191,5 +193,57 @@ func BenchmarkAsyncDepsStart(b *testing.B) {
 				}
 			})
 		}
+	}
+}
+
+// BenchmarkLogRotatorThroughput pushes service output through the
+// pipe and the rotator's reader goroutine into a size-rotated logfile,
+// the path a logfile with log-max-size takes in PID 1.
+func BenchmarkLogRotatorThroughput(b *testing.B) {
+	for _, mode := range []string{"nojournal", "journal-nolistener", "journal-listener"} {
+		b.Run(mode, func(b *testing.B) {
+			if mode != "nojournal" {
+				benchJournal(b, mode == "journal-listener")
+			}
+			line := []byte("Accepted publickey for root from 10.0.0.1 port 51234 ssh2: ED25519 SHA256:abc\n")
+			chunk := bytes.Repeat(line, 64<<10/len(line))
+			const perOp = 4 << 20
+			b.SetBytes(int64(perOp / len(chunk) * len(chunk)))
+			dir := b.TempDir()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				os.RemoveAll(dir)
+				os.MkdirAll(dir, 0o700)
+				lr, err := NewLogRotator(LogRotatorConfig{
+					ServiceName: "sshd",
+					FilePath:    filepath.Join(dir, "log"),
+					MaxSize:     1 << 20,
+					MaxFiles:    3,
+					FileUID:     -1,
+					FileGID:     -1,
+					LogLevelMax: -1,
+					AlertLevel:  -1,
+					GetPID:      func() int { return 1234 },
+				})
+				if err != nil {
+					b.Fatal(err)
+				}
+				w, err := lr.CreatePipe()
+				if err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+				lr.StartReader()
+				for n := 0; n+len(chunk) <= perOp; n += len(chunk) {
+					w.Write(chunk)
+				}
+				lr.CloseWriteEnd()
+				<-lr.doneCh
+				b.StopTimer()
+				lr.Close()
+				b.StartTimer()
+			}
+		})
 	}
 }

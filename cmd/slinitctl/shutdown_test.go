@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"net"
 	"testing"
 	"time"
 )
@@ -119,6 +121,42 @@ func TestFormatHumanDuration(t *testing.T) {
 		got := formatHumanDuration(tc.d)
 		if got != tc.want {
 			t.Errorf("formatHumanDuration(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+// A word after the kind that is not a time used to become the wall
+// message of an immediate shutdown, so a mistyped time — `reboot
+// 10:3O`, `poweroff +5min` — took the machine down at once instead of
+// scheduling it. SysV shutdown and slinit-shutdown both read that word
+// as the time and refuse it. The connection is closed, so a call that
+// gets past the argument check fails on the write instead, which is
+// not a usage error.
+func TestShutdownRejectsBadTimeAfterKind(t *testing.T) {
+	for _, c := range []struct {
+		args  []string
+		usage bool
+	}{
+		{[]string{"reboot", "bogus"}, true},
+		{[]string{"reboot", "10:3O"}, true},
+		{[]string{"poweroff", "+5min"}, true},
+		{[]string{"reboot", "--fast", "msg"}, true},
+		{[]string{"bogus"}, true},
+		// A time first, then the message, still works.
+		{[]string{"reboot", "now", "going", "down"}, false},
+		{[]string{"reboot", "+5", "maintenance"}, false},
+		{[]string{"reboot", "-m", "maintenance"}, false},
+		{[]string{"reboot"}, false},
+		// -k schedules nothing; its words are only a message.
+		{[]string{"-k", "reboot", "maintenance"}, false},
+	} {
+		a, b := net.Pipe()
+		b.Close()
+		err := cmdShutdownDispatch(a, append([]string(nil), c.args...))
+		a.Close()
+		var ue usageError
+		if got := errors.As(err, &ue); got != c.usage {
+			t.Errorf("shutdown %q: err = %v, usage error = %v, want %v", c.args, err, got, c.usage)
 		}
 	}
 }

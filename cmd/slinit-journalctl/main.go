@@ -2908,7 +2908,15 @@ func runListBoots(conn net.Conn) error {
 		// No events seen yet — still emit the current boot so the
 		// operator sees SOMETHING (matches `journalctl --list-boots`
 		// behaviour on a freshly-booted system before any logging).
-		fmt.Printf(" 0 %s (no events yet)\n", journal.BootID())
+		// The ID PID 1 persisted: journal.BootID() reads a cache
+		// only PID 1 initialises, and panicked here.
+		id := "unknown"
+		if b, err := os.ReadFile(journal.BootIDPath); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				id = v
+			}
+		}
+		fmt.Printf(" 0 %s (no events yet)\n", id)
 		return nil
 	}
 
@@ -3883,6 +3891,17 @@ func (ro renderOpts) displayMsg(msg string, indent int) string {
 	return msg
 }
 
+// displayField is displayMsg for a field printed in a line's prefix
+// (identifier, hostname, unit), which the sender may choose as freely
+// as the message. A prefix has no continuation column, so a newline is
+// escaped too.
+func (ro renderOpts) displayField(s string) string {
+	if ro.all {
+		return s
+	}
+	return strings.ReplaceAll(escapeControls(s), "\n", `\x0a`)
+}
+
 // escapeControls is displayMsg's escaping. Plain ASCII text, the
 // common case, is returned as is.
 func escapeControls(s string) string {
@@ -4044,13 +4063,13 @@ func renderShort(out io.Writer, e *journal.Event, tf timeFormat, ro renderOpts) 
 	}
 	var prefix string
 	if ro.noHostname {
-		prefix = fmt.Sprintf("%s %s%s: ", formatTime(e.Ts, tf, ro.utc), identOf(e), pidPart)
+		prefix = fmt.Sprintf("%s %s%s: ", formatTime(e.Ts, tf, ro.utc), ro.displayField(identOf(e)), pidPart)
 	} else {
 		host := e.Hostname
 		if host == "" {
 			host = "-"
 		}
-		prefix = fmt.Sprintf("%s %s %s%s: ", formatTime(e.Ts, tf, ro.utc), host, identOf(e), pidPart)
+		prefix = fmt.Sprintf("%s %s %s%s: ", formatTime(e.Ts, tf, ro.utc), ro.displayField(host), ro.displayField(identOf(e)), pidPart)
 	}
 	msg := ro.displayMsg(ro.truncateMsg(e.Msg), utf8.RuneCountInString(prefix))
 	if _, err := fmt.Fprintf(out, "%s%s\n", prefix, msg); err != nil {
@@ -4220,11 +4239,11 @@ func renderWithUnit(out io.Writer, e *journal.Event, ro renderOpts) error {
 	}
 	// Emit the same identifying prefix short would produce, then
 	// suffix it with "unit=NAME:" for disambiguation.
-	prefix := fmt.Sprintf("%s unit=%s ", formatTime(e.Ts, timeShort, ro.utc), unit)
+	prefix := fmt.Sprintf("%s unit=%s ", formatTime(e.Ts, timeShort, ro.utc), ro.displayField(unit))
 	// Now delegate the message + identifier/pid rendering to a
 	// pared-down inline path (can't call renderShort without
 	// double-timestamping).
-	ident := identOf(e)
+	ident := ro.displayField(identOf(e))
 	pid := shortDisplayPID(e)
 	if pid > 0 {
 		prefix += fmt.Sprintf("%s[%d]: ", ident, pid)
@@ -4356,7 +4375,10 @@ func writeFieldFiltered(out io.Writer, ro renderOpts, name, value string) {
 	if !ro.keepField(name) {
 		return
 	}
-	writeField(out, name, value)
+	// Values are the sender's, as the message is: escaped, and a
+	// continuation indented past "    NAME=" so it cannot pass for
+	// another field.
+	writeField(out, name, ro.displayMsg(value, 4+len(name)+1))
 }
 
 // sortedKeys returns the keys of a string map in stable ascending

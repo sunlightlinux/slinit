@@ -98,3 +98,41 @@ func loadHandle(t *testing.T, conn interface {
 		uint32(payload[3])<<16 |
 		uint32(payload[4])<<24
 }
+
+// reload-signal reads the configured signal while a reload of the
+// service rewrites it under the graph lock; -race reported the unlocked
+// read in a stress run of the daemon (PID 1, container mode).
+func TestReloadSignalReadUnderReload(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	ss := server.services
+	svc := service.NewInternalService(ss, "rs-race")
+	ss.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	handle := loadHandle(t, conn, "rs-race")
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			ss.WithGraphLock(func() { svc.Record().SetReloadSignal(syscall.SIGHUP) })
+		}
+	}()
+	for i := 0; i < 30; i++ {
+		if err := WritePacket(conn, CmdReloadSignal, EncodeHandle(handle)); err != nil {
+			t.Fatal(err)
+		}
+		readReply(t, conn)
+	}
+	close(stop)
+	<-done
+}

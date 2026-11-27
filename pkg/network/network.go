@@ -142,6 +142,8 @@ func RunIfup(up bool, logger *logging.Logger) error {
 	}
 	cmd.Stdout = w
 	cmd.Stderr = w // merge; ifupdown writes both channels
+	// Waited for with process.WaitAdhoc below.
+	process.PrepareAdhoc(cmd)
 	err = cmd.Start()
 	w.Close() // the child holds its own copy
 	if err != nil {

@@ -573,7 +573,9 @@ service name or rejected.
     `waits-for`/`soft`, `depends-ms`/`milestone`, `prepared-by`,
     `before`, `after`) from *from* to *to*. `prepared-by` behaves as
     a hard dependency that also cascades a restart from *from* back to
-    *to* — see **slinit-service**(5).
+    *to* — see **slinit-service**(5). A hard kind (`depends-on`,
+    `prepared-by`) from a service that is not stopped to one that is not
+    started is refused, as **dinitctl**(8) refuses it: start *to* first.
 
     **Both argument orders work** (since 3.0.0). slinitctl has always
     taken *from* *kind* *to*; **dinitctl**(8) takes *kind* *from* *to*,
@@ -736,7 +738,10 @@ service name or rejected.
 
     **-m**, **\--message** *TEXT*
     :   Wall message to broadcast. Words after *kind* and *time* are
-        also joined into the message, as with SysV **shutdown**.
+        also joined into the message, as with SysV **shutdown**. Those
+        words need the *time* before them: a word in its place that is
+        not a time is a usage error, not the message of an immediate
+        shutdown (since 4.0.4). With **-k** no *time* is needed.
 
     **-i**, **\--interactive**
     :   Ask for the host name and refuse to proceed unless it matches,

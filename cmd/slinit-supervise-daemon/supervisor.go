@@ -174,6 +174,7 @@ func startDaemon(opts Options) (int, <-chan string, error) {
 	cmd.SysProcAttr = sys
 
 	if err := setupStdio(cmd, opts); err != nil {
+		closeStdio(cmd)
 		return 0, nil, err
 	}
 	if opts.Umask != nil {
@@ -181,7 +182,12 @@ func startDaemon(opts Options) (int, <-chan string, error) {
 		defer syscall.Umask(old)
 	}
 
-	if err := cmd.Start(); err != nil {
+	err := cmd.Start()
+	// The child has its own copies now; ours would stay open until a
+	// garbage collection, three per respawn, and a logger would never
+	// see EOF once its daemon is gone.
+	closeStdio(cmd)
+	if err != nil {
 		return 0, nil, err
 	}
 	pid := cmd.Process.Pid
@@ -268,6 +274,16 @@ func scrubEnviron(env []string) []string {
 		out = append(out, kv)
 	}
 	return out
+}
+
+// closeStdio closes the files setupStdio opened for cmd; exec.Cmd does
+// not close a caller's *os.File.
+func closeStdio(cmd *exec.Cmd) {
+	for _, s := range []any{cmd.Stdin, cmd.Stdout, cmd.Stderr} {
+		if f, ok := s.(*os.File); ok && f != nil {
+			_ = f.Close()
+		}
+	}
 }
 
 func setupStdio(cmd *exec.Cmd, opts Options) error {

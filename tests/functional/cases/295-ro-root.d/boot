@@ -1,0 +1,7 @@
+type = internal
+depends-on: system-init
+waits-for: test-runner
+waits-for: ro-writer
+waits-for: ro-state
+waits-for: ro-logfile
+waits-for: ro-run

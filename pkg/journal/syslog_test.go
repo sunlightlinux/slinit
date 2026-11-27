@@ -292,3 +292,32 @@ func TestNewSyslogReaderReplacesStaleSocket(t *testing.T) {
 		t.Errorf("socket mode = %v, want 0666 so every user can log", st.Mode().Perm())
 	}
 }
+
+// A user with a subordinate uid range (useradd gives every user 65536)
+// maps it into a user namespace and sends with SCM_CREDENTIALS naming
+// any of those uids; the kernel delivers each as a distinct host uid
+// (100000, 100001, ...). Past the 256 uids tracked in a window every
+// new uid was suppressed, root included, so such a user could keep
+// sudo's and login's messages out of the journal; and each suppressed
+// uid got a notice of its own at the next window, one event in PID 1
+// per uid sent from.
+func TestUIDLimiterManyUIDsCannotSilenceRoot(t *testing.T) {
+	l := NewUIDLimiter()
+	now := time.Unix(1000, 0)
+	l.now = func() time.Time { return now }
+	report := func(uint32, int) {}
+
+	for uid := uint32(100000); uid < 100000+2000; uid++ {
+		l.Allow(uid, report)
+	}
+	if !l.Allow(0, report) {
+		t.Error("root's message suppressed after 2000 other uids sent one each")
+	}
+
+	now = now.Add(syslogRateWindow)
+	notices := 0
+	l.Allow(1000, func(uint32, int) { notices++ })
+	if notices > 1 {
+		t.Errorf("the next window opened with %d suppression notices, want at most one", notices)
+	}
+}

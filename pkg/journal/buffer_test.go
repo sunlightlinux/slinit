@@ -224,3 +224,20 @@ func TestCompileGrepOnce(t *testing.T) {
 		t.Error("CompileGrep accepted an invalid pattern")
 	}
 }
+
+// A filter on the boot alone must still filter. isEmpty did not look at
+// BootID, so Query took the no-filter fast path and returned every
+// event, whatever boot it came from, while the same filter with one more
+// dimension set dropped the other boots' events.
+func TestQueryFilterBootIDOnly(t *testing.T) {
+	b := NewEventBuffer(0)
+	for i, boot := range []string{"aaaa", "bbbb", "aaaa"} {
+		e := makeEvent(int64(i+1), "u", PriorityInfo, boot)
+		e.BootID = boot
+		b.Push(e)
+	}
+	events, _ := b.Query(QueryFilter{BootID: "bbbb", MinPriority: -1}, 0)
+	if len(events) != 1 || events[0].BootID != "bbbb" {
+		t.Errorf("BootID-only filter returned %d events, want the 1 of boot bbbb", len(events))
+	}
+}

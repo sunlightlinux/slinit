@@ -60,7 +60,11 @@ func TestInhibitReplyFDIsItsOwn(t *testing.T) {
 		t.Fatal(derr)
 	}
 	// What godbus does with the reply: send the number, here by dup.
-	client, err := unix.Dup(int(fd))
+	// Close-on-exec, as the client's copy in another process is to us:
+	// a plain dup was inherited by any child an earlier test's action
+	// (a lid or key handler) forked meanwhile, and the lock then stayed
+	// held until that child exited.
+	client, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +73,9 @@ func TestInhibitReplyFDIsItsOwn(t *testing.T) {
 		t.Fatalf("%d locks held while the client holds its descriptor, want 1", got)
 	}
 	unix.Close(client)
-	waitUntil(t, 2*time.Second, "the lock to be released", func() bool {
+	// Generous: the release is seen by a goroutine reading the pipe
+	// through the poller, which a loaded test host can schedule late.
+	waitUntil(t, 10*time.Second, "the lock to be released", func() bool {
 		return len(m.inhibitors.list()) == 0
 	})
 }

@@ -1,0 +1,6 @@
+# A daemon that never reports ready, with no start timeout: it stays
+# STARTING for good, and so does boot.
+type = process
+command = /bin/sleep 100000
+ready-notification = pipefd:3
+start-timeout = 0

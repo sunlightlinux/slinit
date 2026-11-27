@@ -248,10 +248,8 @@ var managerPropSpec = []managerProp{
 	{Name: "RemoveIPC", Sig: "b", Emit: "const",
 		Get: func(m *manager) any { return false }},
 
-	// XDG_RUNTIME_DIR sizing. pam_rundir / user-runtime-dir mount the
-	// tmpfs on Sunlight, not us, but the advertised figures are what
-	// systemd would use (10% of RAM, one inode per 4 KiB) so a client
-	// sizing a cache against them lands in the right ballpark.
+	// XDG_RUNTIME_DIR sizing: what systemd uses (10% of RAM, one inode
+	// per 4 KiB), and what makeRuntimeDir mounts the tmpfs with.
 	{Name: "RuntimeDirectorySize", Sig: "t", Emit: "const",
 		Get: func(m *manager) any { return runtimeDirectorySize() }},
 	{Name: "RuntimeDirectoryInodesMax", Sig: "t", Emit: "const",

@@ -184,7 +184,11 @@ type Event struct {
 // never by clients — clients passing pre-populated timestamps risk
 // out-of-order journals if system time steps.
 func (e *Event) Now() {
-	now := time.Now()
+	e.setTime(time.Now())
+}
+
+// setTime sets Ts + Mts to now, which must carry a monotonic reading.
+func (e *Event) setTime(now time.Time) {
 	e.Ts = now.UnixNano()
 	e.Mts = monotonicAt(now)
 }
@@ -262,10 +266,7 @@ const (
 // events. Encoded size is checked against MaxEventSize; oversized
 // events return ErrEventTooLarge.
 func (e *Event) MarshalJSONL() ([]byte, error) {
-	buf, err := json.Marshal(e)
-	if err != nil {
-		return nil, err
-	}
+	buf := e.appendJSON(make([]byte, 0, 512+len(e.Msg)))
 	if len(buf) > MaxEventSize {
 		return nil, ErrEventTooLarge
 	}

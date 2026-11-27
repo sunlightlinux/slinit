@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -126,6 +127,11 @@ type LogRotator struct {
 	// path problem would otherwise spam the daemon log per line.
 	alertOpenFailed bool
 
+	// openFiles holds the log-file and alert-file as last opened, for
+	// Close to read without mu: a reader blocked writing to a FIFO
+	// whose reader stopped reading holds mu (see Close).
+	openFiles [2]atomic.Pointer[os.File]
+
 	// State
 	file           *os.File
 	currentSize    int64
@@ -143,11 +149,48 @@ type LogRotator struct {
 		Error(string, ...interface{})
 	}
 
-	// journalPID/journalPIDStr cache getPID's last value as the
-	// SLINIT_TARGET_PID string of journal line events. Under mu.
+	// journalPID/journalFields cache getPID's last value as the
+	// SLINIT_TARGET_PID field of journal line events, shared by the
+	// events (see emitJournalLogLineFields). Under mu.
 	journalPID    int
-	journalPIDStr string
+	journalFields map[string]string
+
+	// Batched writes, used by readLoop for the lines of one read chunk
+	// (processLine called from anywhere else writes each line at once).
+	// batching is the reader goroutine's own. pend holds the bytes of
+	// accepted lines not yet written to file, pendEnds where each line
+	// ends in it; both under mu, and only ever for a regular file
+	// (fileRegular, under mu), whose O_APPEND writes do not split.
+	// Whoever takes mu to look at the file writes them first
+	// (flushPendLocked), so file, rotation and size tracking see what
+	// per-line writes left. journalQ holds the lines' journal events,
+	// sent after their file write, by the reader only.
+	batching    bool
+	fileRegular bool
+	pend        []byte
+	pendEnds    []int
+	journalQ    []journalLine
+	journalBuf  []byte
+
+	// writeFile writes to the log file; nil is (*os.File).Write. Tests
+	// set it to inject short writes and ENOSPC.
+	writeFile func(*os.File, []byte) (int, error)
 }
+
+// journalLine is one line event in LogRotator.journalQ; its message is
+// journalBuf[off:end].
+type journalLine struct {
+	level    int
+	fields   map[string]string
+	off, end int
+}
+
+// Bounds on what one batch holds before it is written out: a read
+// chunk can be up to 1MB and its lines' decoration makes it larger.
+const (
+	rotatorBatchBytes = 64 << 10
+	rotatorBatchLines = 1024
+)
 
 // LogRotatorConfig holds configuration for a LogRotator.
 type LogRotatorConfig struct {
@@ -421,6 +464,9 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 	}
 	buf := make([]byte, bufSize)
 	var lineBuf []byte
+	// A sink and a forwarder get each line as it is processed; keep
+	// the file writes in step with them by not batching at all.
+	lr.batching = lr.sink == nil && lr.forwarder == nil
 	// discarding == true means we already emitted a truncated line
 	// for the current input line and are now dropping bytes until we
 	// see the terminating '\n'. Guards against a runaway producer
@@ -478,12 +524,14 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 					discarding = true
 				}
 			}
+			lr.flushBatch()
 		}
 		if err != nil {
 			// Flush remaining partial line (unless we're in discard mode
 			// and the producer died without ever emitting '\n').
 			if !discarding && len(lineBuf) > 0 {
 				lr.processLine(lr.capLine(lineBuf))
+				lr.flushBatch()
 			}
 			return
 		}
@@ -618,10 +666,20 @@ func (lr *LogRotator) processLine(line []byte) {
 	// in the order they reach the file.
 	emitLine := false
 	var emitLevel int
-	var emitPID string
+	var emitFields map[string]string
 	defer func() {
-		if emitLine {
-			emitJournalLogLinePID(lr.serviceName, emitLevel, matchLine, emitPID)
+		if !emitLine {
+			return
+		}
+		if !lr.batching {
+			emitJournalLogLineFields(lr.serviceName, emitLevel, matchLine, emitFields)
+			return
+		}
+		off := len(lr.journalBuf)
+		lr.journalBuf = append(lr.journalBuf, matchLine...)
+		lr.journalQ = append(lr.journalQ, journalLine{emitLevel, emitFields, off, len(lr.journalBuf)})
+		if len(lr.journalQ) >= rotatorBatchLines || len(lr.journalBuf) >= rotatorBatchBytes {
+			lr.flushBatch()
 		}
 	}()
 
@@ -634,6 +692,7 @@ func (lr *LogRotator) processLine(line []byte) {
 	// one-shot latch (alertOpenFailed) prevents log-spam if the alert
 	// path is broken.
 	if lr.alertLevel >= 0 && lineLevel <= lr.alertLevel {
+		lr.flushPendLocked()
 		lr.writeAlertLocked(out)
 	}
 
@@ -652,9 +711,14 @@ func (lr *LogRotator) processLine(line []byte) {
 		}
 	}
 
-	// Check size-based rotation
-	if lr.maxSize > 0 && lr.currentSize+int64(len(out)) > lr.maxSize {
-		lr.rotateLocked()
+	// Check size-based rotation. Pending lines count as written; if
+	// this line would not fit, write them out first, as their size
+	// was not added for any that failed.
+	if lr.maxSize > 0 && lr.currentSize+int64(len(lr.pend)+len(out)) > lr.maxSize {
+		lr.flushPendLocked()
+		if lr.currentSize+int64(len(out)) > lr.maxSize {
+			lr.rotateLocked()
+		}
 	}
 
 	// UDP syslog forward: fire-and-forget copy to the remote receiver.
@@ -695,20 +759,90 @@ func (lr *LogRotator) processLine(line []byte) {
 			pid = lr.getPID()
 		}
 		if pid != lr.journalPID {
-			lr.journalPID, lr.journalPIDStr = pid, ""
+			lr.journalPID, lr.journalFields = pid, nil
 			if pid > 0 {
-				lr.journalPIDStr = strconv.Itoa(pid)
+				lr.journalFields = targetPIDFields(strconv.Itoa(pid))
 			}
 		}
-		emitLine, emitLevel, emitPID = true, lineLevel, lr.journalPIDStr
+		emitLine, emitLevel, emitFields = true, lineLevel, lr.journalFields
 	}
 
-	n, err := lr.file.Write(out)
+	if lr.batching && lr.file != nil && lr.fileRegular {
+		lr.pend = append(lr.pend, out...)
+		lr.pendEnds = append(lr.pendEnds, len(lr.pend))
+		if len(lr.pend) >= rotatorBatchBytes {
+			lr.flushPendLocked()
+		}
+		return
+	}
+	lr.writeLineLocked(out)
+}
+
+// flushBatch writes the pending lines to file and sends their journal
+// events. Reader goroutine only, without mu.
+func (lr *LogRotator) flushBatch() {
+	lr.mu.Lock()
+	lr.flushPendLocked()
+	lr.mu.Unlock()
+	for _, e := range lr.journalQ {
+		emitJournalLogLineFields(lr.serviceName, e.level, lr.journalBuf[e.off:e.end], e.fields)
+	}
+	lr.journalQ = lr.journalQ[:0]
+	lr.journalBuf = lr.journalBuf[:0]
+}
+
+// flushPendLocked writes the pending lines with one write. If that
+// fails, each line's outcome is what its own write would have had: the
+// lines the write covered succeeded, the one it stopped in (or at the
+// start of) failed with its error, and each line after it is written on its own. Must be
+// called with mu held.
+func (lr *LogRotator) flushPendLocked() {
+	if len(lr.pend) == 0 {
+		return
+	}
+	pend, ends := lr.pend, lr.pendEnds
+	lr.pend, lr.pendEnds = pend[:0], ends[:0]
+	n, err := lr.fileWrite(pend)
 	if err == nil {
 		lr.currentSize += int64(n)
 		return
 	}
+	start := 0
+	for _, end := range ends {
+		line := pend[start:end]
+		switch {
+		case end <= n:
+			lr.currentSize += int64(len(line))
+		case start <= n: // the line whose write the error came from
+			lr.writeFailedLocked(line, err)
+		default:
+			lr.writeLineLocked(line)
+		}
+		start = end
+	}
+}
 
+func (lr *LogRotator) fileWrite(b []byte) (int, error) {
+	if lr.writeFile != nil {
+		return lr.writeFile(lr.file, b)
+	}
+	return lr.file.Write(b)
+}
+
+// writeLineLocked writes one line to the log file. Must be called with
+// mu held.
+func (lr *LogRotator) writeLineLocked(out []byte) {
+	n, err := lr.fileWrite(out)
+	if err == nil {
+		lr.currentSize += int64(n)
+		return
+	}
+	lr.writeFailedLocked(out, err)
+}
+
+// writeFailedLocked handles a line whose write failed with err. Must be
+// called with mu held.
+func (lr *LogRotator) writeFailedLocked(out []byte, err error) {
 	// svlogd Nmin analogue: if the filesystem is full and we have
 	// rotated files we can sacrifice, drain oldest ones down to
 	// minFiles and retry the write once. Better a shorter log history
@@ -718,7 +852,7 @@ func (lr *LogRotator) processLine(line []byte) {
 	// tiny partition), which retry cannot fix.
 	if lr.minFiles > 0 && errors.Is(err, syscall.ENOSPC) {
 		if lr.freeSpaceLocked() {
-			if n2, err2 := lr.file.Write(out); err2 == nil {
+			if n2, err2 := lr.fileWrite(out); err2 == nil {
 				lr.currentSize += int64(n2)
 			}
 		}
@@ -815,7 +949,7 @@ func (lr *LogRotator) writeAlertLocked(out []byte) {
 	if lr.alertFile == nil {
 		f, err := os.OpenFile(
 			lr.alertFilePath,
-			os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW,
+			os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW|syscall.O_NONBLOCK,
 			lr.filePerms,
 		)
 		if err != nil {
@@ -834,6 +968,7 @@ func (lr *LogRotator) writeAlertLocked(out []byte) {
 			_ = f.Chown(lr.fileUID, lr.fileGID)
 		}
 		lr.alertFile = f
+		lr.openFiles[1].Store(f)
 	}
 	if _, err := lr.alertFile.Write(out); err != nil && lr.logger != nil {
 		// Don't latch — a transient ENOSPC/EIO on the alert file
@@ -853,8 +988,13 @@ func (lr *LogRotator) writeAlertLocked(out []byte) {
 // or similar — slinit runs as root so a followed symlink would be an
 // arbitrary write primitive. fchown on the open fd (instead of path-based
 // os.Chown) closes the same TOCTOU window for the chown step.
+//
+// O_NONBLOCK: a FIFO at the path with no reader fails with ENXIO instead
+// of blocking the open with mu held, and with it Close, which a restart
+// calls under the service set's lock. The alert file is opened the same
+// way.
 func (lr *LogRotator) openFileLocked() error {
-	f, err := os.OpenFile(lr.filePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, lr.filePerms)
+	f, err := os.OpenFile(lr.filePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, lr.filePerms)
 	if err != nil {
 		return err
 	}
@@ -866,7 +1006,9 @@ func (lr *LogRotator) openFileLocked() error {
 	if err == nil {
 		lr.currentSize = info.Size()
 	}
+	lr.fileRegular = err == nil && info.Mode().IsRegular()
 	lr.file = f
+	lr.openFiles[0].Store(f)
 	return nil
 }
 
@@ -875,6 +1017,7 @@ func (lr *LogRotator) rotateLocked() {
 	if lr.file == nil {
 		return
 	}
+	lr.flushPendLocked()
 	lr.file.Close()
 	lr.file = nil
 	lr.currentSize = 0
@@ -1051,6 +1194,13 @@ func (lr *LogRotator) Close() {
 	// is lost to the logger only — the logfile already has it.
 	if d, ok := lr.sink.(interface{ SetWriteDeadline(time.Time) error }); ok {
 		_ = d.SetWriteDeadline(time.Now())
+	}
+	// Likewise a log-file or alert-file that is a FIFO whose reader
+	// stopped reading; the line is lost to it.
+	for i := range lr.openFiles {
+		if f := lr.openFiles[i].Load(); f != nil {
+			_ = f.SetWriteDeadline(time.Now())
+		}
 	}
 	if lr.pipeW != nil {
 		lr.pipeW.Close()

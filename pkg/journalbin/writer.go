@@ -53,6 +53,13 @@ type Writer struct {
 	entryArrayTail     uint64 // offset of last array (0 if none yet)
 	entryArrayTailCap  int    // capacity of the tail array
 	entryArrayTailFill int    // used slots in the tail array
+
+	// dataBuckets is the DATA hash table's slot count, read from the
+	// file on the first Append. The table is allocated once, when the
+	// file is created, and never resized, so it cannot change while
+	// this Writer has the file open; re-reading it cost every field of
+	// every Append a pread.
+	dataBuckets int
 	// forceNewArray flips to true after a TAG is written; the next
 	// Append then allocates a fresh entry-array (linked to the
 	// current tail) instead of patching a slot in the sealed array.
@@ -243,6 +250,15 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 			_ = f.Close()
 			return nil, fmt.Errorf("journalbin: header %s: %w", path, err)
 		}
+		// A file still online was not closed: its writer died, maybe
+		// part way through an append whose hash-bucket links and array
+		// slot it had already written past the header's tail. Appending
+		// at that tail overwrote what they name. Like systemd, leave
+		// such a file as it is; the caller starts another.
+		if existing.State == StateOnline {
+			_ = f.Close()
+			return nil, fmt.Errorf("journalbin: %s: %w", path, ErrDirty)
+		}
 		w.header = *existing
 		// TailObjectOffset points at the next append slot; if a prior
 		// writer crashed without updating it, we fall back to file size
@@ -250,6 +266,15 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 		// --verify path).
 		if w.header.TailObjectOffset < HeaderSize {
 			w.header.TailObjectOffset = uint64(st.Size())
+		}
+		// A closed file's tail is never past its end (Close fsyncs
+		// before it returns). A damaged header's was appended at as
+		// is: the file grew a hole up to it, which an object claiming
+		// gigabytes then fitted in, and the next seal read it whole.
+		if w.header.TailObjectOffset > uint64(st.Size()) {
+			_ = f.Close()
+			return nil, fmt.Errorf("journalbin: %s: tail object offset %d past the file's end %d: %w",
+				path, w.header.TailObjectOffset, st.Size(), ErrObjectBounds)
 		}
 		w.header.State = StateOnline
 		w.nextSeqnum = w.header.TailEntrySeqnum + 1
@@ -461,6 +486,13 @@ func (w *Writer) recoverEntryArrayTailLocked() error {
 			w.entryArrayTailFill = fill
 			return nil
 		}
+		// The writer only appends, so the next array follows this
+		// one. A link back, as a damaged file can hold, was walked
+		// forever and slinit-journald hung at start.
+		if next < cur+AlignUp(entryArraySizeFor(len(items))) {
+			return fmt.Errorf("journalbin: ENTRY_ARRAY at %d links back or into itself at %d: %w",
+				cur, next, ErrObjectBounds)
+		}
 		lastGood = cur
 		cur = next
 	}
@@ -538,6 +570,7 @@ func (w *Writer) Append(evt *journal.Event) (uint64, error) {
 	copy(buf[off:], items)
 
 	entryOffset := w.header.TailObjectOffset
+	hdrBefore, arrayTailBefore := w.header, w.entryArrayTail
 	if _, err := w.f.WriteAt(buf, int64(entryOffset)); err != nil {
 		return 0, fmt.Errorf("journalbin: write entry at %d: %w", entryOffset, err)
 	}
@@ -559,6 +592,15 @@ func (w *Writer) Append(evt *journal.Event) (uint64, error) {
 	// Index the entry in the ENTRY_ARRAY chain so bisect on realtime
 	// works without a linear scan.
 	if err := w.appendEntryOffsetLocked(entryOffset); err != nil {
+		// A full disk fails the allocation of a new ENTRY_ARRAY. The
+		// entry, which no array then named, stayed in the file: --file
+		// showed it, -D and the sd API did not, and once sealed Verify
+		// counted it hidden, as if the file had been tampered with.
+		// Unless the chain already took a new array, the entry is given
+		// up and the next append writes over it.
+		if w.entryArrayTail == arrayTailBefore {
+			w.header = hdrBefore
+		}
 		return 0, err
 	}
 
@@ -622,12 +664,16 @@ func (w *Writer) Append(evt *journal.Event) (uint64, error) {
 func (w *Writer) findOrInsertDataLocked(payload []byte) (uint64, uint64, error) {
 	hash := Hash64(payload)
 	tableStart := w.header.DataHashTableOffset
-	n, err := nBuckets(w.f, tableStart)
-	if err != nil {
-		return 0, 0, err
-	}
+	n := w.dataBuckets
 	if n == 0 {
-		return 0, 0, fmt.Errorf("journalbin: DATA hash table at %d is empty", tableStart)
+		var err error
+		if n, err = nBuckets(w.f, tableStart); err != nil {
+			return 0, 0, err
+		}
+		if n == 0 {
+			return 0, 0, fmt.Errorf("journalbin: DATA hash table at %d is empty", tableStart)
+		}
+		w.dataBuckets = n
 	}
 	bucket := int(hash % uint64(n))
 	head, tail, err := readHashItem(w.f, tableStart, bucket)
@@ -636,15 +682,21 @@ func (w *Writer) findOrInsertDataLocked(payload []byte) (uint64, uint64, error) 
 	}
 
 	// Walk the chain (bounded — pathological hash collisions still
-	// terminate at end of chain).
+	// terminate at end of chain). Each DATA is linked after the one
+	// before it, which it follows in the file; a link back, as a
+	// damaged file can hold, was walked forever.
 	cur := head
 	for cur != 0 {
-		curHash, next, curPayload, err := readDataHeader(w.f, cur, hash)
+		curHash, next, curPayload, err := readDataHeader(w.f, cur, hash, w.header.TailObjectOffset)
 		if err != nil {
 			return 0, 0, err
 		}
 		if curHash == hash && byteEq(curPayload, payload) {
 			return cur, hash, nil
+		}
+		if next != 0 && next <= cur {
+			return 0, 0, fmt.Errorf("journalbin: DATA at %d links back to %d in its hash chain: %w",
+				cur, next, ErrObjectBounds)
 		}
 		cur = next
 	}

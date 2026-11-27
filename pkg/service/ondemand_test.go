@@ -5,7 +5,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -209,5 +211,209 @@ func TestOnDemandWatchdogCoversLaunchedProcess(t *testing.T) {
 	}
 	if st := svc.State(); st != StateStarted {
 		t.Errorf("state after watchdog = %v, want STARTED (listening)", st)
+	}
+}
+
+// A client left in the backlog of a service whose process exits without
+// accepting it re-arms the watcher on a socket that is still readable:
+// PID 1 launched the process again at once, without end. One connect
+// from any user who may reach the socket — and a process that fails
+// before it accepts, a missing binary, a bad config — kept PID 1 forking
+// and logging in a tight loop, holding queueMu for every turn. systemd
+// bounds this with the socket's trigger limit (TriggerLimitBurst=20 in
+// TriggerLimitIntervalSec=2s) and fails the socket when it is hit.
+func TestOnDemandTriggerLimitStopsLaunchLoop(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "od.sock")
+	count := filepath.Join(t.TempDir(), "launches")
+	set, _ := newTestSet()
+	svc := newOnDemand(t, set, "od-loop", sock,
+		[]string{"/bin/sh", "-c", "echo x >> " + count + "; exit 1"})
+	defer func() {
+		set.StopService(svc)
+		waitState(t, svc, StateStopped, 5*time.Second)
+	}()
+
+	set.StartService(svc)
+	if got := waitState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		t.Fatalf("state = %v, want STARTED", got)
+	}
+	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	time.Sleep(1500 * time.Millisecond)
+	b, _ := os.ReadFile(count)
+	launches := len(b) / 2
+	if launches > onDemandTriggerBurst {
+		t.Fatalf("one client launched the process %d times in 1.5s (limit %d)",
+			launches, onDemandTriggerBurst)
+	}
+	if st := waitState(t, svc, StateStopped, 3*time.Second); st != StateStopped {
+		t.Errorf("state after trigger limit = %v, want STOPPED", st)
+	}
+}
+
+// A healthy service that serves one client per launch and exits 0 must
+// survive a burst of clients: the trigger limit is there for a process
+// that fails before it accepts, not for one doing its job. systemd fails
+// the socket here (it counts every launch, with TriggerLimitBurst= to
+// raise it); slinit has no such directive, so only failed launches count.
+func TestOnDemandBurstOfClientsKeepsHealthyService(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "od.sock")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, _ := newTestSet()
+	// Under -race the helper's runtime sleeps a second at exit
+	// (GORACE atexit_sleep_ms), which would make 25 serial launches
+	// outlast the clients' deadline.
+	svc := newOnDemand(t, set, "od-burst", sock,
+		[]string{"/usr/bin/env", acceptOneEnv + "=1", "GORACE=atexit_sleep_ms=0", self})
+	defer stopAndWait(t, set, svc)
+
+	set.StartService(svc)
+	if got := waitState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		t.Fatalf("state = %v, want STARTED", got)
+	}
+	const clients = onDemandTriggerBurst + 5
+	served := make(chan bool, clients)
+	for i := 0; i < clients; i++ {
+		go func() {
+			conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+			if err != nil {
+				served <- false
+				return
+			}
+			defer conn.Close()
+			conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+			line, err := bufio.NewReader(conn).ReadString('\n')
+			served <- err == nil && line == "hello\n"
+		}()
+	}
+	n := 0
+	for i := 0; i < clients; i++ {
+		if <-served {
+			n++
+		}
+	}
+	if n != clients {
+		t.Errorf("served %d of %d clients", n, clients)
+	}
+	if st := svc.State(); st != StateStarted {
+		t.Errorf("state after a burst of %d clients = %v, want STARTED", clients, st)
+	}
+}
+
+// Each on-demand service's watcher waited for its first client in
+// poll(2), holding an OS thread until then: 200 idle on-demand services
+// meant 200 threads, every one a task that RLIMIT_NPROC or pids.max
+// can make the Go runtime's next pthread_create fail over. Waiting
+// must not cost a thread per service.
+func TestOnDemandWatchersDoNotHoldThreads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts 200 services")
+	}
+	const n = 200
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	before := osThreadCount(t)
+	svcs := make([]*ProcessService, 0, n)
+	defer func() {
+		for _, svc := range svcs {
+			stopAndWait(t, set, svc)
+		}
+	}()
+	for i := 0; i < n; i++ {
+		svc := newOnDemand(t, set, "od-threads-"+strconv.Itoa(i),
+			filepath.Join(dir, strconv.Itoa(i)+".sock"), []string{"/bin/sleep", "60"})
+		svcs = append(svcs, svc)
+		set.StartService(svc)
+	}
+	for _, svc := range svcs {
+		if got := waitState(t, svc, StateStarted, 5*time.Second); got != StateStarted {
+			t.Fatalf("%s: state = %v, want STARTED", svc.Name(), got)
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	after := osThreadCount(t)
+	bound := before + runtime.GOMAXPROCS(0) + 30
+	t.Logf("threads: %d before, %d with %d on-demand services listening (bound %d)", before, after, n, bound)
+	if after > bound {
+		t.Errorf("%d OS threads with %d on-demand services listening (%d before): a thread per watcher",
+			after, n, before)
+	}
+
+	// And a watcher still sees its client.
+	conn, err := net.DialTimeout("unix", filepath.Join(dir, "7.sock"), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for svcs[7].PID() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if svcs[7].PID() == 0 {
+		t.Error("first client did not launch the service")
+	}
+}
+
+// osThreadCount reads this process's OS thread count from /proc.
+func osThreadCount(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Skipf("no /proc: %v", err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, "Threads:"); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil {
+				t.Fatalf("parse %q: %v", line, err)
+			}
+			return n
+		}
+	}
+	t.Fatal("no Threads: line in /proc/self/status")
+	return 0
+}
+
+// A process that exits 0 without accepting leaves its client in the
+// backlog, so the re-armed watcher fires at once. Clean exits used to
+// clear the trigger count, and one connect then kept PID 1 relaunching
+// the process about 630 times a second. Clean launches are now held to
+// the limit's rate instead: the service stays up, launched at most
+// onDemandTriggerBurst times per interval.
+func TestOnDemandCleanExitWithoutAcceptIsThrottled(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "od.sock")
+	count := filepath.Join(t.TempDir(), "launches")
+	set, _ := newTestSet()
+	svc := newOnDemand(t, set, "od-clean-loop", sock,
+		[]string{"/bin/sh", "-c", "echo x >> " + count + "; exit 0"})
+	defer stopAndWait(t, set, svc)
+
+	set.StartService(svc)
+	if got := waitState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		t.Fatalf("state = %v, want STARTED", got)
+	}
+	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	time.Sleep(3 * time.Second)
+	b, _ := os.ReadFile(count)
+	launches := len(b) / 2
+	// Two full windows fit in 3 s, plus the launches of the first.
+	if max := 2*onDemandTriggerBurst + onDemandTriggerBurst/2; launches > max {
+		t.Errorf("one client launched a clean-exiting process %d times in 3s, want at most %d", launches, max)
+	}
+	if st := svc.State(); st != StateStarted {
+		t.Errorf("state = %v, want STARTED: a clean exit is not a failure", st)
 	}
 }

@@ -720,6 +720,19 @@ func (c *Connection) handleFindService(payload []byte) error {
 	return err
 }
 
+// loadNotFoundSelf reports whether err says that name itself has no
+// description, rather than that it failed to parse or that one of its
+// dependencies is missing or broken.
+func loadNotFoundSelf(name string, err error) bool {
+	var notFound *service.ServiceNotFound
+	if errors.As(err, &notFound) {
+		return notFound.Name == name
+	}
+	var le *config.ServiceLoadError
+	return errors.As(err, &le) && le.ServiceName == name &&
+		errors.Is(le.Err, config.ErrServiceNotFound)
+}
+
 func (c *Connection) handleLoadService(payload []byte) error {
 	name, _, err := DecodeServiceName(payload)
 	if err != nil {
@@ -740,12 +753,24 @@ func (c *Connection) handleLoadService(payload []byte) error {
 		svc, loadErr = c.server.services.LoadService(name)
 	})
 	if err := loadErr; err != nil {
+		// The reply is only an opcode, so the reason — file and line,
+		// the missing dependency — is logged here or is lost: slinitctl
+		// can say no more than "could not be loaded". dinit logs it the
+		// same way ("Could not load service ..."). A request for a name
+		// that simply does not exist is the one failure the reply
+		// already describes in full, and is left out.
+		if !loadNotFoundSelf(name, err) {
+			c.server.logger.Error("Could not load service '%s': %v", name, err)
+		}
 		// Use typed error checks instead of fragile string matching
 		var notFound *service.ServiceNotFound
 		var loadErr *config.ServiceLoadError
 		var parseErr *config.ParseError
 		switch {
-		case errors.As(err, &notFound):
+		case errors.As(err, &notFound), errors.Is(err, config.ErrServiceNotFound):
+			// The DirLoader reports a missing description (the
+			// service's own or a dependency's) as a ServiceLoadError
+			// wrapping ErrServiceNotFound; dinit answers NOSERVICE.
 			return c.writePacket(RplyNoService, nil)
 		case errors.As(err, &parseErr):
 			return c.writePacket(RplyServiceDescErr, nil)
@@ -811,8 +836,11 @@ func (c *Connection) handleStartService(payload []byte) error {
 	// refuse-manual-start blocks the direct control-socket path but
 	// not the dependency graph. StartService is only invoked here
 	// from the control connection, so gating at this call site is
-	// exactly the systemd semantics.
-	if svc.Record().RefusesManualStart() {
+	// exactly the systemd semantics. Read under the graph lock: a
+	// reload rewrites it there.
+	var refuses bool
+	c.server.services.WithGraphLock(func() { refuses = svc.Record().RefusesManualStart() })
+	if refuses {
 		if started {
 			return c.writePacket(RplyAlreadySS, nil)
 		}
@@ -827,9 +855,10 @@ func (c *Connection) handleStartService(payload []byte) error {
 	// is that it stays up, whatever brought it up. Answering "already started"
 	// first dropped that, so disable or a dependent leaving then stopped it,
 	// and --pin was lost.
-	c.server.services.StartService(svc)
+	if !c.server.services.StartServiceUnlessShuttingDown(svc, pin) {
+		return c.writePacket(RplyShuttingDown, nil)
+	}
 	if pin {
-		c.server.services.PinStartService(svc)
 		// Persist the pin so a reboot keeps the operator's intent.
 		// Errors are logged; a full disk must not fail the start.
 		if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStarted); err != nil {
@@ -900,7 +929,18 @@ func (c *Connection) handleStopService(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
+	// As dinit: a restart would start the service again, so it is
+	// refused once a shutdown has begun, as a start is.
+	if restart && c.server.services.IsShuttingDown() {
+		return c.writePacket(RplyShuttingDown, nil)
+	}
+
 	if svc.State() == service.StateStopped {
+		// Drop its activation anyway, as dinit's stop always does: a
+		// service waiting out its restart delay (after a crash, or in
+		// the middle of a restart) is STOPPED but still wanted, and
+		// answering "already stopped" alone let it start again.
+		c.server.services.StopService(svc)
 		// Pin it anyway, as dinit does and as the start side does for a
 		// service already up: the operator asked for it to stay down.
 		// Answering "already stopped" first dropped the pin, so the next
@@ -920,8 +960,11 @@ func (c *Connection) handleStopService(payload []byte) error {
 
 	// refuse-manual-stop mirrors refuse-manual-start on the shutdown
 	// side. `force` overrides so an operator can still forcibly stop
-	// a runaway service if that's really required.
-	if !force && svc.Record().RefusesManualStop() {
+	// a runaway service if that's really required. Read under the
+	// graph lock: a reload rewrites it there.
+	var refuses bool
+	c.server.services.WithGraphLock(func() { refuses = svc.Record().RefusesManualStop() })
+	if !force && refuses {
 		return c.writePacket(RplyManualRefused, nil)
 	}
 
@@ -950,10 +993,14 @@ func (c *Connection) handleStopService(payload []byte) error {
 		}
 	}
 	if restart {
-		// Re-start the service after stopping (restart operation)
-		c.server.services.StartService(svc)
+		// Re-start the service after stopping (restart operation).
+		// The shutdown check again, in one step with the start: one
+		// that began since the check above has stopped everything
+		// (see StartServiceUnlessShuttingDown).
+		if !c.server.services.StartServiceUnlessShuttingDown(svc, pin) {
+			return c.writePacket(RplyShuttingDown, nil)
+		}
 		if pin {
-			c.server.services.PinStartService(svc)
 			if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStarted); err != nil {
 				fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
 			}
@@ -1022,8 +1069,13 @@ func (c *Connection) handleListServices() error {
 // one write each, which made a list of 1000 services cost 1000 system
 // calls.
 func (c *Connection) writeServiceList(encode func(service.Service) []byte) error {
-	var buf []byte
-	for _, info := range c.encodeAllLocked(encode) {
+	infos := c.encodeAllLocked(encode)
+	size := 3 // RplyListDone
+	for _, info := range infos {
+		size += 3 + len(info)
+	}
+	buf := make([]byte, 0, size)
+	for _, info := range infos {
 		if len(info) > MaxPayloadSize {
 			// A name too long to frame: send what precedes it, then
 			// fail as writePacket always has (closing the connection).
@@ -1252,7 +1304,9 @@ func (c *Connection) handleReloadSignal(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	sig := svc.Record().ReloadSignal()
+	// Read under the graph lock: a reload rewrites it there.
+	var sig syscall.Signal
+	c.server.services.WithGraphLock(func() { sig = svc.Record().ReloadSignal() })
 	if sig == 0 {
 		return c.writePacket(RplyNAK, nil)
 	}
@@ -1342,7 +1396,9 @@ func (c *Connection) handleOnceService(payload []byte) error {
 		return c.writePacket(RplyShuttingDown, nil)
 	}
 	// Start once: set auto-restart to never, then start
-	c.server.services.StartOnceService(svc)
+	if !c.server.services.StartOnceService(svc) {
+		return c.writePacket(RplyShuttingDown, nil)
+	}
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -1626,13 +1682,21 @@ func (c *Connection) handleStartAll() error {
 			skipped++
 			continue
 		}
+		// Read under the graph lock: a reload rewrites these there.
 		rec := svc.Record()
-		if rec.IsManualStart() || rec.RefusesManualStart() || rec.IsStopPinned() {
+		var skip bool
+		c.server.services.WithGraphLock(func() {
+			skip = rec.IsManualStart() || rec.RefusesManualStart() || rec.IsStopPinned()
+		})
+		if skip {
 			skipped++
 			continue
 		}
 
-		c.server.services.StartService(svc)
+		if !c.server.services.StartServiceUnlessShuttingDown(svc, false) {
+			// A shutdown began during the walk; start nothing more.
+			break
+		}
 		started++
 	}
 
@@ -1857,7 +1921,7 @@ func (c *Connection) handleAddDep(payload []byte) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	if depType > 5 {
+	if depType > uint8(service.DepPreparedBy) {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
@@ -1897,7 +1961,7 @@ func (c *Connection) handleRmDep(payload []byte, v7 bool) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	if depType > 5 {
+	if depType > uint8(service.DepPreparedBy) {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
@@ -1949,8 +2013,10 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 		fromSvc = c.getService(fromHandle)
 	}
 	if fromSvc == nil {
-		// Check @meta enable-via on the target service
-		fromName := svc.Record().EnableVia()
+		// Check @meta enable-via on the target service. Read under the
+		// graph lock: a reload rewrites it there.
+		var fromName string
+		c.server.services.WithGraphLock(func() { fromName = svc.Record().EnableVia() })
 		if fromName == "" {
 			fromName = c.server.services.BootServiceName()
 		}
@@ -2046,8 +2112,10 @@ func (c *Connection) handleDisableService(payload []byte, v7 bool) error {
 		fromSvc = c.getService(fromHandle)
 	}
 	if fromSvc == nil {
-		// Check @meta enable-via on the target service
-		fromName := svc.Record().EnableVia()
+		// Check @meta enable-via on the target service. Read under the
+		// graph lock: a reload rewrites it there.
+		var fromName string
+		c.server.services.WithGraphLock(func() { fromName = svc.Record().EnableVia() })
 		if fromName == "" {
 			fromName = c.server.services.BootServiceName()
 		}
@@ -2178,7 +2246,10 @@ func (c *Connection) handleQueryDescription(payload []byte) error {
 	}
 
 	// Reuse the length-prefixed string encoding from EncodeServiceName.
-	return c.writePacket(RplyDescription, EncodeServiceName(svc.Record().Description()))
+	// Encoded under the graph lock: a reload rewrites it there.
+	return c.writePacket(RplyDescription, c.encodeLocked(func(s service.Service) []byte {
+		return EncodeServiceName(s.Record().Description())
+	}, svc))
 }
 
 func (c *Connection) handleQueryMetadata(payload []byte) error {
@@ -2190,8 +2261,11 @@ func (c *Connection) handleQueryMetadata(payload []byte) error {
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
-	rec := svc.Record()
-	return c.writePacket(RplyMetadata, EncodeMetadata(rec.Author(), rec.Version(), rec.Usage()))
+	// Encoded under the graph lock: a reload rewrites these there.
+	return c.writePacket(RplyMetadata, c.encodeLocked(func(s service.Service) []byte {
+		rec := s.Record()
+		return EncodeMetadata(rec.Author(), rec.Version(), rec.Usage())
+	}, svc))
 }
 
 // handleActivateProfile decodes a length-prefixed profile name and
@@ -2237,7 +2311,10 @@ func (c *Connection) handleQueryBundleMembers(payload []byte) error {
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
-	return c.writePacket(RplyBundleMembers, EncodeStringList(svc.Record().BundleMembers()))
+	// Encoded under the graph lock: a reload rewrites the list there.
+	return c.writePacket(RplyBundleMembers, c.encodeLocked(func(s service.Service) []byte {
+		return EncodeStringList(s.Record().BundleMembers())
+	}, svc))
 }
 
 func (c *Connection) handleQueryServiceDscDir() error {

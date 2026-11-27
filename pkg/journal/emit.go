@@ -46,6 +46,9 @@ type Emitter struct {
 	// without dialing again. Both under connMu.
 	dialErr     error
 	dialRetryAt time.Time
+	// dialNoFile is errors.Is(dialErr, unix.ENOENT), kept so the
+	// check inside the backoff does not unwrap the error per emit.
+	dialNoFile bool
 
 	// probedAt is when connect last checked, inside the backoff, for
 	// the socket file a dial found missing. Under connMu.
@@ -141,8 +144,12 @@ func (e *Emitter) Emit(evt *Event) error {
 	// Populate timestamps if the caller didn't already (some paths
 	// pre-Now to preserve original event time when re-emitting from
 	// a buffer).
+	// One clock reading serves the timestamp and connect's redial
+	// backoff: reading it twice was a sixth of an emit while no
+	// listener is bound.
+	now := time.Now()
 	if evt.Ts == 0 {
-		evt.Now()
+		evt.setTime(now)
 	}
 	// Default priority to Info if the caller left it at the zero
 	// value AND didn't say "please, emerg". Distinguishing between
@@ -173,7 +180,7 @@ func (e *Emitter) Emit(evt *Event) error {
 	}
 	e.fanoutSubs(evt)
 
-	if err := e.publishToSocket(evt); err != nil {
+	if err := e.publishToSocket(evt, now); err != nil {
 		e.dropped.Add(1)
 		// Socket-drop is expected when journald isn't running; don't
 		// surface as a hard error unless the caller cares. But we do
@@ -276,9 +283,7 @@ func (e *Emitter) stampTrusted(evt *Event) {
 	// will panic — that's a programming error (main should always
 	// Init before any Emit). Kernel events still carry them; they're
 	// per-boot / per-host metadata, not per-process identity.
-	evt.BootID = BootID()
-	evt.MachineID = MachineID()
-	evt.Hostname = Hostname()
+	evt.BootID, evt.MachineID, evt.Hostname = trustedIDs()
 }
 
 // emitSendTimeout is how long one send waits for the listener;
@@ -294,21 +299,31 @@ const (
 // failure. A "no such file or directory" or "connection refused"
 // error is normal (no listener bound) — the caller should treat it
 // as a soft failure worth counting but not logging.
-func (e *Emitter) publishToSocket(evt *Event) error {
-	conn, err := e.connect()
+//
+// now is the emit's clock reading, for connect's redial backoff.
+func (e *Emitter) publishToSocket(evt *Event, now time.Time) error {
+	conn, err := e.connectAt(now)
 	if err != nil {
 		return err
 	}
-	// Marshal only once there is somewhere to send it.
-	data, err := evt.MarshalJSONL()
-	if err != nil {
-		return err
+	// Marshal only once there is somewhere to send it, into a pooled
+	// buffer: the write copies it into the socket.
+	bp := sendBufPool.Get().(*[]byte)
+	data := evt.appendJSON((*bp)[:0])
+	defer func() {
+		if cap(data) <= maxPooledSendBuf {
+			*bp = data[:0]
+			sendBufPool.Put(bp)
+		}
+	}()
+	if len(data) > MaxEventSize {
+		return ErrEventTooLarge
 	}
 
 	// One datagram per event. UDP-like semantics: the receiver either
 	// gets the whole packet or nothing, no partial writes to worry
 	// about.
-	now := time.Now()
+	now = time.Now()
 	deadline := now.Add(emitSendTimeout)
 	if since := e.stalledSince.Load(); since != 0 {
 		if end := time.Unix(0, since).Add(emitStallWindow); end.Before(deadline) {
@@ -378,20 +393,24 @@ const emitProbeInterval = 50 * time.Millisecond
 // failing. We keep the conn open across calls to avoid the per-emit
 // connect cost on a high-traffic system.
 func (e *Emitter) connect() (*net.UnixConn, error) {
+	return e.connectAt(time.Now())
+}
+
+// connectAt is connect with the current time supplied by the caller.
+func (e *Emitter) connectAt(now time.Time) (*net.UnixConn, error) {
 	e.connMu.Lock()
 	defer e.connMu.Unlock()
 
 	if e.conn != nil {
 		return e.conn, nil
 	}
-	now := time.Now()
 	if e.dialErr != nil && now.Before(e.dialRetryAt) {
 		// Inside the backoff, but a socket file that has appeared is
 		// slinit-journald having just bound it: dial at once, or the
 		// events between its backlog replay and our next dial would
 		// never reach its disk. Checking costs a syscall, not a dial,
 		// and is done at most once per emitProbeInterval.
-		if !errors.Is(e.dialErr, unix.ENOENT) || now.Sub(e.probedAt) < emitProbeInterval {
+		if !e.dialNoFile || now.Sub(e.probedAt) < emitProbeInterval {
 			return nil, e.dialErr
 		}
 		e.probedAt = now
@@ -407,6 +426,7 @@ func (e *Emitter) connect() (*net.UnixConn, error) {
 	if err != nil {
 		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ECONNREFUSED) {
 			e.dialErr, e.dialRetryAt, e.probedAt = err, now.Add(emitRedialBackoff), now
+			e.dialNoFile = errors.Is(err, unix.ENOENT)
 		}
 		return nil, err
 	}

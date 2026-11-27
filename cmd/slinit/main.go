@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +27,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
 	"github.com/sunlightlinux/slinit/pkg/hooks"
+	etchostname "github.com/sunlightlinux/slinit/pkg/hostname"
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/journald"
 	"github.com/sunlightlinux/slinit/pkg/logging"
@@ -61,6 +64,39 @@ const (
 	defaultUserSocket       = ".slinitctl"
 )
 
+// bootHostnameToSet returns the name PID 1 gives the kernel from
+// /etc/hostname, or "" to leave cur alone. The first name line is
+// normalised as systemd does: the whole file used to be passed, so a
+// comment above the name became the hostname, and "host.example.com."
+// kept its dot. The name as written is compared first: a container
+// runtime sets the UTS name to the file's content verbatim, and a name
+// systemd would normalise (my_host) must not be renamed under it.
+func bootHostnameToSet(cur string) string {
+	if etchostname.ReadStaticRaw() == cur {
+		return ""
+	}
+	if h := etchostname.ReadStatic(); h != cur {
+		return h
+	}
+	return ""
+}
+
+// maxOSThreads replaces the Go runtime's default limit of 10000 OS
+// threads, past which it kills the process ("fatal error: thread
+// exhaustion"). slinit holds one thread per running child: os/exec
+// waits for a child in a blocking waitid, which parks a thread for as
+// long as the child lives. So about 9900 running services were enough
+// to kill PID 1 the moment the next one started, taking the machine
+// with it. This is the kernel's own ceiling on tasks (PID_MAX_LIMIT on
+// 64-bit), so the runtime no longer refuses a thread that the kernel
+// would have given; a system out of tasks makes the next fork fail,
+// which is a failed service start, not a dead init.
+const maxOSThreads = 4 * 1024 * 1024
+
+func init() {
+	debug.SetMaxThreads(maxOSThreads)
+}
+
 // stringSlice implements flag.Value for repeated -t/--service flags.
 type stringSlice []string
 
@@ -96,6 +132,10 @@ func main() {
 	// rebooting it. Signals that arrive before the loop starts queue on
 	// this channel and are acted on as soon as it turns.
 	earlySignals := eventloop.SetupEarlySignals()
+
+	// Make the threads the runtime will want later while the kernel still
+	// gives them out: see threadreserve.go.
+	reserveThreads(runtime.GOMAXPROCS(0) + threadReserveExtra)
 
 	// Whether our output is a terminal, decided here because the
 	// catch-all logger later points fd 1 at a pipe: asking afterwards
@@ -279,7 +319,7 @@ func main() {
 	flag.DurationVar(&emergencyTimeout, "emergency-timeout", 0,
 		"maximum time to wait for services to stop during shutdown before force-exit (default 90s; workloads with heavy docker/systemd-style teardown may need 3-5m)")
 
-	parseArgs(flag.CommandLine, os.Args[1:], os.Getpid() == 1)
+	bootWords := parseArgs(flag.CommandLine, os.Args[1:], os.Getpid() == 1)
 
 	if showVersion {
 		detected := platform.Detect()
@@ -416,21 +456,14 @@ func main() {
 
 	// Positional args are treated as service names.
 	// When running as PID 1 on Linux, the kernel passes unrecognized cmdline
-	// args to init, so we only accept known service names ("single") and
-	// ignore everything else — matching dinit behavior.
-	// However, if -m (--system-mgr) or -o (--container) was explicitly given,
-	// the user controls the command line, so accept all args (dinit's
-	// process_sys_args logic: filtering only when PID1+root without -m/-o).
-	processSysArgs := isPID1 && !systemMode && !containerMode
-	if processSysArgs {
-		for _, arg := range flag.Args() {
-			if arg == "single" {
-				bootServices = append(bootServices, arg)
-			}
-			// Other kernel parameters (e.g. "nopti", "auto") are ignored
-		}
+	// args to init, so parseArgs has already kept only the words dinit
+	// would start: "single", and every word after an -m (--system-mgr) or
+	// -o (--container), which say the user wrote the line. Nothing on the
+	// line may stop PID 1, so those words are not checked again here.
+	if isPID1 {
+		bootServices = append(bootServices, bootWords...)
 	} else {
-		for _, arg := range flag.Args() {
+		for _, arg := range bootWords {
 			if len(arg) > 0 && arg[0] == '-' {
 				fmt.Fprintf(os.Stderr, "slinit: unrecognized option: %s\n", arg)
 				exitFlushed(cal, 1)
@@ -538,12 +571,10 @@ func main() {
 	// before starting us, and without CAP_SYS_ADMIN the redundant call
 	// failed, putting a WARN at the top of every container's log.
 	if isPID1 {
-		if data, err := os.ReadFile("/etc/hostname"); err == nil {
-			cur, _ := os.Hostname()
-			if h := strings.TrimSpace(string(data)); h != "" && h != cur {
-				if err := unix.Sethostname([]byte(h)); err != nil {
-					logger.Warn("sethostname(%q) failed: %v", h, err)
-				}
+		cur, _ := os.Hostname()
+		if h := bootHostnameToSet(cur); h != "" {
+			if err := unix.Sethostname([]byte(h)); err != nil {
+				logger.Warn("sethostname(%q) failed: %v", h, err)
 			}
 		}
 	}
@@ -1039,7 +1070,7 @@ func main() {
 		}
 	}
 	if effectiveEnvFile != "" {
-		fileEnv, err := process.ReadEnvFile(effectiveEnvFile)
+		fileEnv, err := process.ReadStartupEnvFile(effectiveEnvFile)
 		if err != nil {
 			// Implicit fallback: quietly skip on error (operator
 			// didn't ask for this file explicitly). Explicit --env-file:
@@ -1094,12 +1125,12 @@ func main() {
 		if err != nil {
 			logger.Error("Invalid --cpu-affinity %q: %v", cpuAffinityStr, err)
 		} else {
-			// Apply to slinit daemon itself
+			// Apply to slinit daemon itself, every thread of it
 			var cpuSet unix.CPUSet
 			for _, c := range cpus {
 				cpuSet.Set(int(c))
 			}
-			if err := unix.SchedSetaffinity(0, &cpuSet); err != nil {
+			if err := setDaemonAffinity(&cpuSet); err != nil {
 				logger.Error("Failed to set daemon CPU affinity: %v", err)
 			} else {
 				logger.Info("Daemon CPU affinity set to: %s", cpuAffinityStr)
@@ -1794,9 +1825,11 @@ func main() {
 	// graph. Nothing to load or restart.
 	var startedAny bool
 	var loadErrors []string
+	var bootLoadErrs []bootLoadErr
 	for retry := 0; !rescueMode; retry++ {
 		startedAny = false
 		loadErrors = loadErrors[:0]
+		bootLoadErrs = bootLoadErrs[:0]
 		for _, svcName := range bootServices {
 			// Locked: by the second iteration of the retry loop, earlier
 			// services are running and their monitor goroutines take the
@@ -1810,6 +1843,7 @@ func main() {
 				msg := fmt.Sprintf("load '%s': %v", svcName, err)
 				logger.Error("Failed to %s", msg)
 				loadErrors = append(loadErrors, msg)
+				bootLoadErrs = append(bootLoadErrs, bootLoadErr{svcName, err})
 				continue
 			}
 			// Profile filter: a profile-tagged boot service outside the
@@ -1874,7 +1908,7 @@ func main() {
 		stopSigWatch := rebootOnSignalWhileBlocked(logger)
 		action := recovery.Present(recovery.Options{
 			Errors: append([]string{
-				fmt.Sprintf("No service files found in %v", dirs),
+				bootFailureHeadline(dirs, bootLoadErrs),
 				fmt.Sprintf("(bootService=%q)", bootServices[0]),
 			}, loadErrors...),
 			// The menu owns the console while it is up; an
@@ -2155,7 +2189,12 @@ func main() {
 			if kOpts.Mode == bootmode.Rescue {
 				mountLocalFsBestEffort(logger)
 			}
-			logger.Notice("bootmode=%s: shell active on /dev/console (exit shell or `slinitctl shutdown` to reboot)", kOpts.Mode)
+			// Warn, not Notice: the boot console shows warnings and
+			// errors only, and this line is the operator's one hint at
+			// why there is a bare shell prompt and that leaving it
+			// reboots. At Notice an operator who booted `single` got
+			// "slinit booting..." and a prompt, nothing else.
+			logger.Warn("bootmode=%s: shell active on /dev/console (exit shell or `slinitctl shutdown` to reboot)", kOpts.Mode)
 			label := fmt.Sprintf("bootmode=%s", kOpts.Mode)
 			go func() {
 				// Wrap panics so a bug in runRescueShell (e.g. a
@@ -2350,6 +2389,34 @@ func main() {
 
 	closeWatchdog(wd, logger)
 	logger.Info("slinit shutdown complete")
+}
+
+// bootLoadErr is a boot service that failed to load, and why.
+type bootLoadErr struct {
+	name string
+	err  error
+}
+
+// bootFailureHeadline is the first line of the boot-failure menu. It
+// said "No service files found" whatever the failure was, so a boot
+// file with a syntax error, or a dependency missing or broken, sent the
+// operator looking for a file that was there, with the real error
+// below it cut to the menu's width. It says so only when no boot
+// service has a description at all.
+func bootFailureHeadline(dirs []string, errs []bootLoadErr) string {
+	notFound := len(errs) > 0
+	for _, e := range errs {
+		var le *config.ServiceLoadError
+		if !errors.As(e.err, &le) || le.ServiceName != e.name ||
+			!errors.Is(le.Err, config.ErrServiceNotFound) {
+			notFound = false
+			break
+		}
+	}
+	if notFound {
+		return fmt.Sprintf("No service files found in %v", dirs)
+	}
+	return "The boot service failed to load (errors below)"
 }
 
 // debuggerForceFail is the boot debugger's [f] action. It runs on the
@@ -2631,6 +2698,13 @@ func runDebugShellRespawnLoop(ttyPath string, logger *logging.Logger, stopCh <-c
 	}
 }
 
+// mountCandidates and mountAllTimeout are variables so a test can run
+// mountLocalFsBestEffort against a stand-in mount.
+var (
+	mountCandidates = []string{"/bin/mount", "/usr/bin/mount", "/sbin/mount"}
+	mountAllTimeout = 30 * time.Second
+)
+
 // mountLocalFsBestEffort runs `mount -a` to bring up /etc/fstab entries
 // before dropping into a rescue shell. Called for Rescue mode only —
 // Emergency skips this so a broken fstab / hanging network mount can't
@@ -2641,9 +2715,8 @@ func runDebugShellRespawnLoop(ttyPath string, logger *logging.Logger, stopCh <-c
 // unreachable NFS or iSCSI target; the shell comes up regardless. Skip
 // silently when mount(8) isn't installed (minimal container image).
 func mountLocalFsBestEffort(logger *logging.Logger) {
-	candidates := []string{"/bin/mount", "/usr/bin/mount", "/sbin/mount"}
 	var mount string
-	for _, p := range candidates {
+	for _, p := range mountCandidates {
 		if _, err := os.Stat(p); err == nil {
 			mount = p
 			break
@@ -2653,10 +2726,15 @@ func mountLocalFsBestEffort(logger *logging.Logger) {
 		logger.Warn("bootmode=rescue: no mount(8) found; skipping local-fs mount")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), mountAllTimeout)
 	defer cancel()
-	logger.Notice("bootmode=rescue: running %s -a (30s timeout)", mount)
+	logger.Notice("bootmode=rescue: running %s -a (%v timeout)", mount, mountAllTimeout)
 	cmd := exec.CommandContext(ctx, mount, "-a")
+	// The timeout kills mount itself, but a helper it forked (a
+	// mount.nfs stuck on an unreachable server) still holds the
+	// output pipe, and CombinedOutput would wait for that pipe for
+	// ever. WaitDelay gives up on it.
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
 	if err != nil {

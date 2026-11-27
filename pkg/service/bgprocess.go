@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -487,7 +489,7 @@ func (s *BGProcessService) BringUp() bool {
 		// O_NOFOLLOW + fchown-via-fd: close the symlink-swap TOCTOU
 		// where root slinit could be tricked into writing/chowning an
 		// attacker-pointed path.
-		f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, os.FileMode(s.logFilePerms))
+		f, err := openLogFile(s.logFile, os.FileMode(s.logFilePerms))
 		if err != nil {
 			s.services.logger.Error("Service '%s': failed to open logfile '%s': %v",
 				s.serviceName, s.logFile, err)
@@ -528,6 +530,13 @@ func (s *BGProcessService) BringUp() bool {
 	s.Record().ApplyProcessAttrs(&params)
 
 	pid, exitCh, err := process.StartProcess(params)
+	// A shared-logger producer gets a new pipe from the mux on every
+	// start, and the child has its own copy of the write end now. Ours
+	// kept the mux's reader from ever seeing EOF and stayed open until
+	// a GC ran its finalizer.
+	if outputPipe != nil && s.logType == LogToPipe && s.sharedLoggerName != "" {
+		outputPipe.Close()
+	}
 	if err != nil {
 		s.exitStatus = noteStartExecFailure(s.Record(), err)
 		if outputPipe != nil && s.logType == LogToBuffer {
@@ -897,12 +906,17 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	//
 	// SignalProcessOnly opts out of pgroup signals for this service
 	// (dinit parity: baseproc-service.cc kill_pg gates on the same flag).
-	if !s.Flags.SignalProcessOnly && !exit.ExitedClean() {
+	// A reload rewrites the flags under queueMu; read them there, then
+	// do the killing without it.
+	s.services.queueMu.Lock()
+	flags := s.Flags
+	s.services.queueMu.Unlock()
+	if !flags.SignalProcessOnly && !exit.ExitedClean() {
 		process.KillProcessGroup(exit.PID)
 	}
 
 	// Kill entire cgroup tree to clean up orphaned processes
-	if s.Flags.KillAllOnStop {
+	if flags.KillAllOnStop {
 		s.killCgroupTree(syscall.SIGKILL)
 	}
 
@@ -934,7 +948,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 			// It may have forked the daemon before giving up. Look for
 			// it as a start would, and adopt it only to bring it down.
 			if s.pidFile != "" {
-				pid, result, err := process.ReadPIDFile(s.pidFile)
+				pid, result, err := s.readPIDFile(s.pidFile)
 				if result == process.PIDResultOK {
 					s.bringDownForkedDaemonLocked(pid)
 					return
@@ -999,7 +1013,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		err    error
 	)
 	if s.pidFile != "" {
-		pid, result, err = process.ReadPIDFile(s.pidFile)
+		pid, result, err = s.readPIDFile(s.pidFile)
 		if result == process.PIDResultFailed && pidFileStillComing(err) {
 			// A forking daemon writes its pid file in the child, after
 			// the launcher it forked from has already exited — so the
@@ -1059,7 +1073,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 // as fatal, because there the daemon was just forked and a dead pid means
 // it died; pollForPIDFile tells the two apart by s.followPID.
 func (s *BGProcessService) adoptFollowedPID() bool {
-	pid, result, err := process.ReadPIDFile(s.followPID)
+	pid, result, err := s.readPIDFile(s.followPID)
 	switch result {
 	case process.PIDResultOK:
 		s.services.logger.Info("Service '%s': following existing process %d from %s",
@@ -1136,6 +1150,149 @@ func (s *BGProcessService) recoveredDaemonDiedLocked(pid int) {
 	s.daemonDiedLocked()
 }
 
+// readPIDFile reads a pid file as ReadPIDFile does, and refuses a live
+// pid that whoever could write the file had no business naming.
+//
+// The pid read is what slinit adopts as the daemon and later signals, so
+// whoever could write the file chooses who gets SIGTERM/SIGKILL: its
+// owner, and the owner of any directory on the way to it, who could have
+// put a file or a symlink of their own there. systemd
+// (service_load_pid_file, with CHASE_SAFE) accepts a pid from a file not
+// owned by the manager, or reached through a directory owned by another
+// user, only when the pid is in the service's own cgroup. slinit services
+// often have no cgroup of their own, so where systemd would refuse, slinit
+// also accepts a pid whose real or saved uid is that one other user's:
+// the kernel would let them signal it anyway, so naming it hands them
+// nothing they did not have. Everything else is refused — a run-as
+// service writing sshd's pid, or another service's, into its pid file,
+// or a symlink of its own steering slinit to a pid file of root's.
+func (s *BGProcessService) readPIDFile(path string) (int, process.PIDResult, error) {
+	pid, result, info, err := process.ReadPIDFileInfo(path)
+	if result != process.PIDResultOK {
+		return pid, result, err
+	}
+	writers, err := pidFileWriters(path, info)
+	if err == nil {
+		err = pidFileWritersMayName(writers, pid, s.OwnCgroupPath())
+	}
+	if err != nil {
+		return 0, process.PIDResultFailed, fmt.Errorf("pid file %s: %w", path, err)
+	}
+	return pid, result, nil
+}
+
+// pidFileManagerUID is the uid slinit runs as. A variable so tests can
+// judge pid files as a root slinit would.
+var pidFileManagerUID = os.Getuid
+
+// pidFileWriters returns the uids that could have chosen what the pid
+// file read says. When it was reached without following any symlink and
+// has no other link, that is its owner alone: the owner of a directory
+// on the way can delete or rename the file, but anything put in its
+// place is a file of their own, which its owner then shows. Through a
+// symlink (or a hard link) the file read may be one that directory's
+// owner pointed at, so every directory owner on the way counts too.
+// A root daemon keeping its pid file in a directory of its service user
+// (/run/nginx owned by nginx) is accepted that way, as systemd accepts it.
+func pidFileWriters(path string, info process.PIDFileInfo) ([]uint32, error) {
+	if info.NoSymlinks && info.Nlink == 1 {
+		return []uint32{info.Owner}, nil
+	}
+	owners, err := pidFileDirOwners(path)
+	if err != nil {
+		return nil, err
+	}
+	return append(owners, info.Owner), nil
+}
+
+// pidFileDirOwners returns the owner of every directory on the way to
+// path, as the kernel resolves each prefix.
+func pidFileDirOwners(path string) ([]uint32, error) {
+	var owners []uint32
+	dir := filepath.Dir(filepath.Clean(path))
+	for {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return nil, err
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			owners = append(owners, st.Uid)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return owners, nil
+		}
+		dir = parent
+	}
+}
+
+// pidFileWritersMayName is readPIDFile's rule. owners are the uids owning
+// the file and the directories above it; cgroup is the service's own
+// cgroup, or "" when it has none.
+func pidFileWritersMayName(owners []uint32, pid int, cgroup string) error {
+	manager := uint32(pidFileManagerUID())
+	var writer uint32
+	writers := 0
+	for _, uid := range owners {
+		if uid == 0 || uid == manager || (writers > 0 && uid == writer) {
+			continue
+		}
+		writer = uid
+		writers++
+	}
+	if writers == 0 {
+		return nil
+	}
+	if cgroup != "" && pidInCgroup(pid, cgroup) {
+		return nil
+	}
+	if ruid, suid, ok := procRealSavedUID(pid); ok && writers == 1 && (ruid == writer || suid == writer) {
+		return nil
+	}
+	return fmt.Errorf("refusing PID %d: the file, or a directory above it, is "+
+		"writable by another user than root, and the process neither runs as "+
+		"that user nor is in the service's cgroup", pid)
+}
+
+// procRealSavedUID returns the real and saved uid of pid: the two the
+// kernel matches a signal's sender against.
+func procRealSavedUID(pid int) (ruid, suid uint32, ok bool) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
+	if err != nil {
+		return 0, 0, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || f[0] != "Uid:" {
+			continue
+		}
+		r, err1 := strconv.ParseUint(f[1], 10, 32)
+		sv, err2 := strconv.ParseUint(f[3], 10, 32)
+		return uint32(r), uint32(sv), err1 == nil && err2 == nil
+	}
+	return 0, 0, false
+}
+
+// pidInCgroup reports whether pid is in cgroup (a /sys/fs/cgroup path)
+// or below it: a delegated service may have moved its daemon into a
+// child cgroup of its own.
+func pidInCgroup(pid int, cgroup string) bool {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cgroup")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		rel, ok := strings.CutPrefix(line, "0::")
+		if !ok {
+			continue
+		}
+		p := filepath.Clean("/sys/fs/cgroup" + rel)
+		c := filepath.Clean(cgroup)
+		return p == c || strings.HasPrefix(p, c+"/")
+	}
+	return false
+}
+
 // pidFileStillComing reports whether a failed read looks like a daemon
 // that has not finished writing yet — the file is absent, or present and
 // empty. Anything else (unparseable content, a permission problem) is a
@@ -1198,7 +1355,7 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 				return
 			}
 
-			pid, result, err := process.ReadPIDFile(pidFile)
+			pid, result, err := s.readPIDFile(pidFile)
 			if result == process.PIDResultFailed {
 				lastErr = err
 				if !pidFileStillComing(err) {
@@ -1302,7 +1459,7 @@ func (s *BGProcessService) pollForForkedDaemon() {
 			if s.state.Load() != StateStopping {
 				return
 			}
-			pid, result, err := process.ReadPIDFile(pidFile)
+			pid, result, err := s.readPIDFile(pidFile)
 			pending := (result == process.PIDResultFailed && pidFileStillComing(err)) ||
 				(result == process.PIDResultTerminated && stalePID > 0 && pid == stalePID)
 			if pending && time.Now().Before(expiry) {

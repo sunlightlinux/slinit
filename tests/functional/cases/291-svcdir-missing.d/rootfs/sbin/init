@@ -1,0 +1,15 @@
+#!/bin/sh
+# Stand-in /sbin/init for a case that breaks the boot graph: with no
+# loadable boot service slinit starts nothing, the test-runner service
+# included, so the runner is started here, outside the graph, and slinit
+# then takes over PID 1 by exec. The runner waits for the control socket
+# itself; the redirections are inside the subshell because /dev is not
+# mounted until slinit mounts it. A background job's stdin is /dev/null
+# before any redirection, so that one node is made here (devtmpfs is
+# mounted over it later).
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+[ -e /dev/null ] || mknod -m 666 /dev/null c 1 3
+rm -rf /etc/slinit.d
+( sleep 3; exec /bin/sh /test/guest-runner.sh </dev/null >/dev/console 2>&1 ) &
+exec /sbin/slinit "$@"

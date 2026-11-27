@@ -502,6 +502,28 @@ func (ss *ServiceSet) StartService(svc Service) {
 	ss.processQueuesLocked()
 }
 
+// StartServiceUnlessShuttingDown is StartService, then PinStartService
+// when pin is set, for a control connection: it refuses, returning
+// false, once a shutdown has begun. The check is made under the same
+// hold of queueMu as the start, because StopAllServices begins the
+// shutdown under queueMu: a start checked before it and made after it
+// would leave the service explicitly active (and pinned) with nothing
+// left to stop it, and the shutdown waiting for it until its timeout.
+func (ss *ServiceSet) StartServiceUnlessShuttingDown(svc Service, pin bool) bool {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	if ss.IsShuttingDown() {
+		return false
+	}
+	svc.Start()
+	ss.processQueuesLocked()
+	if pin {
+		svc.PinStart()
+		ss.processQueuesLocked()
+	}
+	return true
+}
+
 // WakeService starts a service without marking it active (re-attaches to
 // active dependents). Returns false if no active dependents were found.
 func (ss *ServiceSet) WakeService(svc Service) bool {
@@ -653,26 +675,37 @@ func (ss *ServiceSet) ContinueService(svc *ProcessService) bool {
 // StartOnceService starts the service for one run, not restarted when
 // it stops (`slinitctl once`). Its restart setting is left alone: the
 // next ordinary start restores it.
-func (ss *ServiceSet) StartOnceService(svc Service) {
+//
+// It refuses, returning false, once a shutdown has begun, checking under
+// the same hold of queueMu for the reason StartServiceUnlessShuttingDown
+// gives.
+func (ss *ServiceSet) StartOnceService(svc Service) bool {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
+	if ss.IsShuttingDown() {
+		return false
+	}
 	svc.Record().StartOnce()
 	ss.processQueuesLocked()
+	return true
 }
 
 // StopAllServices stops all services (for shutdown).
 func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
-	// Snapshot services under read lock to avoid racing with concurrent
-	// AddService/RemoveService calls from control socket goroutines.
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	// The snapshot is taken under queueMu (then ss.mu, the order
+	// releaseStopsLastLocked uses), in the same hold that marks the
+	// shutdown. Taken before it, a service loaded and started between
+	// the two (StartServiceUnlessShuttingDown saw no shutdown yet) was
+	// missing from the list and never stopped: the shutdown waited out
+	// its timeout for it.
 	ss.mu.RLock()
 	snapshot := make([]Service, 0, len(ss.records))
 	for _, svc := range ss.records {
 		snapshot = append(snapshot, svc)
 	}
 	ss.mu.RUnlock()
-
-	ss.queueMu.Lock()
-	defer ss.queueMu.Unlock()
 	// The type first: whoever sees the shutdown sees its type.
 	ss.shutdownType.Store(uint32(shutdownType))
 	ss.restartEnabled.Store(false)

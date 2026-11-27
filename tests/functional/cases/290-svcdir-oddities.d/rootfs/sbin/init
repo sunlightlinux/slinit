@@ -1,0 +1,19 @@
+#!/bin/sh
+# Stand-in /sbin/init: plants the oddities in /etc/slinit.d before
+# slinit starts (a cpio overlay cannot carry a FIFO through the
+# harness's cp, nor a dangling link reliably), then execs slinit as
+# PID 1. The test runner itself is the ordinary in-graph service.
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+D=/etc/slinit.d
+mkfifo "$D/fifo-svc"
+ln -s /nonexistent/target "$D/dangle-svc"
+mkdir "$D/dir-svc"
+# (/dev is not mounted yet, so no /dev/zero: awk makes the bytes.)
+# 10 MiB on one line, no newline anywhere.
+awk 'BEGIN { s = "x"; while (length(s) < 1024) s = s s
+             for (i = 0; i < 10240; i++) printf "%s", s }' > "$D/bigline-svc"
+# 10 MiB of 64 KiB comment lines, then a valid description.
+awk 'BEGIN { s = "#"; while (length(s) < 65536) s = s s; s = substr(s, 1, 65535)
+             for (i = 0; i < 160; i++) print s; print "type = internal" }' > "$D/bigcomment-svc"
+exec /sbin/slinit "$@"

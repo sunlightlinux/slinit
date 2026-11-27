@@ -162,7 +162,7 @@ func main() {
 			quietMode = true
 			args = args[1:]
 		case args[0] == "--help" || args[0] == "-h":
-			printUsage()
+			printUsage(os.Stdout)
 			os.Exit(0)
 		case args[0] == "--version":
 			fmt.Printf("slinitctl version %s\n", version)
@@ -174,7 +174,7 @@ func main() {
 doneFlags:
 
 	if len(args) == 0 {
-		printUsage()
+		printUsage(os.Stderr)
 		os.Exit(exitUsage)
 	}
 
@@ -558,8 +558,8 @@ doneFlags:
 	}
 }
 
-func printUsage() {
-	fmt.Fprintf(os.Stderr, `Usage: slinitctl [options] <command> [args...]
+func printUsage(w io.Writer) {
+	fmt.Fprintf(w, `Usage: slinitctl [options] <command> [args...]
 
 Options:
   --socket-path, -p PATH   Control socket path
@@ -3121,6 +3121,14 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 			if positionalIdx == 0 {
 				return usagef("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", a)
 			}
+			// The message comes after the time, as with SysV shutdown
+			// and slinit-shutdown: a word in the time's place is a
+			// mistyped time, not the message of an immediate shutdown.
+			// -k schedules nothing, so its words are only a message.
+			if timeGiven == "" && !warnOnly {
+				_, err := parseShutdownTime(a)
+				return err
+			}
 			messageTokens = append(messageTokens, a)
 		}
 	}
@@ -4012,7 +4020,7 @@ func cmdAnalyze(conn net.Conn, args []string) error {
 	case "plot":
 		return cmdAnalyzePlot(conn)
 	default:
-		return fmt.Errorf("analyze: unknown subcommand %q (want: time, blame, "+
+		return usagef("analyze: unknown subcommand %q (want: time, blame, "+
 			"critical-chain, dot, plot)", sub)
 	}
 }

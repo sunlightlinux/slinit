@@ -1,0 +1,1 @@
+command = /bin/sh -c "echo overlay-applied > /run/ov-good.stamp"

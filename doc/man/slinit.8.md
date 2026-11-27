@@ -680,11 +680,22 @@ When running as PID 1 on Linux, kernel-cmdline tokens not consumed by
 the kernel are passed to slinit as argv. To avoid surprising
 interactions with bootloader options like `auto`, slinit only treats
 "naked" tokens as service names when they are recognised (**single**
-maps to a *runlevel-single* service, if defined). Tokens prefixed
-with `--` are normal long options. An option slinit does not know
-(sysvinit's `-z`, `-h`), or one of its own left without its value
-(sysvinit's `-b`, `-a`), is reported and ignored rather than ending
-PID 1. Tokens of the form *KEY*=*VALUE*
+maps to a *runlevel-single* service, if defined). As in dinit, every
+token beginning with `-` is an option wherever it appears: a naked
+token does not end option parsing, so `splash -t rescue` honours
+**-t**. After **-m** (**\--system-mgr**) or **-o** (**\--container**)
+the line is taken to be written for slinit, and every naked token
+*after* it is a service name; tokens before it are still filtered.
+**-s** (**\--system**) only selects system mode, which PID 1 is in
+anyway: it is not sysvinit's single-user switch (use **single**) and
+never makes naked tokens service names. A `--` that reaches slinit is
+an unknown option. An option slinit does not know
+(sysvinit's `-z`, `-h`), one of its own left without its value
+(sysvinit's `-b`, `-a`), a value that does not parse, or an empty
+token is reported and ignored, and the rest of the line is still
+read; dinit refuses these, but PID 1 must boot. An empty value
+(`--devtmpfs-path=`, `--banner ""`) is a value: it switches the option
+off, as anywhere else. Tokens of the form *KEY*=*VALUE*
 that are not slinit options are exported into the service environment
 instead of being processed as arguments.
 

@@ -4,7 +4,7 @@ Go native fuzz tests (`testing.F`) for slinit's input parsing surfaces.
 
 ## This directory is not all of them
 
-27 targets live here. Another 18 sit beside the code they exercise,
+29 targets live here. Another 20 sit beside the code they exercise,
 because a fuzz target for an unexported parser has to live in its own
 package:
 
@@ -21,8 +21,9 @@ package:
 | `cmd/slinit-immortal-convert` | `FuzzParseImmortalYAML` |
 | `pkg/timedate` | `FuzzReadZoneTab`, `FuzzValidateZone` |
 | `pkg/hostname` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease` |
-| `pkg/journal` | `FuzzParseSyslog` |
+| `pkg/journal` | `FuzzParseSyslog`, `FuzzAppendJSONMatchesMarshal` |
 | `pkg/process` | `FuzzMatchFDName` |
+| `pkg/control` | `FuzzControlServer` |
 
 So `go test -fuzz=... ./tests/fuzz/` reaches about three fifths of the
 fuzzing surface. CI fuzzes every package in its matrix
@@ -113,6 +114,14 @@ also enforces:
 |--------|----------------|
 | FuzzJournalBinaryDecodeHeader | pkg/journalbin.DecodeHeader — 240-byte SLJRNL01 header (magic, incompat_flags, offset/size fields) |
 | FuzzJournalBinaryOpenReader | Full OpenReader → EntryOffsets → SeekRealtime → Iter pipeline on a staged temp file. Seed corpus includes real Writer-produced journals so the mutator starts on ENTRY_ARRAY chain code paths |
+
+### Journal binary format robustness (journalbin_robust_fuzz_test.go)
+Each input runs under a 10 s deadline and an allocation budget (256 bytes per input byte plus 64 MiB), so a hang or an unbounded allocation fails the input like a panic does.
+
+| Target | What it fuzzes |
+|--------|----------------|
+| FuzzJournalBinaryReadAll | Every read path journalctl takes on an untrusted file: Iter, EntryOffsets + ReadEntryAt forwards and backwards, SeekRealtime, the sd API (Next/Previous, cursors, matches), OpenDir + MultiReader.Iter, and Verify with an FSS key |
+| FuzzJournalBinaryWriterReopen | NewWriterWithOptions (plain and sealed) on arbitrary bytes as an existing file, three appends, Close, then a read back: the path slinit-journald takes reopening the day file |
 
 ### Process Attributes (process_fuzz_test.go)
 | Target | What it fuzzes |

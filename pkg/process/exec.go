@@ -304,7 +304,10 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	var lockFD *os.File
 	if params.LockFile != "" {
 		var err error
-		lockFD, err = os.OpenFile(params.LockFile, os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0600)
+		// O_NONBLOCK: a FIFO at the path with no reader fails with
+		// ENXIO instead of blocking PID 1 in open(2). The fd is only
+		// ever flocked, so its mode does not matter.
+		lockFD, err = os.OpenFile(params.LockFile, os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
 		if err != nil {
 			return 0, nil, &ExecError{Stage: StageDoExec, Err: fmt.Errorf("lock-file open: %w", err)}
 		}
@@ -406,10 +409,32 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// a start failure — a service told to read a file that is not there
 	// should not come up reading /dev/null instead and look healthy.
 	if params.StdinFile != "" {
-		f, err := os.Open(params.StdinFile)
-		if err != nil {
-			return 0, nil, fmt.Errorf("standard-input-file %s: %w", params.StdinFile, err)
+		// O_NONBLOCK so a FIFO with no writer cannot block PID 1 in
+		// open(2); the child gets fd 0 back in blocking mode.
+		fd, err := unix.Open(params.StdinFile, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		if err == nil {
+			// Read-only, a FIFO opened that way reads end-of-file
+			// until a writer connects, so a daemon fed through it
+			// would exit at start. Opened read-write (Linux allows it
+			// without blocking), fd 0 waits for data, as it did when
+			// the open itself waited for a writer. Without write
+			// permission it stays read-only.
+			var st unix.Stat_t
+			if unix.Fstat(fd, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFIFO {
+				if rw, err := unix.Open(params.StdinFile, unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0); err == nil {
+					unix.Close(fd)
+					fd = rw
+				}
+			}
+			if err = unix.SetNonblock(fd, false); err != nil {
+				unix.Close(fd)
+			}
 		}
+		if err != nil {
+			return 0, nil, fmt.Errorf("standard-input-file %s: %w", params.StdinFile,
+				&os.PathError{Op: "open", Path: params.StdinFile, Err: err})
+		}
+		f := os.NewFile(uintptr(fd), params.StdinFile)
 		defer f.Close()
 		cmd.Stdin = f
 	}
@@ -656,6 +681,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		prevUmask = syscall.Umask(int(*params.Umask))
 	}
 
+	// Ask clone for a pidfd: the wait below parks in the netpoller on
+	// it instead of holding an OS thread per child (see pidfdwait.go).
+	pidfd := -1
+	cmd.SysProcAttr.PidFD = &pidfd
+
 	// Start the process
 	err = cmd.Start()
 	if prevUmask >= 0 {
@@ -696,6 +726,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// rather than routine, because applyPostForkAttrs below writes cgroup
 	// files and is not instant.
 	routedCh := DefaultExitRouter.Register(pid)
+	watch := newExitWatch(cmd.Process, pidfd)
 
 	// These are best-effort: failures are logged but don't prevent startup.
 	if errs := applyPostForkAttrs(pid, params, cgroupFD != nil); len(errs) > 0 {
@@ -741,6 +772,15 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 		waitDone := make(chan waitResult, 1)
 		go func() {
+			if watch != nil {
+				status, known := watch.wait()
+				// The child is gone, so this returns once the output
+				// copying is done; the process was released, so it has
+				// no status to give and its error says only that.
+				_ = cmd.Wait()
+				waitDone <- waitResult{status: status, known: known}
+				return
+			}
 			err := cmd.Wait()
 			switch {
 			case err == nil:
@@ -765,6 +805,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 					return
 				}
 				// No status to report. Say so rather than inventing one.
+				// A failed Wait keeps the Process's pidfd: let it go, or
+				// it stays open until a GC runs the Process's cleanup.
+				cmd.Process.Release()
 				waitDone <- waitResult{known: false}
 			}
 		}()

@@ -1,0 +1,3 @@
+# A naked word the kernel passes to init (`splash`), then a -t naming
+# a service other than boot.
+splash -t kcmd-target

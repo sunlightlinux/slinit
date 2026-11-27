@@ -120,6 +120,11 @@ type manager struct {
 	mu   sync.RWMutex
 	conn *dbus.Conn
 
+	// leaderWatches holds each session's leader pidfd while
+	// watchSessionLeader waits on it; releaseSession closes it.
+	leaderMu      sync.Mutex
+	leaderWatches map[string]*os.File
+
 	// Manager.WallMessage / EnableWallMessages are writable properties
 	// (see managerprops.go). We store what a client sets so the value
 	// round-trips through `loginctl` the way it does under elogind;
@@ -811,10 +816,14 @@ func runShutdown(verb string) *dbus.Error {
 		return dbus.NewError("org.freedesktop.login1.Error.OperationInProgress",
 			[]interface{}{"unknown shutdown verb: " + verb})
 	}
-	if err := exec.Command(bin, flag).Start(); err != nil {
+	cmd := exec.Command(bin, flag)
+	if err := cmd.Start(); err != nil {
 		return dbus.NewError("org.freedesktop.login1.Error.OperationInProgress",
 			[]interface{}{err.Error()})
 	}
+	// Reap it: a request that does not take the machine down would
+	// otherwise leave a zombie, and a pidfd until a garbage collection.
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
 
@@ -878,6 +887,7 @@ func main() {
 	debug := flag.Bool("debug", false, "log D-Bus method dispatch to stderr")
 	userMode := flag.Bool("user", false, "session-bus mode: only host org.freedesktop.systemd1 stub for per-user auto-activation (skips login1 + /run/systemd tree)")
 	flag.Parse()
+	capInhibitorsToFDs()
 
 	// --debug: redirect os.Stderr to /var/log/slinit-logind.log so the
 	// method-dispatch prints and the session-machinery diagnostics

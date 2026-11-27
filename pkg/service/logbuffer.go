@@ -18,6 +18,7 @@ type LogBuffer struct {
 	pipeW   *os.File // write end of the pipe (passed to child, then closed in parent)
 	doneCh  chan struct{}
 	running bool
+	readR   *os.File // the pipe the running reader reads
 }
 
 // NewLogBuffer creates a LogBuffer with the given max size.
@@ -59,13 +60,17 @@ func (lb *LogBuffer) StartReader() {
 		return
 	}
 	lb.mu.Lock()
-	if lb.running {
-		// Already running — avoid duplicate readers
+	if lb.running && lb.readR == lb.pipeR {
+		// Already reading this pipe — avoid duplicate readers. A
+		// reader still on the previous pipe (a restart, with the old
+		// process's child holding its write end) does not count:
+		// nothing would read the new one.
 		lb.mu.Unlock()
 		return
 	}
 	lb.doneCh = make(chan struct{})
 	lb.running = true
+	lb.readR = lb.pipeR
 	// Capture pipeR and doneCh so the goroutine always uses its own references,
 	// even if a restart creates a new pipe/channel before this goroutine finishes.
 	pipeR := lb.pipeR
@@ -80,7 +85,10 @@ func (lb *LogBuffer) readLoop(pipeR *os.File, doneCh chan struct{}) {
 	defer func() {
 		pipeR.Close()
 		lb.mu.Lock()
-		lb.running = false
+		if lb.doneCh == doneCh {
+			lb.running = false
+			lb.readR = nil
+		}
 		lb.mu.Unlock()
 		close(doneCh)
 	}()

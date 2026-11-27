@@ -22,8 +22,10 @@ import (
 // carried out; see TestShutdownGateHandOverRace), and a `shutdown +N`
 // scheduled during boot got neither its wall message nor /run/nologin.
 //
-// The boot service is a FIFO, so loading it blocks until the script has
-// made its requests.
+// The boot service is an OpenRC init.d script whose top level waits for
+// the requests to be made, so loading it (the depend() parse sources
+// the script, for up to 2s) holds the boot back until then. It used to
+// be a FIFO, but a FIFO in a service directory no longer blocks a load.
 func TestShutdownRequestsDuringBootLoad(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "sd"), 0755); err != nil {
@@ -31,14 +33,21 @@ func TestShutdownRequestsDuringBootLoad(t *testing.T) {
 	}
 	r := startNS(t, dir, `
 mount -t tmpfs none /run && mount -t tmpfs none /etc || exit 1
-mkfifo "$D/sd/boot"
+mkdir /etc/init.d
+cat >/etc/init.d/boot <<EOF
+#!/sbin/openrc-run
+i=0; while [ ! -e "$D/go" ] && [ \$i -lt 100 ]; do sleep 0.02; i=\$((i+1)); done
+start() { sleep 100 & }
+stop() { :; }
+EOF
+chmod 755 /etc/init.d/boot
 "$B/slinit" -m -d "$D/sd" -p "$D/sock" --syslog-socket "" >"$D/log" 2>&1 &
 i=0; while [ ! -S "$D/sock" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done
 "$B/slinitctl" -p "$D/sock" shutdown poweroff +3 >>"$D/trace" 2>&1; echo "schedule rc=$?" >>"$D/trace"
 if [ -e /run/nologin ]; then echo nologin=yes; else echo nologin=no; fi >>"$D/trace"
 "$B/slinitctl" -p "$D/sock" shutdown -c >>"$D/trace" 2>&1; echo "cancel rc=$?" >>"$D/trace"
 "$B/slinitctl" -p "$D/sock" shutdown >>"$D/trace" 2>&1; echo "shutdown rc=$?" >>"$D/trace"
-printf 'type = process\ncommand = /bin/sleep 100\n' > "$D/sd/boot"
+touch "$D/go"
 wait
 echo "slinit exited $?" >>"$D/trace"`)
 	ended := r.wait(25 * time.Second)

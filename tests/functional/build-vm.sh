@@ -33,7 +33,7 @@ PACKAGES_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/${ALPINE_ARCH}"
 # pcre_free_study: symbol not found" and exit 127, which slinit reports
 # as a plain failed start. The 3.23 build does link pcre2, so this pin
 # has to be rechecked against `.PKGINFO` whenever ALPINE_VERSION moves.
-NGINX_PKG="nginx-1.26.3-r4.apk"
+NGINX_PKG="nginx-1.26.3-r5.apk"
 PCRE_PKG="pcre-8.45-r3.apk"
 
 # Headers for building libslinit-mlock.so against musl with the host's

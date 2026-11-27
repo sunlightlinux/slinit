@@ -1,0 +1,3 @@
+# -m after a naked word: the word before it stays a kernel word, the
+# one after it is a service, as in dinit.
+splash -m kcmd-target

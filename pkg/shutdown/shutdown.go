@@ -305,6 +305,15 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 		persistJournalTail(logger)
 	}
 
+	// Persist current time for next boot's clock guard, while the
+	// filesystems are still writable: unmountAll ends by remounting /
+	// read-only.
+	if err := WriteClockTimestamp(); err != nil {
+		logger.Debug("Failed to save clock timestamp: %v", err)
+	} else {
+		logger.Debug("Clock timestamp saved for next boot")
+	}
+
 	// Settle pause (s6-linux-init-maker -q): give journals and other
 	// flash-backed writers a beat to finish before umountall unwinds
 	// the fs. Zero (default) skips the sleep entirely.
@@ -320,13 +329,6 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	if !hookHandledCleanup {
 		swapOff(logger)
 		unmountAll(logger)
-	}
-
-	// Persist current time for next boot's clock guard
-	if err := WriteClockTimestamp(); err != nil {
-		logger.Debug("Failed to save clock timestamp: %v", err)
-	} else {
-		logger.Debug("Clock timestamp saved for next boot")
 	}
 
 	// Sync filesystems to minimize data loss. Skipped when the caller
@@ -548,6 +550,15 @@ func KillAllProcesses(logger *logging.Logger) {
 			logger.Debug("kill(-1, SIGKILL): %v", err)
 		}
 	}
+
+	// SIGKILL is not instant, and nothing else reaps any more: the event
+	// loop that did has returned. Without this the shutdown hook was
+	// started next to the dying, and every one of them stayed a zombie
+	// holding a task slot until the reboot. Under a task limit (a fork
+	// bomb, a pids cgroup) the hook's own fork then failed with EAGAIN and
+	// the hook never ran. dinit's PID 1 goes on reaping while its shutdown
+	// runs; systemd's shutdown waits for and reaps the killed processes.
+	waitForExit(grace)
 }
 
 // killPollInterval is how often waitForExit looks for survivors.
@@ -560,12 +571,35 @@ var survivorsFunc = userProcessesLeft
 // most a process gets to finish, not a delay: a fixed sleep made every reboot,
 // poweroff and soft reboot take three seconds with nothing left to wait for.
 func waitForExit(grace time.Duration) {
+	defer reapFunc()
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
+		reapFunc()
 		if !survivorsFunc() {
 			return
 		}
 		time.Sleep(killPollInterval)
+	}
+}
+
+// reapFunc collects the children that have exited.
+var reapFunc = reapExited
+
+// reapExited reaps every exited child, as the event loop's SIGCHLD
+// handler did while it ran. A child someone still waits for is routed
+// to them. Only PID 1 reaps: from a test binary Wait4(-1) would take
+// other tests' children.
+func reapExited() {
+	if os.Getpid() != 1 {
+		return
+	}
+	for {
+		var ws syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
+		if pid <= 0 || err != nil {
+			return
+		}
+		process.DefaultExitRouter.Route(pid, ws)
 	}
 }
 

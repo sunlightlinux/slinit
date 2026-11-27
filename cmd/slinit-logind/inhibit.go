@@ -89,6 +89,21 @@ const inhibitDelayMax = 5 * time.Second
 // out of descriptors.
 var inhibitorsMax = 8192
 
+// capInhibitorsToFDs lowers inhibitorsMax to a quarter of the
+// descriptor limit. systemd's 8192 comes with logind's
+// LimitNOFILE=524288; under the kernel's default 4096 the locks alone
+// would use every descriptor, and logind at EMFILE starts no session.
+// Called once from main.
+func capInhibitorsToFDs() {
+	var rl unix.Rlimit
+	if unix.Getrlimit(unix.RLIMIT_NOFILE, &rl) != nil {
+		return
+	}
+	if n := rl.Cur / 4; n < uint64(inhibitorsMax) {
+		inhibitorsMax = int(n)
+	}
+}
+
 var errTooManyInhibitors = errors.New("maximum number of inhibitors reached")
 
 type inhibitor struct {
@@ -171,27 +186,17 @@ func (r *inhibitRegistry) add(what, who, why, mode string, uid, pid uint32) (*os
 // A client that writes into the pipe instead of closing it is not
 // releasing anything, so bytes are read and discarded; only a hangup or
 // an error ends the lock.
+//
+// The read goes through the runtime poller (os.Pipe's ends are in it):
+// a raw poll(2) on Fd() held an OS thread per lock, and anyone may take
+// a delay lock.
 func (r *inhibitRegistry) waitRelease(in *inhibitor) {
-	fd := int(in.ourEnd.Fd())
 	buf := make([]byte, 64)
 	for {
-		pfd := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN | unix.POLLHUP}}
-		if _, err := unix.Poll(pfd, -1); err != nil {
-			if err == unix.EINTR {
-				continue
-			}
-			break
+		if _, err := in.ourEnd.Read(buf); err != nil {
+			break // io.EOF once every write end is closed
 		}
-		if pfd[0].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
-			break
-		}
-		if pfd[0].Revents&unix.POLLIN != 0 {
-			n, err := unix.Read(fd, buf)
-			if n == 0 || err != nil {
-				break
-			}
-			// Data, not a release. Keep waiting.
-		}
+		// Data, not a release. Keep waiting.
 	}
 	r.remove(in.ID)
 }

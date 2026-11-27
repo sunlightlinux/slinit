@@ -1,0 +1,3 @@
+# `splash` then sysvinit's single-user -s, which a bootloader entry may
+# carry: neither may become a boot service.
+splash -s

@@ -84,21 +84,39 @@ func InitIDs(hostname string) error {
 		return nil
 	}
 
+	// A failure here is reported, never left as an uninitialised cache:
+	// every event slinit emits stamps these IDs, and the getters panic
+	// until initDone is set. A malformed /etc/machine-id used to return
+	// early, and the first service event then panicked PID 1 (a kernel
+	// panic at boot). An ID that cannot be resolved is replaced by a
+	// transient one, as a missing machine-id already is.
+	var errs []error
 	boot, err := resolveBootID()
 	if err != nil {
-		return fmt.Errorf("journal: resolve boot ID: %w", err)
+		errs = append(errs, fmt.Errorf("journal: resolve boot ID: %w", err))
+		boot = fallbackID()
 	}
 	idCache.boot = boot
 
 	machine, err := resolveMachineID()
 	if err != nil {
-		return fmt.Errorf("journal: resolve machine ID: %w", err)
+		errs = append(errs, fmt.Errorf("journal: resolve machine ID: %w", err))
+		machine = fallbackID()
 	}
 	idCache.machine = machine
 
 	idCache.hostname = hostname
 	idCache.initDone = true
-	return nil
+	return errors.Join(errs...)
+}
+
+// fallbackID is a transient ID for one that could not be resolved, or
+// all zeroes (systemd's SD_ID128_NULL) if not even that can be made.
+func fallbackID() string {
+	if id, err := newRandomID(); err == nil {
+		return id
+	}
+	return strings.Repeat("0", idHexLen)
 }
 
 // BootID returns the current-boot 128-bit hex identifier. Panics if
@@ -111,6 +129,18 @@ func BootID() string {
 		panic("journal: BootID() called before InitIDs — cmd/slinit must call InitIDs early in boot")
 	}
 	return idCache.boot
+}
+
+// trustedIDs returns BootID(), MachineID() and Hostname(), and panics
+// as BootID does, under one read lock instead of three: every emit
+// stamps all three.
+func trustedIDs() (boot, machine, hostname string) {
+	idCache.mu.RLock()
+	defer idCache.mu.RUnlock()
+	if !idCache.initDone {
+		panic("journal: BootID() called before InitIDs — cmd/slinit must call InitIDs early in boot")
+	}
+	return idCache.boot, idCache.machine, idCache.hostname
 }
 
 // MachineID returns the persistent host identity.
@@ -189,7 +219,7 @@ func resolveBootID() (string, error) {
 func resolveMachineID() (string, error) {
 	if existing, err := readIDFile(MachineIDPath); err == nil {
 		return existing, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	} else if !errors.Is(err, fs.ErrNotExist) && !machineIDUnset(MachineIDPath) {
 		return "", fmt.Errorf("read %s: %w", MachineIDPath, err)
 	}
 
@@ -200,6 +230,18 @@ func resolveMachineID() (string, error) {
 			MachineIDPath)
 	}
 	return newRandomID()
+}
+
+// machineIDUnset reports whether the machine-id file is empty or holds
+// "uninitialized": how an image ships one meant to be filled on first
+// boot. systemd treats both as a missing file.
+func machineIDUnset(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	t := strings.TrimSpace(string(b))
+	return t == "" || t == "uninitialized"
 }
 
 // readIDFile parses a 32-hex-char ID file (systemd machine-id format).

@@ -163,3 +163,32 @@ func TestExportOnlyInShellEnvFiles(t *testing.T) {
 		t.Errorf("shell env file: KEYMAP=%q, want us", v)
 	}
 }
+
+// /etc/hostname is normalised as systemd's read_etc_hostname does it: a
+// trailing dot (an FQDN written the DNS way) and stray separators are
+// dropped, and a name that is still invalid reads as none rather than
+// being handed to the kernel.
+func TestReadStaticNormalises(t *testing.T) {
+	old := HostnamePath
+	t.Cleanup(func() { HostnamePath = old })
+	HostnamePath = filepath.Join(t.TempDir(), "hostname")
+
+	long := strings.Repeat("a", 70)
+	for in, want := range map[string]string{
+		"host.example.com.\n": "host.example.com",
+		"-foo-\n":             "foo",
+		"a..b\n":              "a.b",
+		"my_host\n":           "myhost",
+		".-\n":                "",
+		"web-??\n":            "",
+		long + "\n":           long[:64],
+		"# c\n  box.lan.  \n": "box.lan",
+	} {
+		if err := os.WriteFile(HostnamePath, []byte(in), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := ReadStatic(); got != want {
+			t.Errorf("ReadStatic(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

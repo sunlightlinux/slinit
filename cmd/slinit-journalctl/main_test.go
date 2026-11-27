@@ -2093,3 +2093,48 @@ func TestUpdateCatalogStaysInsideRoot(t *testing.T) {
 		t.Fatalf("--update-catalog --root wrote through a symlinked temp file: %q", b)
 	}
 }
+
+// The message was escaped, but nothing else a sender chooses was: any
+// local user picks the identifier ("IDENT:" on /dev/log) and _COMM
+// (prctl PR_SET_NAME), and verbose printed every field raw, MESSAGE
+// included. An escape sequence in one of them reached the terminal of
+// whoever read the journal, and a newline in a verbose value forged a
+// field line ("    _UID=0"). systemd skips such an identifier in short
+// output and shows the value as blob data in verbose; slinit escapes
+// them, as it does the message, and indents a value's continuation.
+func TestRenderNeutralisesSenderChosenFields(t *testing.T) {
+	e := mkEvent()
+	e.SyslogIdentifier = "sudo\x1b]0;owned\x07"
+	e.Comm = "x\x1b[2J"
+	e.Msg = "hi\n    _UID=0\x1b[2J"
+
+	for _, f := range []outputFormat{fmtShort, fmtShortISO, fmtShortMonotonic, fmtWithUnit, fmtVerbose} {
+		var buf bytes.Buffer
+		if err := render(&buf, f, e, renderOpts{}); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); strings.ContainsAny(got, "\x1b\x07") {
+			t.Errorf("format %v: control characters reach the terminal: %q", f, got)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := render(&buf, fmtVerbose, e, renderOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.HasPrefix(l, "    _UID=") {
+			t.Errorf("verbose: a newline in MESSAGE forged a field line: %q", buf.String())
+		}
+	}
+
+	// The identifier is still recognisable for a plain sender.
+	e.SyslogIdentifier = "sudo"
+	buf.Reset()
+	if err := render(&buf, fmtShort, e, renderOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), " sudo") {
+		t.Errorf("plain identifier lost: %q", buf.String())
+	}
+}

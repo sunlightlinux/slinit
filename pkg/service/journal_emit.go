@@ -32,21 +32,34 @@ func emitJournalLogLine(serviceName string, lineLevel int, matchLine []byte, ser
 // emitJournalLogLinePID is emitJournalLogLine with the pid already
 // formatted ("" for none), for a caller that caches the string.
 func emitJournalLogLinePID(serviceName string, lineLevel int, matchLine []byte, pidStr string) {
+	emitJournalLogLineFields(serviceName, lineLevel, matchLine, targetPIDFields(pidStr))
+}
+
+// targetPIDFields is the Fields map of a line event for pidStr ("" for
+// none: nil).
+func targetPIDFields(pidStr string) map[string]string {
+	if pidStr == "" {
+		return nil
+	}
+	return map[string]string{"SLINIT_TARGET_PID": pidStr}
+}
+
+// emitJournalLogLineFields is emitJournalLogLine with the event's Fields
+// already built, for a caller that reuses one map for the lines of the
+// same pid. Nothing writes to an emitted event's Fields (the ring, its
+// subscribers and the socket encoder only read them), so the events can
+// share it; it saved a map allocation per line.
+func emitJournalLogLineFields(serviceName string, lineLevel int, matchLine []byte, fields map[string]string) {
 	if !journal.Enabled() {
 		return
 	}
-	evt := &journal.Event{
+	journal.Emit(&journal.Event{
 		Unit:      serviceName,
 		Prio:      journal.Priority(lineLevel),
 		Transport: journal.TransportStdout,
 		Msg:       string(matchLine),
-	}
-	if pidStr != "" {
-		evt.Fields = map[string]string{
-			"SLINIT_TARGET_PID": pidStr,
-		}
-	}
-	journal.Emit(evt)
+		Fields:    fields,
+	})
 }
 
 // emitJournalStateEvent publishes a state-transition record to the

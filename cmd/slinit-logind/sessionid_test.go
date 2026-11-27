@@ -33,6 +33,9 @@ func withLiveSessions(t *testing.T, n int) {
 // as 0, and the next login was handed c1 again, whose record CreateSession
 // then overwrote although that session was still running.
 func TestSessionIDCounterSurvivesAFailedWrite(t *testing.T) {
+	if inFreshProcess(t) {
+		return
+	}
 	withLiveSessions(t, 3)
 
 	// /run out of space, modelled by RLIMIT_FSIZE=0: the open succeeds

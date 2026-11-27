@@ -2,11 +2,14 @@ package mountwatch
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type testLogger struct{}
@@ -326,5 +329,64 @@ func TestSamePathRegistrationsAreIndependent(t *testing.T) {
 	}
 	if hits["b"] != 1 {
 		t.Errorf("removed b fired again: %d", hits["b"])
+	}
+}
+
+// A mount anyone can make in PID 1's namespace (FUSE through setuid
+// fusermount, udisks for a desktop user) wakes the watcher, which
+// re-reads and parses the whole mount table. With no bound on how often,
+// a user looping mount/unmount had PID 1 parse the table once per
+// change, thousands of times a second. systemd rate-limits its mount
+// event source to 5 a second (DefaultMountRateLimitBurst/IntervalSec).
+// Run as root of a private user and mount namespace, where tmpfs mounts
+// stand in for FUSE ones.
+func TestMountChurnIsRateLimited(t *testing.T) {
+	if os.Getenv("SLINIT_TEST_MOUNTNS") == "" {
+		unshare, err := exec.LookPath("unshare")
+		if err != nil {
+			t.Skip("unshare not available")
+		}
+		ns := []string{"--user", "--map-root-user", "--mount"}
+		if exec.Command(unshare, append(ns, "true")...).Run() != nil {
+			t.Skip("unshare --user --mount not permitted here")
+		}
+		cmd := exec.Command(unshare, append(ns, os.Args[0],
+			"-test.run=^"+t.Name()+"$", "-test.v", "-test.count=1")...)
+		cmd.Env = append(os.Environ(), "SLINIT_TEST_MOUNTNS=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil || strings.Contains(string(out), "--- FAIL") {
+			t.Fatalf("in mount namespace: %v\n%s", err, out)
+		}
+		return
+	}
+
+	dir := t.TempDir()
+	w, err := New(testLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	var reads int32
+	w.onRead = func() { atomic.AddInt32(&reads, 1) }
+	if err := w.Add(AnyMount, "svc", func() {}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	base := atomic.LoadInt32(&reads)
+	churn := 0
+	for end := time.Now().Add(time.Second); time.Now().Before(end); churn++ {
+		if err := unix.Mount("tmpfs", dir, "tmpfs", 0, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.Unmount(dir, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := atomic.LoadInt32(&reads) - base
+	t.Logf("%d mount/unmount cycles, %d mount-table reads", churn, n)
+	if n > 2*mountRateBurst {
+		t.Errorf("%d mount-table reads in one second of churn, want at most %d",
+			n, 2*mountRateBurst)
 	}
 }

@@ -198,18 +198,71 @@ func isDRMNode(path string) bool {
 // short-lived leaders and cost a wakeup per session per interval.
 // POLLIN on a pidfd fires exactly once, when the process dies.
 func waitForPidExit(pid uint32) error {
-	fd, err := unix.PidfdOpen(int(pid), 0)
+	f, err := openPidWatch(pid)
 	if err != nil {
 		return err
 	}
-	defer unix.Close(fd)
+	defer f.Close()
+	return waitPidWatch(f)
+}
 
-	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-	for {
-		_, err := unix.Poll(fds, -1)
-		if err == unix.EINTR {
-			continue
+// openPidWatch opens a pidfd on pid for waitPidWatch, as an *os.File in
+// the Go netpoller. A wait on it parks the goroutine, not an OS thread:
+// one thread per session, parked in poll(2), is a task counted against
+// RLIMIT_NPROC and pids.max, and when those run out the Go runtime's next
+// pthread_create fails and logind aborts. Closing the file ends the wait.
+func openPidWatch(pid uint32) (*os.File, error) {
+	fd, err := unix.PidfdOpen(int(pid), unix.PIDFD_NONBLOCK)
+	if err == unix.EINVAL {
+		// PIDFD_NONBLOCK is 5.10; the flag only matters to waitid.
+		fd, err = unix.PidfdOpen(int(pid), 0)
+		if err == nil {
+			err = unix.SetNonblock(fd, true)
+			if err != nil {
+				unix.Close(fd)
+			}
 		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), "pidfd"), nil
+}
+
+// waitPidWatch blocks until the watched process exits (nil) or f is
+// closed (os.ErrClosed).
+func waitPidWatch(f *os.File) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
 		return err
 	}
+	exited := func(fd uintptr) bool {
+		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		for {
+			n, err := unix.Poll(fds, 0)
+			if err != unix.EINTR {
+				return err == nil && n > 0
+			}
+		}
+	}
+	// ErrNoDeadline: the fd is not in the netpoller (pidfds are not
+	// pollable before 5.3), and Read would not wait. Wait in poll(2), the
+	// thread held, as before.
+	if f.SetReadDeadline(time.Time{}) != nil {
+		var werr error
+		cerr := rc.Control(func(fd uintptr) {
+			fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+			for {
+				_, werr = unix.Poll(fds, -1)
+				if werr != unix.EINTR {
+					return
+				}
+			}
+		})
+		if cerr != nil {
+			return cerr
+		}
+		return werr
+	}
+	return rc.Read(exited)
 }

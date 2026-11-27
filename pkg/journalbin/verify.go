@@ -202,7 +202,7 @@ func Verify(path string, key *FSSKey) (VerifyResult, error) {
 	// is no ENTRY of the walk was linked in the same way.
 	res.EntriesSealed = len(sealedEntries)
 	reachable := make(map[uint64]struct{}, res.EntriesSealed)
-	if err := walkEntryOffsets(f, h.EntryArrayOffset, func(eo uint64) bool {
+	if err := walkEntryOffsets(f, h.EntryArrayOffset, ^uint64(0), func(eo uint64) bool {
 		reachable[eo] = struct{}{}
 		if _, ok := walked[eo]; !ok {
 			res.ForeignEntries++
@@ -245,6 +245,13 @@ func collectHMACInput(f *os.File, from, to uint64) ([]byte, error) {
 		}
 		if oh.Size < ObjectHeaderSize {
 			return nil, fmt.Errorf("journalbin: collect hmac bad size %d at %d", oh.Size, off)
+		}
+		// The writer seals objects it has not walked before: a size
+		// past the span, as a damaged file can hold, was allocated as
+		// is and panicked it with "makeslice: len out of range".
+		if oh.Size > to-off {
+			return nil, fmt.Errorf("journalbin: collect hmac: object at %d claims size %d past %d: %w",
+				off, oh.Size, to, ErrObjectBounds)
 		}
 		next := off + AlignUp(oh.Size)
 		switch oh.Type {

@@ -1329,6 +1329,17 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
 **pid-file**=*path*
 :   For **bgprocess**: file the daemon will write its PID to.
 
+    Whoever owns the file chooses the process slinit signals, so a PID
+    read from a file that is not owned by slinit's own user (root) is
+    accepted only when the process is in the service's own cgroup
+    (**cgroup** or **slice**), or when its real or saved UID is the
+    file's owner, which could signal it anyway. The owner of a directory
+    on the way to the file counts as a writer too (it could have put a
+    symlink there): with two or more such users other than root, only a
+    process in the service's cgroup is accepted. Any other PID fails the
+    start, as systemd refuses it for *PIDFile=*. The same applies to
+    **follow-pid**.
+
 **follow-pid**=*path* (since 3.1.3)
 :   For **bgprocess**: supervise a process slinit did **not** start,
     whose PID is in *path*. slinit adopts whatever the file names and
@@ -2326,7 +2337,17 @@ mlockall       = current+future
     keepalives is sent **watchdog-signal** and, once it exits, the
     service listens again the same way. **slinitctl
     status** shows no PID while it is listening. Only stopping the
-    service closes the sockets.
+    service closes the sockets. A process that fails more than 20 times
+    within 2 seconds — one that exits without accepting its client is
+    launched again at once, the client still waiting — stops the
+    service as failed: systemd's socket trigger limit
+    (*TriggerLimitBurst*=20, *TriggerLimitIntervalSec*=2s), when the
+    launch before was a failure (exec failure, non-zero exit, signal,
+    failed **pre-start-command**). Unlike systemd, after a launch whose
+    process exited 0 the limit holds the next launch back until the
+    window allows it instead of failing the service, so a process
+    serving one client per launch survives a burst of clients. From
+    there **restart** applies as to any failure.
 
     Socket activation applies to **type**=*process* only.
 

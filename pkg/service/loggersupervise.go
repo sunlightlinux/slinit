@@ -112,6 +112,7 @@ func (ls *loggerSupervisor) spawn() (*exec.Cmd, error) {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	process.PrepareAdhoc(cmd) // waited for with process.WaitAdhoc
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -132,6 +133,7 @@ func (ls *loggerSupervisor) supervise() {
 			// with the exit router so the real status comes back
 			// instead of ECHILD.
 			waitErr := process.WaitAdhoc(cmd)
+			ls.releaseReaped(cmd)
 			if ls.isStopped() {
 				// We killed it on purpose, or it was retired and
 				// read to EOF; nothing to report.
@@ -175,6 +177,23 @@ func (ls *loggerSupervisor) supervise() {
 	}
 }
 
+// releaseReaped closes the pidfd os keeps for a logger whose wait found
+// no status because PID 1's reaper collected it first; without this it
+// stayed open until a GC. WaitAdhoc cannot do it: Release sets Pid to
+// -1, and Stop kills the group by -cmd.Process.Pid. Under mu, before
+// Stop has the cmd, Release and putting the pid back are one step to
+// Stop and PID; once Stop has it, the pidfd is left to the collector.
+func (ls *loggerSupervisor) releaseReaped(cmd *exec.Cmd) {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if ls.stopped || cmd.ProcessState != nil || cmd.Process == nil {
+		return
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	cmd.Process.Pid = pid
+}
+
 // current returns the running logger, or nil when none is.
 func (ls *loggerSupervisor) current() *exec.Cmd {
 	ls.mu.Lock()
@@ -186,8 +205,10 @@ func (ls *loggerSupervisor) setCurrent(cmd *exec.Cmd) {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	if ls.stopped && cmd != nil && cmd.Process != nil {
-		// Stop raced us; do not leave an unowned child behind.
+		// Stop raced us; do not leave an unowned child behind, nor
+		// the pidfd only WaitAdhoc releases.
 		_ = cmd.Process.Kill()
+		go process.WaitAdhoc(cmd)
 		return
 	}
 	ls.cmd = cmd

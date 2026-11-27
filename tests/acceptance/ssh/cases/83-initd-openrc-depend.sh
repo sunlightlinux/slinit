@@ -52,7 +52,7 @@ rm -f "${INITD_DIR}/acceptance-test-initd-probe"
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 case "$_probe_err" in
-    *"could not be loaded"*)
+    *"could not be loaded"*|*"not found"*)
         echo "SKIP: init.d fallback disabled at slinit boot (probe couldn't load)"
         echo "      Fix: ensure $INITD_DIR exists in the rootfs BEFORE slinit starts."
         test_summary

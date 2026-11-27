@@ -245,10 +245,13 @@ func (l *UIDLimiter) Allow(uid uint32, report func(uid uint32, n int)) bool {
 		clear(l.counts)
 		clear(l.suppressed)
 	}
-	if _, seen := l.counts[uid]; !seen && len(l.counts) >= syslogMaxRateTracks {
+	if _, seen := l.counts[uid]; !seen && uid != 0 && len(l.counts) >= syslogMaxRateTracks {
 		// More distinct senders than the table holds in one window;
-		// treat the overflow as one more suppression.
-		l.suppressed[uid]++
+		// treat the overflow as one more suppression. One user can
+		// send as many uids as it has subordinate ones, mapped into a
+		// user namespace, so root is tracked whatever the table holds,
+		// and the overflow shares one count and one notice.
+		l.suppressed[uidOverflow]++
 		return false
 	}
 	l.counts[uid]++
@@ -259,9 +262,17 @@ func (l *UIDLimiter) Allow(uid uint32, report func(uid uint32, n int)) bool {
 	return true
 }
 
+// uidOverflow is the key the senders past syslogMaxRateTracks are
+// counted under: (uid_t)-1, which no process can have.
+const uidOverflow = ^uint32(0)
+
 // Notice is the text of the event that reports n messages from uid
 // suppressed on source in one window.
 func (l *UIDLimiter) Notice(source string, uid uint32, n int) string {
+	if uid == uidOverflow {
+		return fmt.Sprintf("%s: suppressed %d messages from senders past the first %d in %s",
+			source, n, syslogMaxRateTracks, syslogRateWindow)
+	}
 	return fmt.Sprintf("%s: suppressed %d messages from uid %d in %s (limit %d)",
 		source, n, uid, syslogRateWindow, UIDRateLimit(uid))
 }

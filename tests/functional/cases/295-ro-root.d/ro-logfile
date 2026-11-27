@@ -1,0 +1,4 @@
+# Logs to a file under /var/log.
+type = process
+command = /bin/sh -c "while :; do echo tick; sleep 1; done"
+logfile = /var/log/ro-logfile.log
