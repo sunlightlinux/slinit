@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -132,11 +131,6 @@ func main() {
 	// rebooting it. Signals that arrive before the loop starts queue on
 	// this channel and are acted on as soon as it turns.
 	earlySignals := eventloop.SetupEarlySignals()
-
-	// Make the threads the runtime will want later while the kernel still
-	// gives them out (see threadreserve.go), as many as the task limits
-	// leave room for (threadbudget.go).
-	reserveThreads(threadReserveSize(runtime.GOMAXPROCS(0) + threadReserveExtra))
 
 	// Whether our output is a terminal, decided here because the
 	// catch-all logger later points fd 1 at a pipe: asking afterwards
@@ -321,6 +315,13 @@ func main() {
 		"maximum time to wait for services to stop during shutdown before force-exit (default 90s; workloads with heavy docker/systemd-style teardown may need 3-5m)")
 
 	bootWords := parseArgs(flag.CommandLine, os.Args[1:], os.Getpid() == 1)
+
+	// Make the threads the runtime will want later while the kernel still
+	// gives them out (see threadreserve.go), as many as the task limits
+	// leave room for (threadbudget.go). After the flags, which say whether
+	// this is a container; before anything that starts goroutines in
+	// numbers.
+	applyThreadReserve(os.Getpid() == 1 && !containerMode)
 
 	if showVersion {
 		detected := platform.Detect()
