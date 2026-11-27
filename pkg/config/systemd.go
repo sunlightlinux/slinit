@@ -2178,6 +2178,15 @@ func (dl *DirLoader) dropMissingSystemdRefs(desc *ServiceDescription, name, unit
 	desc.Before = keep("before:", desc.Before)
 }
 
+// DescriptionExists is descriptionExists for slinit-check, which warns
+// about a by-name reference (part-of, conflicts, on-failure, chain-to)
+// that names nothing: those load fine and silently do nothing.
+func (dl *DirLoader) DescriptionExists(name string) bool {
+	dl.mu.Lock()
+	defer dl.mu.Unlock()
+	return dl.descriptionExists(name)
+}
+
 // descriptionExists reports whether findAndParse would find a
 // description for name — a loaded service, a service file, an init.d
 // script or a .service unit — without parsing it, which could recurse

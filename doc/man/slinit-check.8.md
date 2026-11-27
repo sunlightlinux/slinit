@@ -96,6 +96,13 @@ only on the target system:
   **log-type = file**), **lock-file**, and a Unix **socket-listen**
   path exist.
 
+**part-of**, **conflicts**, **on-failure** and **chain-to** name a
+service that need not be installed, so the daemon loads such a name
+without complaint and the setting then does nothing. Each name that
+resolves to no service file, init.d script or systemd unit is a
+warning (since 4.1.0): right for a service this host does not have,
+and the only sign of a typo.
+
 **consumer-of** is validated against the producer's service file:
 
 - The producer must exist as a service description (otherwise the

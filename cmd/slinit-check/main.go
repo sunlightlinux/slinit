@@ -311,6 +311,11 @@ func main() {
 			}
 		}
 
+		// The settings that name another service by name only: a name that
+		// resolves to nothing loads fine and then does nothing, which is
+		// right for a service not installed here and wrong for a typo.
+		warnings += checkNamedRefs(loader, name, desc)
+
 		// Check consumer-of: producer must exist, be a process-like service,
 		// and have log-type=pipe. Errors here use desc.ConsumerOf (the name
 		// string) directly, never a producer-description pointer that may be
@@ -362,6 +367,37 @@ func newCheckLoader(set *service.ServiceSet, dirs []string) *config.DirLoader {
 	loader.EnableDefaultFallbackDirs()
 	set.SetLoader(loader)
 	return loader
+}
+
+// checkNamedRefs warns about each part-of, conflicts, on-failure and
+// chain-to name that resolves to no service, file, init.d script or
+// systemd unit.
+func checkNamedRefs(loader *config.DirLoader, svcName string, desc *config.ServiceDescription) int {
+	refs := []struct {
+		key   string
+		names []string
+	}{
+		{"part-of", desc.PartOf},
+		{"conflicts", desc.Conflicts},
+		{"on-failure", desc.OnFailure},
+	}
+	if desc.ChainTo != "" {
+		refs = append(refs, struct {
+			key   string
+			names []string
+		}{"chain-to", []string{desc.ChainTo}})
+	}
+	warns := 0
+	for _, r := range refs {
+		for _, n := range r.names {
+			if !loader.DescriptionExists(n) {
+				fmt.Fprintf(os.Stderr, "  WARNING [%s]: %s %q names no service here: it will do nothing (a typo?)\n",
+					svcName, r.key, n)
+				warns++
+			}
+		}
+	}
+	return warns
 }
 
 func checkConsumerOf(dirs []string, svcName, producerName string) (int, int) {
