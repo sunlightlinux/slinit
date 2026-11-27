@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -301,9 +302,13 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 			}
 		}
 
-		// Nothing below can fail.
+		// Nothing below can fail. The before: edges are held by their
+		// targets and point at the old record; they are moved over with
+		// the dependents below and then brought in line with deps.
 		for _, d := range deps {
-			newSvc.Record().AddDep(d.to, d.depType)
+			if d.depType != service.DepBefore {
+				newSvc.Record().AddDep(d.to, d.depType)
+			}
 		}
 
 		// Apply common settings
@@ -317,6 +322,15 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 
 		// Transfer dependents from old to new
 		dl.transferDependents(svc, newSvc)
+		// The BEFORE edges the old record holds were put there by other
+		// services' before:, which still stands; removeDependencies would
+		// drop them with the old record's own.
+		for _, d := range svc.Record().Dependencies() {
+			if d.DepType == service.DepBefore {
+				newSvc.Record().AddDep(d.To, service.DepBefore)
+			}
+		}
+		syncOwnedBefore(newSvc, deps)
 
 		// Remove old deps
 		dl.removeDependencies(svc)
@@ -689,8 +703,8 @@ func (dl *DirLoader) updateDependencies(svc service.Service, desc *ServiceDescri
 		wantedSet[depKeyLocal{d.to.Name(), d.depType}] = true
 	}
 	currentSet := make(map[depKeyLocal]bool)
-	for _, d := range rec.Dependencies() {
-		currentSet[depKeyLocal{d.To.Name(), d.DepType}] = true
+	for _, d := range ownedDeps(svc) {
+		currentSet[depKeyLocal{d.to.Name(), d.depType}] = true
 	}
 
 	// Add first. AddDep is not idempotent, so only genuinely new edges.
@@ -700,42 +714,45 @@ func (dl *DirLoader) updateDependencies(svc service.Service, desc *ServiceDescri
 		if currentSet[k] {
 			continue
 		}
-		rec.AddDep(d.to, d.depType)
+		addResolvedDep(svc, d)
 		currentSet[k] = true
 		added = append(added, d)
 	}
 
-	// Then remove what the description no longer names. BEFORE edges are
-	// left alone: they can be installed on this record by another
-	// service's After, so this description does not own them.
+	// Then remove what the description no longer names: the edges it
+	// owns (ownedDeps), which are not the BEFORE edges this record holds
+	// — those another service's before: put here.
 	var removed []resolvedDep
-	for i := len(rec.Dependencies()) - 1; i >= 0; i-- {
-		dep := rec.Dependencies()[i]
-		if dep.DepType == service.DepBefore {
+	owned := ownedDeps(svc)
+	for i := len(owned) - 1; i >= 0; i-- {
+		d := owned[i]
+		if wantedSet[depKeyLocal{d.to.Name(), d.depType}] {
 			continue
 		}
-		if wantedSet[depKeyLocal{dep.To.Name(), dep.DepType}] {
-			continue
-		}
-		to, dt := dep.To, dep.DepType
-		rec.RmDep(to, dt)
-		removed = append(removed, resolvedDep{to, dt})
+		rmResolvedDep(svc, d)
+		removed = append(removed, d)
 	}
 
 	// Undo this diff. Used when the depth recalculation below rejects the
 	// new graph.
 	rollback := func() {
 		for _, d := range removed {
-			rec.AddDep(d.to, d.depType)
+			addResolvedDep(svc, d)
 		}
 		for i := len(added) - 1; i >= 0; i-- {
-			rec.RmDep(added[i].to, added[i].depType)
+			rmResolvedDep(svc, added[i])
 		}
 	}
 
-	// Recalculate dependency depth after dep changes
+	// Recalculate dependency depth after dep changes. A before: edge
+	// lives on its target, whose depth may change too.
 	var updater service.DepDepthUpdater
 	updater.AddPotentialUpdate(svc)
+	for _, d := range append(added, removed...) {
+		if d.depType == service.DepBefore {
+			updater.AddPotentialUpdate(d.to)
+		}
+	}
 	if err := updater.ProcessUpdates(); err != nil {
 		// Undo just this diff on depth overflow. The old code tore every
 		// edge down and re-added the saved set, which released targets
@@ -782,6 +799,35 @@ func (dl *DirLoader) transferDependents(oldSvc, newSvc service.Service) {
 	}
 	newSvc.Record().SetDependents(oldRec.Dependents())
 	oldRec.SetDependents(nil)
+}
+
+// syncOwnedBefore makes the before: edges svc owns (held by their targets)
+// those of deps: after a type change they are the old record's, moved
+// over with its dependents, and the new description may name others.
+func syncOwnedBefore(svc service.Service, deps []resolvedDep) {
+	want := map[service.Service]bool{}
+	for _, d := range deps {
+		if d.depType == service.DepBefore {
+			want[d.to] = true
+		}
+	}
+	have := map[service.Service]bool{}
+	for _, d := range slices.Clone(svc.Record().Dependents()) {
+		if d.DepType != service.DepBefore {
+			continue
+		}
+		if want[d.From] && !have[d.From] {
+			have[d.From] = true
+			continue
+		}
+		d.From.Record().RmDep(svc, service.DepBefore)
+	}
+	for _, d := range deps {
+		if d.depType == service.DepBefore && !have[d.to] {
+			addResolvedDep(svc, d)
+			have[d.to] = true
+		}
+	}
 }
 
 // removeDependencies clears all dependencies from a service.
@@ -1694,11 +1740,8 @@ func descDepsMatchCurrent(rec *service.ServiceRecord, desc *ServiceDescription) 
 	}
 
 	current := make(map[depKey]bool)
-	for _, d := range rec.Dependencies() {
-		if d.DepType == service.DepBefore {
-			continue
-		}
-		current[depKey{name: d.To.Name(), depType: d.DepType}] = true
+	for _, d := range ownedRecordDeps(rec) {
+		current[depKey{name: d.to.Name(), depType: d.depType}] = true
 	}
 
 	wanted := make(map[depKey]bool)
@@ -1713,9 +1756,8 @@ func descDepsMatchCurrent(rec *service.ServiceRecord, desc *ServiceDescription) 
 	add(desc.PreparedBy, service.DepPreparedBy)
 	add(desc.After, service.DepAfter)
 	add(desc.AfterOptional, service.DepAfter)
-	// desc.Before excluded on the wanted side to match the current
-	// side's exclusion. desc.BeforeOptional maps to DepBefore too, so
-	// also excluded.
+	add(desc.Before, service.DepBefore)
+	add(desc.BeforeOptional, service.DepBefore)
 
 	if len(current) != len(wanted) {
 		return false
@@ -1830,9 +1872,52 @@ func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescript
 		return err
 	}
 	for _, d := range deps {
-		svc.Record().AddDep(d.to, d.depType)
+		addResolvedDep(svc, d)
 	}
 	return nil
+}
+
+// addResolvedDep installs one edge svc's description declares. A before:
+// is held by its target, as in dinit (see service.DepBefore): `a: before:
+// x` is x waiting for a. It used to be installed on a, and since the
+// holder of an ordering edge waits for its target, a started after x —
+// the opposite of what it declared.
+func addResolvedDep(svc service.Service, d resolvedDep) {
+	if d.depType == service.DepBefore {
+		d.to.Record().AddDep(svc, service.DepBefore)
+		return
+	}
+	svc.Record().AddDep(d.to, d.depType)
+}
+
+// rmResolvedDep removes an edge addResolvedDep installed.
+func rmResolvedDep(svc service.Service, d resolvedDep) {
+	if d.depType == service.DepBefore {
+		d.to.Record().RmDep(svc, service.DepBefore)
+		return
+	}
+	svc.Record().RmDep(d.to, d.depType)
+}
+
+// ownedDeps returns the edges svc's description declared, in the form
+// resolveDependencies gives them: its own dependencies except the BEFORE
+// edges other services' before: put on it, and the BEFORE edges its own
+// before: put on other services.
+func ownedDeps(svc service.Service) []resolvedDep { return ownedRecordDeps(svc.Record()) }
+
+func ownedRecordDeps(rec *service.ServiceRecord) []resolvedDep {
+	var out []resolvedDep
+	for _, d := range rec.Dependencies() {
+		if d.DepType != service.DepBefore {
+			out = append(out, resolvedDep{d.To, d.DepType})
+		}
+	}
+	for _, d := range rec.Dependents() {
+		if d.DepType == service.DepBefore {
+			out = append(out, resolvedDep{d.From, service.DepBefore})
+		}
+	}
+	return out
 }
 
 func (dl *DirLoader) resolveDepsFromDir(svc service.Service, dir string, depType service.DependencyType) ([]resolvedDep, error) {

@@ -350,9 +350,13 @@ func TestBeforeOrdering(t *testing.T) {
 	set.AddService(svcA)
 	set.AddService(svcB)
 
-	// svcA has a "before" relationship to svcB
-	// This means svcA should start before svcB
-	svcA.Record().AddDep(svcB, DepBefore)
+	// svcA has a "before" relationship to svcB, given in the declared
+	// form (stored on svcB). These are internal services, which start
+	// in one call, so this cannot see the order; see
+	// TestBeforeEdgeOrdersTheDeclaringServiceFirst for one that does.
+	if err := set.AddDependency(svcA, svcB, DepBefore); err != nil {
+		t.Fatal(err)
+	}
 
 	// Start both services
 	set.StartService(svcA)
@@ -417,7 +421,9 @@ func TestOrderingDepNoPropagation(t *testing.T) {
 	set.AddService(svcB)
 
 	// svcA has before ordering on svcB
-	svcA.Record().AddDep(svcB, DepBefore)
+	if err := set.AddDependency(svcA, svcB, DepBefore); err != nil {
+		t.Fatal(err)
+	}
 
 	// Start svcA
 	set.StartService(svcA)

@@ -5582,6 +5582,13 @@ func cmdGraph(conn net.Conn) error {
 				handleNames[depHandle] = depName
 			}
 
+			// A before edge is held by its target (x holds the edge of
+			// `a: before: x`, see service.DepBefore); drawn from the
+			// service that declared it, it reads "a before x".
+			if dt == service.DepBefore {
+				edges = append(edges, depEdge{from: depName, to: e.name, depType: dt})
+				continue
+			}
 			edges = append(edges, depEdge{from: e.name, to: depName, depType: dt})
 		}
 	}

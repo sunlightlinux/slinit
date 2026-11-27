@@ -90,13 +90,21 @@ func (t ServiceType) String() string {
 type DependencyType uint8
 
 const (
-	DepRegular    DependencyType = iota // Hard dependency
-	DepSoft                             // Parallel start, failure/stop doesn't affect dependent
-	DepWaitsFor                         // Like soft, but dependent waits for start/fail
-	DepMilestone                        // Must start successfully, then becomes soft
-	DepBefore                           // Ordering: this starts before target
-	DepAfter                            // Ordering: this starts after target
-	DepPreparedBy                       // Like REGULAR, but dependency restarts when dependent restarts
+	DepRegular   DependencyType = iota // Hard dependency
+	DepSoft                            // Parallel start, failure/stop doesn't affect dependent
+	DepWaitsFor                        // Like soft, but dependent waits for start/fail
+	DepMilestone                       // Must start successfully, then becomes soft
+	// DepBefore and DepAfter order two starts and require nothing: the
+	// service holding the edge waits while its target is STARTING, for
+	// both. They differ in who declared the edge, as in dinit: an after:
+	// edge is held by the service that wrote `after: x`, a before: edge
+	// by the target of `before: x`, so `a: before: x` is the edge x→a
+	// (x waits for a) and belongs to a's description. ServiceSet's
+	// AddDependency/RemoveDependency and the loader take the declared
+	// form and store it that way.
+	DepBefore
+	DepAfter
+	DepPreparedBy // Like REGULAR, but dependency restarts when dependent restarts
 )
 
 func (d DependencyType) String() string {
