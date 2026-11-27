@@ -128,6 +128,9 @@ func RenderShow(s Service) string {
 	if sr.watchdogSignal != 0 {
 		p("WatchdogSignal", sigName(sr.watchdogSignal))
 	}
+	if sr.sendSIGHUP {
+		p("SendSIGHUP", "yes")
+	}
 	pb("SurviveFinalKillSignal", sr.surviveFinalKillSignal)
 	p("TimeoutStopFailureMode", sr.timeoutStopFailureMode.String())
 
@@ -468,6 +471,9 @@ func RenderShow(s Service) string {
 	if sr.chainTo != "" {
 		p("ChainTo", sr.chainTo)
 	}
+	if len(sr.partOf) > 0 {
+		p("PartOf", strings.Join(sr.partOf, " "))
+	}
 	if sr.socketPath != "" {
 		p("SocketPath", sr.socketPath)
 	}
@@ -557,6 +563,7 @@ func RenderShow(s Service) string {
 		if ss.argv0 != "" {
 			p("Argv0", ss.argv0)
 		}
+		showRestartDelay(p, ss.restartDelay, ss.restartSteps, ss.restartDelayCap)
 	case *ScriptedService:
 		if len(ss.startCommand) > 0 {
 			p("ExecStart", strings.Join(ss.startCommand, " "))
@@ -586,12 +593,23 @@ func RenderShow(s Service) string {
 		if ss.runAsGID != 0 {
 			p("Group", strconv.FormatUint(uint64(ss.runAsGID), 10))
 		}
-		if ss.restartDelay > 0 {
-			p("RestartUSec", strconv.FormatInt(ss.restartDelay.Microseconds(), 10))
-		}
+		showRestartDelay(p, ss.restartDelay, ss.restartSteps, ss.restartDelayCap)
 	}
 
 	return b.String()
+}
+
+// showRestartDelay renders the restart delay as systemd's show does:
+// RestartUSec, and with restart-steps its RestartSteps and
+// RestartMaxDelayUSec.
+func showRestartDelay(p func(k, v string), delay time.Duration, steps int, max time.Duration) {
+	if delay > 0 {
+		p("RestartUSec", strconv.FormatInt(delay.Microseconds(), 10))
+	}
+	if steps > 0 {
+		p("RestartSteps", strconv.Itoa(steps))
+		p("RestartMaxDelayUSec", strconv.FormatInt(max.Microseconds(), 10))
+	}
 }
 
 // capName maps a Linux capability number to its CAP_* symbolic name.

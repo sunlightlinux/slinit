@@ -86,8 +86,9 @@ func TestRenderShowUnsetServicePrintsOnlyAlwaysKeys(t *testing.T) {
 	} {
 		keys, kv := showKV(t, s)
 		want := showAlwaysKeys
-		if _, bg := s.(*BGProcessService); bg {
-			// restart-delay has a non-zero default for bgprocess only.
+		switch s.(type) {
+		case *BGProcessService, *ProcessService:
+			// restart-delay has a non-zero default (200ms) for both.
 			want = append(append([]string(nil), showAlwaysKeys...), "RestartUSec")
 		}
 		if strings.Join(keys, " ") != strings.Join(want, " ") {
@@ -278,7 +279,7 @@ func TestRenderShowProcessPopulated(t *testing.T) {
 	})
 	wantAbsent(t, kv, "LimitUnknown", "LimitSoft", "Limit", "ProtectHome",
 		"SystemCallArchitectures", "SuccessAction", "StartLimitAction",
-		"ExecStartPost", "PIDFile", "RestartUSec", "UnsetEnvironment")
+		"ExecStartPost", "PIDFile", "RestartSteps", "UnsetEnvironment")
 }
 
 // Identity first and exec last, in the documented cluster order:
@@ -721,4 +722,22 @@ func TestTypesStringRoundTrip(t *testing.T) {
 			t.Errorf("RestartMode %d: %q parses to %v, %v", r, r.String(), back, err)
 		}
 	}
+}
+
+func TestRenderShowTonightsSettings(t *testing.T) {
+	set, _ := newTestSet()
+	s := NewProcessService(set, "p")
+	s.SetPartOf([]string{"x", "y"})
+	s.SetSendSIGHUP(true)
+	s.SetRestartDelay(time.Second)
+	s.SetRestartBackoff(0, time.Minute)
+	s.SetRestartSteps(5)
+	_, kv := showKV(t, s)
+	wantKV(t, kv, map[string]string{
+		"PartOf":              "x y",
+		"SendSIGHUP":          "yes",
+		"RestartUSec":         "1000000",
+		"RestartSteps":        "5",
+		"RestartMaxDelayUSec": "60000000",
+	})
 }
