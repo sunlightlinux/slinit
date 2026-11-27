@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (316 cases)
+# Run all tests (320 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -447,6 +447,10 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 315 | add-dep-prepared-by | `add-dep`/`rm-dep ... prepared-by` succeed and the edge really comes and goes (v4.0.3: always "reply 52") |
 | 316 | stop-in-restart-delay-with-dependent | a stop in a restart delay with a `depends-on` dependent STARTING (waiting for the restart): no further run, the dependent is stopped too, a nested poweroff finishes at once |
 | 317 | abandoned-restart-with-dependent | a restart parked on its delay because a dependent (waits-for, then depends-on) started while the service was stopping, then called off: a nested poweroff still finishes at once (fails only with both 3766b90 and 5f02f2b removed) |
+| 318 | thread-count-flat | a nested instance running 150 processes, 150 with an output-logger and 150 idle on-demand sockets stays on a fixed set of OS threads (HEAD 22; v4.0.3 607) |
+| 319 | pin-shutdown-holds | three pin paths that left a service for the shutdown to wait out, each on its own nested instance: a start refused by the dependency's stop pin (c83cad8), a service pinned while STARTING with a dependency still starting (54dd6e5), two failed starts leaving the leaf pinned (9bf0acc) |
+| 320 | rm-dep-wakes-stopping-dependency | `rm-dep` of the edge a stopping dependency was waiting on lets it finish stopping; a nested poweroff finishes at once |
+| 321 | pidfile-symlink-path | a `run-as = nobody` bgprocess reaching root's own pid file through a symlink in a directory nobody owns: not adopted, the root process survives; a root daemon's pid file in its user's directory (no symlink) is still accepted |
 
 ## How It Works
 
