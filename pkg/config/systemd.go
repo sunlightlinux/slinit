@@ -122,6 +122,10 @@ type SystemdConfig struct {
 	aliases     []string // [Install] Alias= .service names, bare
 	conditions  []condDir
 	comments    []string
+
+	// res holds the systemd state of the resource-control directives that
+	// share slinit settings (systemd_map_resources.go).
+	res *sdResState
 }
 
 // kvPair is one emitted "key = value" line, kept ordered so the output
@@ -158,8 +162,9 @@ var systemdHardeningNames = map[string]string{
 // slinit has none. The Exec lines expand theirs word by word, once a
 // word is unquoted, as systemd does (parseExecLine).
 var specifierKeys = map[string]bool{
-	"ConditionPathExists": true, "ConditionPathIsDirectory": true,
-	"ConditionPathIsMountPoint": true, "ConditionFileNotEmpty": true,
+	// The Condition*/Assert* rules expand their own specifiers
+	// (systemd_map_unit.go), so that one slinit cannot expand leaves the
+	// check out with a warning instead of passing "%x" on.
 	"WorkingDirectory": true, "RootDirectory": true, "EnvironmentFile": true, "PIDFile": true,
 	"ReadOnlyPaths": true, "ReadWritePaths": true, "InaccessiblePaths": true,
 	"BindReadOnlyPaths": true, "TemporaryFileSystem": true,
@@ -437,7 +442,7 @@ func parseSystemdFile(cfg *SystemdConfig, content string, preStartCount, postSta
 // included: capability and address-family sets, the syscall filter, and
 // the settings that depend on Type=.
 func finishSystemdUnit(cfg *SystemdConfig) []SystemdWarning {
-	var warns []SystemdWarning
+	warns := cgroupWarning(cfg)
 	if cfg.capBounding.set {
 		switch cfg.capBounding.mask {
 		case allCaps:
@@ -652,18 +657,6 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Unit `Conflicts=%s` — slinit has no negative dep; managed via stop-command / start-limit-action", val)})
 	case "OnFailure":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Unit `OnFailure=%s` — map to slinit failure-action directive if the target is a system action", val)})
-	case "ConditionPathExists":
-		cfg.conditions = append(cfg.conditions, condDir{"condition-path-exists", val})
-	case "ConditionPathIsDirectory":
-		cfg.conditions = append(cfg.conditions, condDir{"condition-path-is-directory", val})
-	case "ConditionPathIsMountPoint":
-		cfg.conditions = append(cfg.conditions, condDir{"condition-path-is-mount-point", val})
-	case "ConditionFileNotEmpty":
-		cfg.conditions = append(cfg.conditions, condDir{"condition-file-not-empty", val})
-	case "ConditionKernelCommandLine":
-		cfg.conditions = append(cfg.conditions, condDir{"condition-kernel-command-line", val})
-	case "ConditionVirtualization":
-		cfg.conditions = append(cfg.conditions, condDir{"condition-virtualization", val})
 	default:
 		if g, ok := sdUnitNoEquivalent[key]; ok {
 			warns = append(warns, gapWarning("Unit", key, val, g)...)
@@ -709,10 +702,6 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		}
 	case "ExecStart", "ExecStop", "ExecStartPre", "ExecStartPost":
 		warns = append(warns, cfg.applyExec(key, val, preN, postN)...)
-	case "ExecStopPost":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStopPost=%s — slinit has no equivalent; wire via finish-command manually", val)})
-	case "ExecReload":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecReload=%s — slinit reload is signal-based; use reload-signal directive", val)})
 	case "User":
 		// run-as is user[:group]; either key may come first.
 		if _, group, ok := strings.Cut(cfg.runAs, ":"); ok {
@@ -746,8 +735,6 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		cfg.envFile = f
 	case "Environment":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Environment=%s inline — slinit has env-file only; consolidate into a KEY=VAL file", val)})
-	case "PassEnvironment", "UnsetEnvironment":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s not directly mapped", key, val)})
 	case "Restart":
 		switch val {
 		case "no":
@@ -807,16 +794,6 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		}
 	case "KillSignal":
 		cfg.termSignal = val
-	case "StandardInput":
-		if val == "null" {
-			cfg.closeStdin = true
-		} else {
-			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("StandardInput=%s — slinit routes stdin from /dev/null by default; other values need manual mapping", val)})
-		}
-	case "StandardOutput", "StandardError":
-		if val != "journal" && val != "inherit" && val != "null" {
-			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s — slinit routes stdout/err to its logger; other targets need manual wiring", key, val)})
-		}
 	case "LimitNOFILE":
 		cfg.rlimitNofile = systemdRlimit(val, false)
 	case "LimitCORE":
@@ -1007,12 +984,6 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			warns = append(warns, SystemdWarning{"WARN", "Delegate= (empty) delegates the cgroup with no controllers; " +
 				"slinit has no such form — not delegated. Use `delegate = yes` or a controller list if the service needs it"})
 		}
-	case "WatchdogSec":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("WatchdogSec=%s — slinit watchdog-interval maps this; add manually", val)})
-	case "FileDescriptorStoreMax":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("FileDescriptorStoreMax=%s — slinit has fd-store directives; review manually", val)})
-	case "ImportCredential", "LoadCredential", "SetCredential":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s — credential passing needs manual wiring", key, val)})
 	default:
 		if g, ok := sdServiceNoEquivalent[key]; ok {
 			warns = append(warns, gapWarning("Service", key, val, g)...)

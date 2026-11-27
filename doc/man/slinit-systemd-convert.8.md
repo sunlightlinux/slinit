@@ -182,13 +182,32 @@ same reason. **PartOf**, **Upholds**, **PropagatesReloadTo**,
 use instead; **WantedBy** / **RequiredBy** produce a note suggesting
 **slinitctl enable**.
 
+Since 4.1.0 every directive systemd defines for a **.service** unit
+(the [Unit], [Service] and [Install] keys of its own parsing table) has
+an answer, and a test checks it against that table. A directive is
+either mapped onto its slinit counterpart, with its value translated
+(**MemoryMax=512M** is **cgroup-memory-max = 536870912**,
+**CPUQuota=50%** is **cgroup-cpu-max = 50000 100000**,
+**RestartPreventExitStatus=TEMPFAIL** is **normal-exit = 75**, the
+**Condition\*** and **Assert\*** keys become slinit's **condition-\***
+and **assert-\***, **ExecStopPost=** a **finish-command**, and so on);
+or reported with what to use instead, when slinit does without it
+(**PartOf=**, **DeviceAllow=**, **PAMName=**, the disk-image
+directives, among others); or skipped as meaningless outside systemd
+(job modes, accounting switches that only feed systemd's own
+reporting). A mapped value slinit cannot take is dropped with a
+warning, as systemd drops an invalid assignment, except for a
+directive that confines the service, where the unit is refused rather
+than run less confined than it asks. Where slinit's setting behaves
+differently from systemd's in a way that matters (**RuntimeMaxSec=**
+does not mark the service failed, **KillMode=process** still signals
+the process group, an **AppArmorProfile=** with **-** fails the start
+where systemd would run unconfined, a cgroup setting needs a
+**slice=**), the mapping carries a note saying so.
+
 Not carried over, and reported: inline **Environment=** (slinit takes
-an **EnvironmentFile** only), **ExecReload** (slinit's reload is a
-signal — see **reload-signal**), **ExecStopPost**, **WatchdogSec**,
-**LoadCredential** / **SetCredential** / **ImportCredential**,
-**PrivateUsers**, and any
-other key the converter does not know — **KillMode**,
-**RemainAfterExit** and **LimitNPROC** among them.
+an **EnvironmentFile** only), **PrivateUsers**, **PrivateDevices**,
+**Before**, and the directives listed in the notes of a conversion.
 
 Warnings — something was dropped or will not behave as it did — are
 always printed on stderr; notes about mappings that did happen, or

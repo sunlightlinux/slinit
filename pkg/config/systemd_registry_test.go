@@ -71,12 +71,6 @@ func convertOne(t *testing.T, dir, section, key, val string) ([]SystemdWarning, 
 	return warns, err
 }
 
-// sdPending are directives the loader does not answer for yet. It only
-// shrinks: TestEverySystemdDirectiveIsClassified fails for a directive
-// missing from it that is unclassified, and for one listed here that is
-// classified now, so it cannot hide a regression or go stale.
-var sdPending = map[string]bool{}
-
 // TestEverySystemdDirectiveIsClassified: every directive systemd defines
 // for a .service unit is mapped, handled by a bespoke case, listed with a
 // reason in sdNoEquivalent, or ignored on purpose. None falls through to
@@ -84,32 +78,21 @@ var sdPending = map[string]bool{}
 // log line nobody reads while the directive is dropped.
 func TestEverySystemdDirectiveIsClassified(t *testing.T) {
 	dir := t.TempDir()
-	var unclassified, stale []string
+	var unclassified []string
 	for _, d := range systemdDirectives(t) {
 		sec, key := d[0], d[1]
 		warns, _ := convertOne(t, dir, sec, key, sampleSystemdValue(key))
-		generic := false
 		for _, w := range warns {
 			if strings.Contains(w.Msg, "` not mapped") {
-				generic = true
+				unclassified = append(unclassified, sec+"."+key)
+				break
 			}
-		}
-		id := sec + "." + key
-		switch {
-		case generic && !sdPending[id]:
-			unclassified = append(unclassified, id)
-		case !generic && sdPending[id]:
-			stale = append(stale, id)
 		}
 	}
 	sort.Strings(unclassified)
-	sort.Strings(stale)
 	if len(unclassified) > 0 {
 		t.Errorf("%d systemd directives fall through to \"not mapped\"; map them, or list them in sdNoEquivalent / sdIgnored with the reason:\n  %s",
 			len(unclassified), strings.Join(unclassified, "\n  "))
-	}
-	if len(stale) > 0 {
-		t.Errorf("%d directives are classified now; remove them from sdPending:\n  %s", len(stale), strings.Join(stale, "\n  "))
 	}
 }
 
