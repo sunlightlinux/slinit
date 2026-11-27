@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (315 cases)
+# Run all tests (316 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -446,6 +446,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 314 | supervise-daemon-respawn-leak | a crash-looping daemon under `slinit-supervise-daemon` with a `--stdout-logger`: the supervisor's descriptors stay flat and old loggers exit (v4.0.3: +5 descriptors and one stray logger per respawn) |
 | 315 | add-dep-prepared-by | `add-dep`/`rm-dep ... prepared-by` succeed and the edge really comes and goes (v4.0.3: always "reply 52") |
 | 316 | stop-in-restart-delay-with-dependent | a stop in a restart delay with a `depends-on` dependent STARTING (waiting for the restart): no further run, the dependent is stopped too, a nested poweroff finishes at once |
+| 317 | abandoned-restart-with-dependent | a restart parked on its delay because a dependent (waits-for, then depends-on) started while the service was stopping, then called off: a nested poweroff still finishes at once (fails only with both 3766b90 and 5f02f2b removed) |
 
 ## How It Works
 
