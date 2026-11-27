@@ -709,6 +709,31 @@ verified with `git tag -v`.
   journal without listener: 193 to 240 MiB/s, half the allocated bytes;
   with a listener, all three journal changes: 32 to 51 MiB/s.
 
+- **A stop put off by a start pin was lost if the pin went
+  while the service was still starting**: `release`, `stop --force` or a
+  dependency's forced stop on a start-pinned service is held until the
+  pin goes, but `unpin` (and the pin a pinned dependent lends its hard
+  dependencies) carried it out only for a STARTED service, as dinit
+  does. A service unpinned while STARTING kept starting, and one that
+  does not start by itself never stopped: `slinitctl --no-wait --pin
+  start` of a triggered service waiting for its trigger, then a
+  shutdown (which unpins everything), left the shutdown waiting out its
+  emergency timeout. The held stop is now carried out on unpin for a
+  STARTING service too. A start pin could also let a hard dependency
+  stop under a pinned dependent still STARTING (waiting for another
+  dependency); that dependency stayed in the active count after both
+  had stopped, again holding the shutdown to its timeout; so did a
+  service pinned by `start --pin` while it was STOPPING and stopped with
+  the pin up. The active count is now kept per service, and `unpin` of a
+  STOPPED service nothing requires takes it off. *Compat:* a service with such a held
+  stop, unpinned while STARTING, now has its start interrupted (a
+  `type = process` start, or a scripted one with `start-interruptible`,
+  gets SIGINT; one still waiting for dependencies stops at once)
+  instead of completing it and stopping straight after; a start that
+  cannot be interrupted still completes first, as before. `unpin` alone,
+  without a held stop, still leaves an explicitly started service
+  starting, as before and as in dinit.
+
 - **A rotated or filtered logfile wrote each line with its own
   write(2)**: a service whose `logfile` goes through the log rotator
   (`log-max-size`, filters, rate limit, alert file...) cost PID 1 one

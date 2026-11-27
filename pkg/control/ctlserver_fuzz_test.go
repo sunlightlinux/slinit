@@ -771,18 +771,15 @@ func ctlFuzzCheckOnce(ss *service.ServiceSet) error {
 // ctlFuzzTeardown stops every service and waits for them to be down,
 // so no child outlives the input.
 func ctlFuzzTeardown(ss *service.ServiceSet) error {
-	// Every pin first: a forced stop of a service a pinned dependent
-	// holds is put off, and a STARTING one is not stopped when the pin
-	// goes (as in dinit), so unpinning in between could leave it up.
-	svcs := ss.ListServices()
-	for _, svc := range svcs {
-		ss.UnpinService(svc)
-	}
-	for _, svc := range svcs {
+	// Each service in turn, its pin dropped after the stop, as the
+	// shutdown does: a stop put off by a pin is carried out when the
+	// pin goes, the service STARTING or STARTED.
+	for _, svc := range ss.ListServices() {
 		// As `slinitctl stop --force` and dinit's stop: drop the
 		// activation, then force.
 		ss.StopService(svc)
 		ss.ForceStopService(svc)
+		ss.UnpinService(svc)
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {

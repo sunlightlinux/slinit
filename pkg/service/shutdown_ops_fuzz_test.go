@@ -128,24 +128,6 @@ func runShutdownProg(t *testing.T, p shutProg) string {
 	}
 
 	var trace []string
-	// A start pin puts off a stop, and Unpin brings it back only for a
-	// STARTED service, so one pinned while STARTING and unpinned before
-	// it starts (the shutdown unpins everything) is never stopped; a
-	// stop it puts off while STARTING can also let its dependencies stop
-	// under it, still held. That is dinit's logic too, and left as a
-	// decision (the pinned triggered service that blocks the shutdown);
-	// programs that pin a STARTING service are not counted.
-	pinnedStarting := func() bool {
-		found := false
-		set.WithGraphLock(func() {
-			for _, s := range svcs {
-				if s.IsStartPinned() && s.State() == StateStarting {
-					found = true
-				}
-			}
-		})
-		return found
-	}
 	complete := func(s *testSvc) bool {
 		done := false
 		set.WithGraphLock(func() {
@@ -231,14 +213,8 @@ func runShutdownProg(t *testing.T, p shutProg) string {
 				trace = append(trace, "complete "+a.Name())
 			}
 		}
-		if pinnedStarting() {
-			return ""
-		}
 	}
 
-	if pinnedStarting() {
-		return ""
-	}
 	set.StopAllServices(ShutdownPoweroff)
 	trace = append(trace, "SHUTDOWN")
 	for moved := true; moved; {
