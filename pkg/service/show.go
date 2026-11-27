@@ -474,6 +474,12 @@ func RenderShow(s Service) string {
 	if len(sr.partOf) > 0 {
 		p("PartOf", strings.Join(sr.partOf, " "))
 	}
+	if len(sr.conflicts) > 0 {
+		p("Conflicts", strings.Join(sr.conflicts, " "))
+	}
+	if len(sr.onFailure) > 0 {
+		p("OnFailure", strings.Join(sr.onFailure, " "))
+	}
 	if sr.socketPath != "" {
 		p("SocketPath", sr.socketPath)
 	}

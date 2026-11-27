@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (335 cases)
+# Run all tests (336 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -466,6 +466,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 334 | part-of | `part-of:` under PID 1: a restart of the named service restarts the member (new pid), a stop of it stops the member, a stop of the member leaves it alone; a systemd unit's `PartOf=` loaded directly does the same (fails with the propagation removed) |
 | 335 | socket-unit-pair | a systemd service's `.socket` unit is read with it: the daemon is handed `LISTEN_FDS=1`, the socket exists in a directory slinit created, with the unit's `SocketMode=` (fails with the socket unit not read) |
 | 336 | send-sighup-and-clean | `send-sighup`: a service ignoring SIGTERM stops at once on the hangup, not at its 30s stop-timeout; `slinitctl clean` then removes the cache directory by default and the state directory only with `--what=state`, and refuses a running service (fails with the hangup dropped and with clean removing nothing) |
+| 337 | conflicts-on-failure | starting either side of a `conflicts:` pair stops the other; a service that exits 1 with no restart starts its `on-failure:` service, one that exits 0 does not (fails with each removed) |
 
 ## How It Works
 

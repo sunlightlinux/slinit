@@ -728,6 +728,8 @@ func TestRenderShowTonightsSettings(t *testing.T) {
 	set, _ := newTestSet()
 	s := NewProcessService(set, "p")
 	s.SetPartOf([]string{"x", "y"})
+	s.SetConflicts([]string{"c"})
+	s.SetOnFailure([]string{"notify@p"})
 	s.SetSendSIGHUP(true)
 	s.SetRestartDelay(time.Second)
 	s.SetRestartBackoff(0, time.Minute)
@@ -735,6 +737,8 @@ func TestRenderShowTonightsSettings(t *testing.T) {
 	_, kv := showKV(t, s)
 	wantKV(t, kv, map[string]string{
 		"PartOf":              "x y",
+		"Conflicts":           "c",
+		"OnFailure":           "notify@p",
 		"SendSIGHUP":          "yes",
 		"RestartUSec":         "1000000",
 		"RestartSteps":        "5",
