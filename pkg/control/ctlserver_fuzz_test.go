@@ -326,6 +326,14 @@ func (c *ctlFuzzConn) isDead() bool {
 // finished with every packet before it.
 func (c *ctlFuzzConn) barrier() error {
 	if err := WritePacket(c.conn, CmdQueryVersion, nil); err != nil {
+		// The server may have closed the connection (a malformed
+		// packet ends it) before the read loop has seen the EOF: the
+		// write then fails with EPIPE first. Wait for the read loop to
+		// say so rather than calling that a stuck server.
+		select {
+		case <-c.readDone:
+		case <-time.After(opDeadline):
+		}
 		if c.isDead() {
 			return nil
 		}
@@ -600,6 +608,16 @@ func runCtlFuzz(t *testing.T, data []byte) {
 		}
 		fatalf("%d services still counted active after every service stopped; loaded: %v\ntrace:\n  %s",
 			n, names, strings.Join(trace, "\n  "))
+	}
+	// Every client has gone, so none may still hold a restart open
+	// (Connection.holdRestart): a hold left behind would keep a
+	// container with nothing active from ever exiting. The server sees
+	// each close on its own goroutine, hence the short wait.
+	for deadline := time.Now().Add(2 * time.Second); ss.ClientRestartPending() && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if ss.ClientRestartPending() {
+		fatalf("a client restart is still pending after every client closed\ntrace:\n  %s", strings.Join(trace, "\n  "))
 	}
 	stopped = true
 	server.Stop()
