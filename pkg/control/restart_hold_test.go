@@ -144,8 +144,14 @@ func TestRestartDuringRestartDelayHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	readReply(t, conn)
-	if server.services.ClientRestartPending() {
-		t.Fatal("the start did not end the hold")
+	// The hold ends in a deferred call after the reply is written (so
+	// that the wake-up it causes sees the service active), so the client
+	// can read the reply a moment before the hold is gone: wait for it,
+	// bounded. Checked at once, this failed about one run in four.
+	for deadline := time.Now().Add(2 * time.Second); server.services.ClientRestartPending(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the start did not end the hold")
+		}
 	}
 }
 
