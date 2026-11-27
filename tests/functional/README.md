@@ -522,9 +522,9 @@ cp tests/functional/cases/NN-name.sh ../base/tests/functional/cases/
 
 When the bug existed only between releases, revert the fix's code (not
 its tests) in a throwaway worktree instead, and when a case passes
-everywhere, drop it: 313's predecessor, a GOGC=off pidfd-leak case,
-passed with the fixes neutered because in the VM the reaper never wins
-the race. Run new cases under `SLINIT_NO_KVM=1` too, as CI does: a
+everywhere, drop it (a GOGC=off case for the pidfds PID 1's reaper used
+to leak was dropped that way: it passed with the fixes neutered,
+because in the VM the reaper never wins the race). Run new cases under `SLINIT_NO_KVM=1` too, as CI does: a
 state read once right after STARTED can see slinit-runner still
 setting up the process there (281, 114); poll instead.
 
