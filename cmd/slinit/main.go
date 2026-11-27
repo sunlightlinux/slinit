@@ -997,6 +997,11 @@ func main() {
 			service.SetCronPersistDir(dir)
 			logger.Debug("Cron persistence directory: %s", dir)
 		}
+		// $NOTIFY_SOCKET (sd-notify readiness, fd-store) lives under
+		// /run/slinit, which a user instance cannot write.
+		if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+			process.SetNotifySocketRoot(filepath.Join(xdg, "slinit", "notify"))
+		}
 	}
 
 	// Create service set

@@ -732,10 +732,13 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			// Restart=no here too.
 			cfg.restart = "no"
 		case "notify", "notify-reload":
+			// ready-notification = sd-notify, once the whole unit is read
+			// (systemd_map_notify.go).
 			cfg.svcType = "process"
-			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Type=%s — slinit supports readiness via notify-fd; add `notify = yes` if needed", val)})
 		case "dbus":
-			warns = append(warns, SystemdWarning{"WARN", "Type=dbus not supported — slinit has no dbus activation; convert to Type=simple manually"})
+			// A process service whose readiness is its BusName= appearing
+			// on the bus (bus-name, wired for Type=dbus only).
+			cfg.svcType = "process"
 		case "idle":
 			cfg.svcType = "process"
 			cfg.startWhenIdle = true

@@ -318,6 +318,7 @@ type ServiceDescription struct {
 	ReadyNotification    string
 	ReadyNotifyFD        int           // parsed from pipefd:N (-1 if unset)
 	ReadyNotifyVar       string        // parsed from pipevar:VARNAME
+	ReadyNotifySD        bool          // sd-notify: READY=1 on $NOTIFY_SOCKET (Type=notify)
 	WatchdogTimeout      time.Duration // 0 = disabled; piggybacks on ready-notification pipe
 
 	// Credentials
@@ -3942,6 +3943,12 @@ func parseMempolicyMode(value string) (uint32, error) {
 // parseReadyNotification parses a ready-notification value.
 // Supported formats: "pipefd:N" or "pipevar:VARNAME".
 func parseReadyNotification(desc *ServiceDescription, value string) error {
+	// Each form replaces an earlier one.
+	desc.ReadyNotifyFD, desc.ReadyNotifyVar, desc.ReadyNotifySD = -1, "", false
+	if value == "sd-notify" {
+		desc.ReadyNotifySD = true
+		return nil
+	}
 	if strings.HasPrefix(value, "pipefd:") {
 		fdStr := value[7:]
 		fd, err := strconv.Atoi(fdStr)
@@ -3959,7 +3966,7 @@ func parseReadyNotification(desc *ServiceDescription, value string) error {
 		desc.ReadyNotifyVar = varName
 		return nil
 	}
-	return fmt.Errorf("unrecognised ready-notification setting: %s (expected pipefd:N or pipevar:VARNAME)", value)
+	return fmt.Errorf("unrecognised ready-notification setting: %s (expected pipefd:N, pipevar:VARNAME or sd-notify)", value)
 }
 
 // parseRlimit parses an rlimit value. Formats: "N" (both soft and hard),

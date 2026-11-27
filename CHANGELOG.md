@@ -38,6 +38,17 @@ verified with `git tag -v`.
 
 ### Added
 
+- **sd_notify readiness: `ready-notification = sd-notify`.** The service
+  is started when it sends `READY=1` on `$NOTIFY_SOCKET`, as a systemd
+  `Type=notify` unit is; `WATCHDOG=1` feeds `watchdog-timeout`, which
+  exports `$WATCHDOG_USEC`. slinit opened a `$NOTIFY_SOCKET` only for the
+  fd store and read nothing else from it, so a notify daemon counted as
+  started at its fork and its dependents started before it was ready. A
+  systemd unit's `Type=notify` / `notify-reload` now maps to it, and its
+  `WatchdogSec=` to `watchdog-timeout` (a gap for other types, which
+  have no keepalive channel). A user instance creates the socket under
+  `$XDG_RUNTIME_DIR/slinit/notify`, where it can write.
+
 - **`syslog-identifier`, `syslog-level`, `syslog-level-prefix` and
   `log-extra-fields`**: the journal metadata of a service's output
   lines, as systemd's `SyslogIdentifier=`, `SyslogLevel=`,

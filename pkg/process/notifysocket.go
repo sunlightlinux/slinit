@@ -12,8 +12,14 @@ import (
 
 // notifySocketRoot is where slinit creates per-service Unix datagram
 // sockets the child can use as $NOTIFY_SOCKET. Matches systemd's
-// /run/systemd/notify layout (one socket per unit, distinct path).
-const notifySocketRoot = "/run/slinit/notify"
+// /run/systemd/notify layout (one socket per unit, distinct path). A
+// user instance, which cannot write /run/slinit, sets its own
+// (SetNotifySocketRoot).
+var notifySocketRoot = "/run/slinit/notify"
+
+// SetNotifySocketRoot sets the directory the $NOTIFY_SOCKET sockets are
+// created in.
+func SetNotifySocketRoot(dir string) { notifySocketRoot = dir }
 
 // NotifySocketHandler is invoked by the listener for each successfully
 // parsed sd_notify message. fds is non-nil only when the message had

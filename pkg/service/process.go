@@ -258,6 +258,18 @@ type ProcessService struct {
 	readyPipeRead  *os.File  // read-end of notification pipe (parent watches)
 	readyCh        chan bool // receives true=ready, false=EOF/error
 
+	// sd_notify readiness (ready-notification = sd-notify): the service
+	// gets $NOTIFY_SOCKET instead of the pipe's write end, which slinit
+	// keeps (sdPipeW) and writes a line to for READY=1, and for each
+	// WATCHDOG=1 after it, so the pipe machinery above (readiness,
+	// start timeout, watchdog) serves sd_notify unchanged. sdMu guards
+	// sdPipeW and sdReady: the notify listener writes from its own
+	// goroutine, without queueMu.
+	readySD bool
+	sdMu    sync.Mutex
+	sdPipeW *os.File
+	sdReady bool
+
 	// Service-level watchdog. Piggybacks on the ready-notification pipe:
 	// the first message marks the service ready, subsequent writes act
 	// as keepalives that reset the watchdog timer. A miss declares the
@@ -1339,7 +1351,43 @@ func (s *ProcessService) SetReadyNotification(fd int, varName string) {
 
 // HasReadyNotification returns true if readiness notification is configured.
 func (s *ProcessService) HasReadyNotification() bool {
-	return s.readyNotifyFD >= 0 || s.readyNotifyVar != ""
+	return s.readyNotifyFD >= 0 || s.readyNotifyVar != "" || s.readySD
+}
+
+// SetReadyNotificationSD selects sd_notify readiness: the service is
+// started when it sends READY=1 on $NOTIFY_SOCKET (systemd's
+// Type=notify), and WATCHDOG=1 keeps a watchdog-timeout fed.
+func (s *ProcessService) SetReadyNotificationSD(on bool) { s.readySD = on }
+
+// sdNotify turns sd_notify READY=1 and WATCHDOG=1 into lines on the
+// readiness pipe. READY=1 is the first line, the readiness signal; a
+// WATCHDOG=1 is a keepalive only once the service is ready, since a line
+// before it would read as readiness. The write is bounded: a pipe the
+// watchdog does not drain must not hold up the listener.
+func (s *ProcessService) sdNotify(ready, watchdog bool) {
+	s.sdMu.Lock()
+	defer s.sdMu.Unlock()
+	if s.sdPipeW == nil {
+		return
+	}
+	if ready && !s.sdReady {
+		s.sdReady = true
+	} else if !(watchdog && s.sdReady) {
+		return
+	}
+	_ = s.sdPipeW.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+	_, _ = s.sdPipeW.Write([]byte{'\n'})
+}
+
+// setSDPipe installs (or, with nil, closes) the write end slinit keeps
+// for sd_notify readiness.
+func (s *ProcessService) setSDPipe(w *os.File) {
+	s.sdMu.Lock()
+	defer s.sdMu.Unlock()
+	if s.sdPipeW != nil {
+		s.sdPipeW.Close()
+	}
+	s.sdPipeW, s.sdReady = w, false
 }
 
 // SetWatchdogTimeout configures the per-service watchdog. The service
@@ -1764,10 +1812,10 @@ func (s *ProcessService) BringUp() bool {
 	// fd-store setup: open $NOTIFY_SOCKET when the feature is enabled
 	// so the child can sd_notify FDSTORE=1 us back. The socket lives
 	// at /run/slinit/notify/<svc>.sock, owned by the run-as user.
-	if s.Record().FDStoreMax() > 0 {
+	if s.Record().FDStoreMax() > 0 || s.readySD {
 		path, err := s.Record().setupNotifySocket(s.effectiveRunAsUID(), s.effectiveRunAsGID())
 		if err != nil {
-			s.services.logger.Error("Service '%s': fd-store setup: %v", s.serviceName, err)
+			s.services.logger.Error("Service '%s': $NOTIFY_SOCKET setup: %v", s.serviceName, err)
 			return false
 		}
 		_ = path // exported into ExecParams below
@@ -2596,6 +2644,25 @@ func (s *ProcessService) launchEnv() []string {
 	return env
 }
 
+// withWatchdogUsec adds $WATCHDOG_USEC for an sd_notify service with a
+// watchdog-timeout: sd_watchdog_enabled() reads it to learn that a
+// watchdog is armed and how often to send WATCHDOG=1 (systemd sets it
+// from WatchdogSec=). The pipe-based readiness modes have no such
+// variable, so it is only for sd-notify. A copy, so the cached start
+// environment stays as it was.
+func (s *ProcessService) withWatchdogUsec(env []string) []string {
+	if !s.readySD || s.watchdogTimeout <= 0 {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, "WATCHDOG_USEC=") {
+			out = append(out, e)
+		}
+	}
+	return append(out, "WATCHDOG_USEC="+strconv.FormatInt(s.watchdogTimeout.Microseconds(), 10))
+}
+
 // ensureStartEnv is prepareStartEnv unless this start has computed its
 // environment already (for an exec-condition) and the fork has not used
 // it yet.
@@ -3094,7 +3161,13 @@ func (s *ProcessService) startProcess() error {
 			return err
 		}
 		s.readyPipeRead = pr
-		notifyPipeWrite = pw
+		if s.readySD {
+			// The service gets $NOTIFY_SOCKET, not the pipe; slinit writes
+			// to it on READY=1 (sdNotify).
+			s.setSDPipe(pw)
+		} else {
+			notifyPipeWrite = pw
+		}
 	}
 
 	// Set up control socket pair if pass-cs-fd is enabled
@@ -3135,7 +3208,7 @@ func (s *ProcessService) startProcess() error {
 		Command:           s.command,
 		Argv0:             s.argv0,
 		WorkingDir:        s.workingDir,
-		Env:               s.launchEnv(),
+		Env:               s.withWatchdogUsec(s.launchEnv()),
 		TermSignal:        s.termSignal,
 		OnConsole:         s.Flags.RunsOnConsole || s.Flags.StartsOnConsole,
 		UnmaskSigint:      s.Flags.UnmaskIntr,
@@ -3566,11 +3639,15 @@ func (s *ProcessService) keepReadingReadyPipe() {
 	}(s.readyPipeRead)
 }
 
-// closeReadyPipe closes the read-end of the notification pipe if open.
+// closeReadyPipe closes the read-end of the notification pipe if open,
+// and the write end slinit keeps for sd_notify.
 func (s *ProcessService) closeReadyPipe() {
 	if s.readyPipeRead != nil {
 		s.readyPipeRead.Close()
 		s.readyPipeRead = nil
+	}
+	if s.readySD {
+		s.setSDPipe(nil)
 	}
 }
 

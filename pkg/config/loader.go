@@ -622,8 +622,10 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		// no gating is needed for them.
 		if desc.NotifyAccessSet && desc.NotifyAccess == service.NotifyAccessNone {
 			s.SetReadyNotification(-1, "")
+			s.SetReadyNotificationSD(false)
 		} else {
 			s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
+			s.SetReadyNotificationSD(desc.ReadyNotifySD)
 		}
 		s.SetWatchdogTimeout(desc.WatchdogTimeout)
 		applyCron(s, desc)
@@ -1199,7 +1201,7 @@ func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
 	}
 
 	// Validate: ready-notification not supported for bgprocess
-	if desc.Type == service.TypeBGProcess && (desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "") {
+	if desc.Type == service.TypeBGProcess && (desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "" || desc.ReadyNotifySD) {
 		return &ServiceLoadError{
 			ServiceName: name,
 			Message:     "ready-notification is not supported for bgprocess services",
@@ -1265,7 +1267,7 @@ func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
 	// Validate: watchdog-timeout piggybacks on the ready-notification pipe.
 	// Without one configured the service has no channel through which to
 	// send keepalives, so the watchdog would fire as soon as it armed.
-	if desc.WatchdogTimeout > 0 && desc.ReadyNotifyFD < 0 && desc.ReadyNotifyVar == "" {
+	if desc.WatchdogTimeout > 0 && desc.ReadyNotifyFD < 0 && desc.ReadyNotifyVar == "" && !desc.ReadyNotifySD {
 		return &ServiceLoadError{
 			ServiceName: name,
 			Message: "watchdog-timeout requires ready-notification to be set " +

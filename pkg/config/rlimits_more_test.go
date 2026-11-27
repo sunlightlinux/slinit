@@ -164,3 +164,54 @@ func TestSystemdSyslogMapped(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemdNotifyMapped(t *testing.T) {
+	for _, c := range []struct {
+		body     string
+		want     []string
+		absent   []string
+		gapNoted bool
+	}{
+		{"Type=notify\n", []string{"ready-notification = sd-notify"}, nil, false},
+		{"Type=notify-reload\n", []string{"ready-notification = sd-notify"}, nil, false},
+		{"Type=notify\nWatchdogSec=30\n", []string{"ready-notification = sd-notify", "watchdog-timeout = 30"}, nil, false},
+		// Type= after WatchdogSec=, as it may be in a unit or a drop-in.
+		{"WatchdogSec=1min\nType=notify\n", []string{"watchdog-timeout = 60"}, nil, false},
+		{"Type=simple\nWatchdogSec=30\n", nil, []string{"watchdog-timeout", "ready-notification"}, true},
+		{"Type=notify\nNotifyAccess=none\n", nil, []string{"ready-notification"}, false},
+		{"Type=notify\nWatchdogSec=0\n", []string{"ready-notification = sd-notify"}, []string{"watchdog-timeout"}, false},
+	} {
+		lines, warns := convertService(t, c.body)
+		out := strings.Join(lines, "\n")
+		for _, w := range c.want {
+			if !strings.Contains(out, w+"\n") {
+				t.Errorf("%q: no %q in\n%s", c.body, w, out)
+			}
+		}
+		for _, a := range c.absent {
+			if strings.Contains(out, a) {
+				t.Errorf("%q: %q emitted:\n%s", c.body, a, out)
+			}
+		}
+		noted := false
+		for _, w := range warns {
+			noted = noted || strings.Contains(w.Msg, "WatchdogSec")
+		}
+		if noted != c.gapNoted {
+			t.Errorf("%q: WatchdogSec warning %v, want %v: %v", c.body, noted, c.gapNoted, warns)
+		}
+	}
+
+	// Loaded directly: the watchdog needs the readiness channel, which
+	// sd-notify is, so the unit loads.
+	root := t.TempDir()
+	units := root + "/units"
+	writeUnit(t, units, "nd.service", "[Service]\nType=notify\nWatchdogSec=10\nExecStart=/usr/bin/nd\n")
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	dl := NewDirLoader(ss, []string{root + "/slinit.d"})
+	dl.SetSystemdDirs([]string{units})
+	ss.SetLoader(dl)
+	if _, err := dl.LoadService("nd"); err != nil {
+		t.Fatalf("Type=notify + WatchdogSec= does not load: %v", err)
+	}
+}

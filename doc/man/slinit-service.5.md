@@ -1443,6 +1443,15 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
       the service started.
     * `pipevar:VARNAME` — slinit allocates an fd, sets *VARNAME* in
       the service environment, and the child writes to that fd.
+    * `sd-notify` (since 4.1.0) — systemd's protocol: slinit gives the
+      service a datagram socket in `$NOTIFY_SOCKET`, and the service is
+      started when it sends `READY=1` (**sd_notify**(3), as a
+      **Type=notify** unit does). `WATCHDOG=1` after it is a keepalive
+      for **watchdog-timeout**, and `STATUS=` is logged; a `WATCHDOG=1`
+      before `READY=1` does not count as ready. The socket lives under
+      */run/slinit/notify*, or *$XDG_RUNTIME_DIR/slinit/notify* for a
+      user instance. A systemd unit with **Type=notify** or
+      **Type=notify-reload** gets this form.
 
     Write the newline with `echo`, not `printf '...\n'`. A **command**
     is parsed before the shell sees it and a single backslash is
@@ -1455,7 +1464,10 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
 :   Per-service software watchdog. Reuses the **ready-notification**
     pipe: after the initial readiness byte the pipe stays open and
     every subsequent write is treated as a keepalive that resets the
-    timer. If no keepalive arrives within *duration*, slinit declares
+    timer. With *ready-notification = sd-notify* each `WATCHDOG=1` is
+    the keepalive, and the service gets `$WATCHDOG_USEC` (the timeout in
+    microseconds), as systemd's **WatchdogSec=** gives it, so
+    **sd_watchdog_enabled**(3) works. If no keepalive arrives within *duration*, slinit declares
     the service unhealthy and stops it — the configured **restart**
     policy then handles the re-spawn. Closing the pipe while the
     service is still running counts as a miss (carrier-grade init

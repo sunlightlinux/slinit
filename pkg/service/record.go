@@ -870,9 +870,10 @@ func (sr *ServiceRecord) SetFDStorePreserve(mode string) { sr.fdStorePreserve = 
 func (sr *ServiceRecord) FDStore() *process.FDStore { return sr.fdStore }
 
 // OnNotify implements process.NotifySocketHandler — the listener
-// goroutine calls it for every sd_notify packet. FDSTORE=1 messages
-// stash their attached fds; other messages are currently logged-only
-// (READY=1 is handled via the legacy pipe path in ProcessService).
+// goroutine calls it for every sd_notify packet. READY=1 and WATCHDOG=1
+// go to the service's readiness pipe (ProcessService.sdNotify,
+// ready-notification = sd-notify); FDSTORE=1 messages stash their
+// attached fds; STATUS= is logged.
 //
 // The fd-store commands are taken in systemd's order of precedence:
 // FDSTOREWIPE=<glob> drops every stored fd whose name matches, and
@@ -881,6 +882,11 @@ func (sr *ServiceRecord) FDStore() *process.FDStore { return sr.fdStore }
 // else FDSTORE=1 adds. Descriptors attached to a removal are not
 // stored, and are closed below with the rest.
 func (sr *ServiceRecord) OnNotify(msg process.NotifyMessage, fds []*os.File) {
+	if msg.Ready || msg.Watchdog {
+		if n, ok := sr.self.(interface{ sdNotify(ready, watchdog bool) }); ok {
+			n.sdNotify(msg.Ready, msg.Watchdog)
+		}
+	}
 	switch {
 	case msg.HasFDStoreWipe:
 		if !process.ValidFDName(msg.FDStoreWipe) {

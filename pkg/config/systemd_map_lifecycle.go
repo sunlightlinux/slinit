@@ -108,7 +108,7 @@ func init() {
 	// A rule, not a gap: the bespoke case for WatchdogSec= is reached
 	// before the gap table, and it pointed at a setting that does not
 	// take the keepalives such a service sends.
-	registerService("WatchdogSec", sdRule{custom: lcWatchdogSec})
+	registerService("WatchdogSec", sdRule{custom: mapWatchdogSec})
 
 	// --- No equivalent ---
 
@@ -270,20 +270,10 @@ func lcFinishRuntimeMax(cfg *SystemdConfig, st *lcState) []SystemdWarning {
 		"and restart= applies, as in systemd"}}
 }
 
-// lcWatchdogGap is why WatchdogSec= has no slinit equivalent.
-var lcWatchdogGap = sdGap{why: "slinit's watchdog-timeout takes keepalives on the ready-notification pipe, " +
-	"not sd_notify WATCHDOG=1, and it sets no WATCHDOG_USEC; the service runs without a watchdog"}
-
-// lcWatchdogSec reports WatchdogSec= as a gap. 0 and infinity turn the
-// watchdog off in systemd, as no watchdog is what slinit gives anyway.
-func lcWatchdogSec(_ *SystemdConfig, key, val string) []SystemdWarning {
-	if v := strings.TrimSpace(trimQuotes(val)); v == "infinity" {
-		return nil
-	} else if s, ok := parseSystemdSeconds(v, ""); ok && s == "0" {
-		return nil
-	}
-	return gapWarning("Service", key, val, lcWatchdogGap)
-}
+// lcWatchdogGap is why WatchdogSec= has no slinit equivalent outside a
+// notify service (see systemd_map_notify.go, which maps it there).
+var lcWatchdogGap = sdGap{why: "the service is not Type=notify, so it has no channel for WATCHDOG=1 keepalives; " +
+	"the service runs without a watchdog"}
 
 // lcParseBool is systemd's parse_boolean.
 func lcParseBool(v string) (bool, error) {
