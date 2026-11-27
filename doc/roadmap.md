@@ -98,6 +98,16 @@ has a record of what is known about it.
   Checked against seven injected state-machine defects, they catch six,
   three of which no ported case notices. None found a defect in the
   current code. The next useful ones are the restart and pin paths.
+- **slinit-journald writes PID 1's backlog again at every start.** At
+  start it replays PID 1's whole event ring so that events from before it
+  listened are persisted, with no regard to what an earlier run already
+  wrote: a clean restart doubles the journal (measured: 442 entries
+  became 884), and a restart after a crash adds up to 4096 duplicates.
+  Present in 4.0.3. A fix that skips only the backlog events already in
+  the binary journal, and so cannot lose one, is on the branch
+  `proposal27/journald-replay-dedup`, awaiting a decision; a first
+  version keyed on the last persisted event lost events and was
+  replaced (functional case 328 shows both).
 - **A soft-reboot-only start failure, seen once.** After a real
   `slinitctl shutdown softreboot now`, the demo's `trigger-autofire`
   (a scripted service whose start command drives `slinitctl` against
