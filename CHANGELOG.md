@@ -49,6 +49,13 @@ verified with `git tag -v`.
   have no keepalive channel). A user instance creates the socket under
   `$XDG_RUNTIME_DIR/slinit/notify`, where it can write.
 
+- **`slinit-notify`**, the counterpart of `systemd-notify`: a shell
+  script run as a `sd-notify` service sends `READY=1`, `STATUS=`,
+  `WATCHDOG=1` and the rest with it (`--ready`, `--status=`,
+  `--reloading`, `--stopping`, `--pid`, `--booted`, `VAR=VALUE`; a path
+  or an abstract `@` socket). *Packaging:* a new binary for the
+  `go_package` list of the slinit template.
+
 - **`syslog-identifier`, `syslog-level`, `syslog-level-prefix` and
   `log-extra-fields`**: the journal metadata of a service's output
   lines, as systemd's `SyslogIdentifier=`, `SyslogLevel=`,

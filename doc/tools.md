@@ -56,6 +56,7 @@ is for, followed by the invocations most worth knowing.
 |---|---|---|
 | [`slinit-sysusers`](#slinit-sysusers--slinit-tmpfiles) | Declarative user and group creation (`sysusers.d`) | [slinit-sysusers(8)](man/slinit-sysusers.8.md) |
 | [`slinit-tmpfiles`](#slinit-sysusers--slinit-tmpfiles) | Declarative `/run` and `/var` bootstrap (`tmpfiles.d`) | [slinit-tmpfiles(8)](man/slinit-tmpfiles.8.md) |
+| `slinit-notify` | Send `READY=1`, `WATCHDOG=1`, `STATUS=` from a shell script to its service manager, as `systemd-notify` | [slinit-notify(1)](man/slinit-notify.1.md) |
 | `slinit-sysctl` | Apply `sysctl.d` tunables | [slinit-sysctl(8)](man/slinit-sysctl.8.md) |
 | `slinit-binfmt` | Register `binfmt_misc` formats | [slinit-binfmt(8)](man/slinit-binfmt.8.md) |
 | `slinit-hostnamectl` | Query and set the hostname, without D-Bus | [slinit-hostnamectl(1)](man/slinit-hostnamectl.1.md) |

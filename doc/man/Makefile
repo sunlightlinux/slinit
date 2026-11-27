@@ -64,7 +64,7 @@ PAGES_7 = slinit-resource.7
 
 PAGES_5 = slinit-service.5
 
-PAGES_1 = slinit-shell-var.1 slinit-svc-value.1 slinit-hostnamectl.1 slinit-timedatectl.1 slinit-localectl.1
+PAGES_1 = slinit-shell-var.1 slinit-svc-value.1 slinit-notify.1 slinit-hostnamectl.1 slinit-timedatectl.1 slinit-localectl.1
 
 PAGES   = $(PAGES_8) $(PAGES_7) $(PAGES_5) $(PAGES_1)
 

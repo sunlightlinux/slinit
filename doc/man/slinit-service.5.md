@@ -1451,7 +1451,8 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
       before `READY=1` does not count as ready. The socket lives under
       */run/slinit/notify*, or *$XDG_RUNTIME_DIR/slinit/notify* for a
       user instance. A systemd unit with **Type=notify** or
-      **Type=notify-reload** gets this form.
+      **Type=notify-reload** gets this form. A shell script sends the
+      messages with **slinit-notify**(1).
 
     Write the newline with `echo`, not `printf '...\n'`. A **command**
     is parsed before the shell sees it and a single backslash is

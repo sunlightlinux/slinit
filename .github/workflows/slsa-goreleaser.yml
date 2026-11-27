@@ -91,6 +91,7 @@ jobs:
           - slinit-monitor
           - slinit-mount
           - slinit-mountinfo
+          - slinit-notify
           - slinit-nspawn
           - slinit-nuke
           - slinit-openrc-convert

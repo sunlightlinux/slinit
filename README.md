@@ -275,7 +275,7 @@ slinit keeps dinit's service-management design and expresses it in Go:
   connection, with push notifications for state and environment changes
 
 ```
-cmd/              51 directories: 50 Go binaries + a shell resource agent
+cmd/              52 directories: 51 Go binaries + a shell resource agent
 pkg/service/      state machine, service types, the dependency graph
 pkg/config/       dinit-compatible parser and the service loader
 pkg/control/      the binary protocol, server and connections
@@ -283,7 +283,7 @@ pkg/process/      fork/exec, child monitoring, fd handling
 pkg/seccomp/      cBPF compiler, syscall groups, the restrict-* cluster
 pkg/journal/      journal readers, writers and the binary format
 pkg/shutdown/     shutdown sequences, power events, soft-reboot
-doc/man/          52 man pages — the reference for every binary
+doc/man/          53 man pages — the reference for every binary
 tests/            unit, functional (QEMU), acceptance and container suites
 ```
 
@@ -316,7 +316,7 @@ it escalates the shutdown instead.
 | [doc/tools.md](doc/tools.md) | Index of the 49 companion tools, with usage examples |
 | [doc/features.md](doc/features.md) | Generated list of every accepted directive and opcode, by upstream |
 | [doc/roadmap.md](doc/roadmap.md) | Development history and what is planned |
-| [doc/man/](doc/man) | 52 man pages — one per binary, plus slinit-service(5) |
+| [doc/man/](doc/man) | 53 man pages — one per binary, plus slinit-service(5) |
 | [STABILITY.md](STABILITY.md) | What will not break, and how deprecation works |
 | [CHANGELOG.md](CHANGELOG.md) | Release history, with the reasoning behind each version number |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, test and submit a change |

@@ -82,6 +82,7 @@ go test ./...
   `rc-status`) and helper binaries (`slinit-tmpfiles`,
   `slinit-sysusers`, `slinit-binfmt`, `slinit-sysctl`, `slinit-nuke`,
   `slinit-mount`, `slinit-checkpath`, `slinit-seedrng`, `slinit-cgtop`,
+  `slinit-notify`,
   `slinit-logouthookd`, `slinit-svc-value`, `slinit-shell-var`,
   `slinit-einfo`, `slinit-fstabinfo`, `slinit-mountinfo`,
   `slinit-start-stop-daemon`, `slinit-supervise-daemon`,
