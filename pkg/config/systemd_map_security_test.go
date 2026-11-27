@@ -2,24 +2,46 @@ package config
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // secConvert runs a [Service] body through the converter and the
 // emitter. err is the converter's refusal.
 func secConvert(t *testing.T, service string) (string, []SystemdWarning, error) {
 	t.Helper()
-	p := writeUnit(t, t.TempDir(), "sec.service", "[Service]\nExecStart=/bin/sleep 1\n"+service)
-	cfg, warns, err := ConvertSystemdUnit(p)
+	out, warns, err, _ := secConvertIn(t, service, "")
+	return out, warns, err
+}
+
+// secConvertIn is secConvert with a drop-in holding dropin as its
+// [Service] section (none when empty). It also loads the unit as the
+// daemon's loader does, the converted description through validateDesc;
+// loadErr is that load's refusal.
+func secConvertIn(t *testing.T, body, dropin string) (out string, warns []SystemdWarning, err, loadErr error) {
+	t.Helper()
+	dir := t.TempDir()
+	p := writeUnit(t, dir, "sec.service", "[Service]\nExecStart=/bin/sleep 1\n"+body)
+	if dropin != "" {
+		writeTree(t, filepath.Join(dir, "sec.service.d", "10-override.conf"), "[Service]\n"+dropin)
+	}
+	cfg, warns, err := ConvertSystemdUnitIn(p, []string{dir})
 	if err != nil {
-		return "", nil, err
+		return "", nil, err, nil
 	}
 	var b bytes.Buffer
 	EmitSlinitFile(&b, cfg)
-	return b.String(), warns, nil
+	desc, loadErr := SystemdUnitToServiceDescription(p, "sec", dir)
+	if loadErr == nil {
+		dl := NewDirLoader(service.NewServiceSet(&testConsumerLogger{}), nil)
+		loadErr = dl.validateDesc("sec", desc)
+	}
+	return b.String(), warns, nil, loadErr
 }
 
 // secLoad loads the same body as the direct loader does.
@@ -60,6 +82,7 @@ func secNotShared(t *testing.T, shared bool) {
 type secCase struct {
 	name    string
 	service string
+	dropin  string   // a drop-in's [Service] section, applied after service
 	want    []string // lines the emitted file must hold
 	absent  []string // lines it must not hold
 	warn    string   // a WARN must contain this
@@ -72,7 +95,7 @@ func runSecCases(t *testing.T, cases []secCase) {
 	t.Helper()
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out, warns, err := secConvert(t, c.service)
+			out, warns, err, loadErr := secConvertIn(t, c.service, c.dropin)
 			if c.refused != "" {
 				if err == nil || !strings.Contains(err.Error(), c.refused) {
 					t.Fatalf("want refusal %q, got err=%v\n%s", c.refused, err, out)
@@ -81,6 +104,10 @@ func runSecCases(t *testing.T, cases []secCase) {
 			}
 			if err != nil {
 				t.Fatalf("refused: %v", err)
+			}
+			// What the converter accepts, the loader must load.
+			if loadErr != nil {
+				t.Errorf("converted, but the loader refuses it: %v\n%s", loadErr, out)
 			}
 			for _, l := range c.want {
 				if !strings.Contains(out, "\n"+l+"\n") {
@@ -105,17 +132,34 @@ func runSecCases(t *testing.T, cases []secCase) {
 	}
 }
 
-// The LSM labels map onto slinit's when the LSM is active, and are left
-// out, as systemd leaves them out, when it is not: slinit's runner would
-// otherwise fail every start on a host without that LSM.
-func TestSystemdSecLSM(t *testing.T) {
-	on := t.TempDir()
-	off := filepath.Join(on, "absent")
-	for _, d := range []*string{&secAppArmorDir, &secSELinuxDir, &secSmackDir} {
-		old := *d
-		t.Cleanup(func() { *d = old })
+// secLSMHost points the LSM probes at a fake /sys where each LSM is
+// active or not.
+func secLSMHost(t *testing.T, active bool) {
+	t.Helper()
+	old := [3]string{secAppArmorEnabled, secSELinuxDir, secSmackDir}
+	t.Cleanup(func() { secAppArmorEnabled, secSELinuxDir, secSmackDir = old[0], old[1], old[2] })
+	root := t.TempDir()
+	secAppArmorEnabled = filepath.Join(root, "apparmor-enabled")
+	secSELinuxDir = filepath.Join(root, "selinux")
+	secSmackDir = filepath.Join(root, "smackfs")
+	if !active {
+		// The module is there but disabled (apparmor=0): systemd
+		// reads the parameter, not whether the file exists.
+		writeFile(t, secAppArmorEnabled, "N\n")
+		return
 	}
-	secAppArmorDir, secSELinuxDir, secSmackDir = on, on, on
+	writeFile(t, secAppArmorEnabled, "Y\n")
+	writeTree(t, filepath.Join(secSELinuxDir, "enforce"), "1")
+	if err := os.Mkdir(secSmackDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The LSM labels map onto slinit's. Where the converting host has no
+// such LSM, a label is still emitted (the runner fails closed where it
+// cannot apply it), and only the "-" form is left out, with a WARN.
+func TestSystemdSecLSM(t *testing.T) {
+	secLSMHost(t, true)
 	runSecCases(t, []secCase{
 		{name: "apparmor", service: "AppArmorProfile=my-profile\n", want: []string{"apparmor-switch = my-profile"}, quiet: true},
 		{name: "apparmor dash", service: "AppArmorProfile=-my-profile\n",
@@ -124,6 +168,11 @@ func TestSystemdSecLSM(t *testing.T) {
 		{name: "apparmor last wins", service: "AppArmorProfile=a\nAppArmorProfile=b\n",
 			want: []string{"apparmor-switch = b"}, absent: []string{"apparmor-switch = a"}},
 		{name: "apparmor specifier", service: "AppArmorProfile=%N-prof\n", want: []string{"apparmor-switch = sec-prof"}},
+		// A literal "%H" would name another profile.
+		{name: "apparmor unknown specifier", service: "AppArmorProfile=%H-prof\n",
+			refused: "AppArmorProfile=%H-prof confines the service, and slinit cannot apply it (it uses a specifier"},
+		{name: "apparmor unknown specifier overridden", service: "AppArmorProfile=%H-prof\nAppArmorProfile=p\n",
+			want: []string{"apparmor-switch = p"}},
 		{name: "apparmor dash only", service: "AppArmorProfile=-\n", refused: "AppArmorProfile=- confines the service"},
 		{name: "selinux", service: "SELinuxContext=-system_u:system_r:foo_t:s0\n",
 			want: []string{"selinux-context = system_u:system_r:foo_t:s0"}, note: "selinux-context fails the start"},
@@ -134,11 +183,14 @@ func TestSystemdSecLSM(t *testing.T) {
 		t.Errorf("loaded %q %q %q", d.AppArmorSwitch, d.SELinuxContext, d.SMACKProcessLabel)
 	}
 
-	secAppArmorDir, secSELinuxDir, secSmackDir = off, off, off
+	secLSMHost(t, false)
 	runSecCases(t, []secCase{
-		{name: "no apparmor", service: "AppArmorProfile=my-profile\n", absent: []string{"apparmor-switch"}, note: "AppArmor is not active"},
-		{name: "no selinux", service: "SELinuxContext=c\n", absent: []string{"selinux-context"}, note: "SELinux is not active"},
-		{name: "no smack", service: "SmackProcessLabel=-l\n", absent: []string{"smack-process-label"}, note: "SMACK is not active"},
+		{name: "no apparmor", service: "AppArmorProfile=my-profile\n",
+			want: []string{"apparmor-switch = my-profile"}, note: "AppArmor is not active on the host converting"},
+		{name: "no selinux", service: "SELinuxContext=c\n", want: []string{"selinux-context = c"}, note: "SELinux is not active"},
+		{name: "no apparmor dash", service: "AppArmorProfile=-my-profile\n",
+			absent: []string{"apparmor-switch"}, warn: "AppArmor is not active"},
+		{name: "no smack dash", service: "SmackProcessLabel=-l\n", absent: []string{"smack-process-label"}, warn: "SMACK is not active"},
 	})
 }
 
@@ -159,6 +211,25 @@ func TestSystemdSecNamespaces(t *testing.T) {
 		{name: "mountflags private", service: "MountFlags=private\n", want: []string{"namespace-mount = yes"}, quiet: true},
 		{name: "mountflags shared", service: "MountFlags=shared\n", absent: []string{"namespace-mount"}, quiet: true},
 		{name: "mountflags bogus", service: "MountFlags=rshared\n", refused: "MountFlags=rshared confines the service"},
+		// The other order, and the last assignment of each deciding.
+		{name: "no then mountflags", service: "PrivateMounts=no\nMountFlags=slave\n", want: []string{"namespace-mount = yes"}},
+		{name: "mounts yes then no", service: "PrivateMounts=yes\nPrivateMounts=no\n", absent: []string{"namespace-mount"}},
+		{name: "mounts yes then auto", service: "PrivateMounts=yes\nPrivateMounts=\n", absent: []string{"namespace-mount"}},
+		{name: "mounts no in a drop-in", service: "PrivateMounts=yes\n", dropin: "PrivateMounts=no\n",
+			absent: []string{"namespace-mount"}},
+		{name: "mountflags slave then shared", service: "MountFlags=slave\nMountFlags=shared\n", absent: []string{"namespace-mount"}},
+		{name: "mountflags shared, mounts yes", service: "MountFlags=slave\nPrivateMounts=yes\nMountFlags=shared\n",
+			want: []string{"namespace-mount = yes"}},
+		{name: "ipc no then yes", service: "PrivateIPC=false\nPrivateIPC=yes\n", want: []string{"namespace-ipc = yes"}},
+		{name: "ipc no in a drop-in", service: "PrivateIPC=yes\n", dropin: "PrivateIPC=no\n", absent: []string{"namespace-ipc"}},
+		// An invalid line systemd ignores: harmless after a yes, and
+		// after a later valid line; refused where it may have meant yes.
+		{name: "ipc invalid after yes", service: "PrivateIPC=yes\nPrivateIPC=maybe\n",
+			want: []string{"namespace-ipc = yes"}, warn: "PrivateIPC=maybe ignored: not a boolean"},
+		{name: "ipc invalid then no", service: "PrivateIPC=maybe\nPrivateIPC=no\n", absent: []string{"namespace-ipc"}},
+		{name: "ipc invalid after no", service: "PrivateIPC=no\nPrivateIPC=maybe\n", refused: "PrivateIPC=maybe confines"},
+		{name: "mountflags bogus after private", service: "MountFlags=private\nMountFlags=rshared\n",
+			want: []string{"namespace-mount = yes"}, warn: "MountFlags=rshared ignored"},
 	})
 	d := secLoad(t, "PrivateIPC=yes\nPrivatePIDs=yes\nPrivateMounts=yes\n")
 	if !d.NamespaceIPC || !d.NamespacePID || !d.NamespaceMount {
@@ -179,7 +250,10 @@ func TestSystemdSecPaths(t *testing.T) {
 	runSecCases(t, []secCase{
 		{name: "bind", service: "BindPaths=" + src + " " + src + ":/srv/x:rbind\n",
 			want: []string{"bind-paths = " + src + ":" + src + " " + src + ":/srv/x"}, quiet: true},
-		{name: "bind missing optional", service: "BindPaths=-/nonexistent/sec\n", absent: []string{"bind-paths"}, note: "does not exist"},
+		{name: "bind missing optional", service: "BindPaths=-/nonexistent/sec\n", absent: []string{"bind-paths"},
+			note: "decided when the unit was converted"},
+		{name: "bind optional present", service: "BindPaths=-" + src + "\n", want: []string{"bind-paths = " + src + ":" + src},
+			note: "the start fails if it is gone"},
 		{name: "bind norbind", service: "BindPaths=" + src + ":/srv/x:norbind\n", absent: []string{"bind-paths"}, warn: "recursively only"},
 		{name: "bind reset", service: "BindPaths=" + src + "\nBindPaths=\n", absent: []string{"bind-paths"}},
 		{name: "bind specifier", service: "BindPaths=" + src + ":%t/%N\n", want: []string{"bind-paths = " + src + ":/run/sec"}},
@@ -254,11 +328,76 @@ func TestSystemdSecDynamicUser(t *testing.T) {
 			want: []string{"dynamic-user = yes"}, absent: []string{"private-tmp", "protect-home"}, warn: "cannot combine chroot"},
 		{name: "invalid", service: "DynamicUser=sometimes\n", refused: "DynamicUser=sometimes confines the service"},
 		{name: "remove-ipc kept", service: "DynamicUser=yes\nRemoveIPC=no\n", want: []string{"remove-ipc = yes"}},
+		// Forced over the lines after it too, and those of a drop-in:
+		// unit_patch_contexts runs once the whole unit is read.
+		{name: "forced over later lines",
+			service: "DynamicUser=yes\nPrivateTmp=no\nProtectHome=no\nNoNewPrivileges=no\nRestrictSUIDSGID=no\nRemoveIPC=no\n",
+			want: []string{"private-tmp = yes", "protect-home = read-only", "options = no-new-privs",
+				"restrict-suidsgid = yes", "remove-ipc = yes"},
+			absent: []string{"private-tmp = no", "protect-home = no", "restrict-suidsgid = no"}},
+		{name: "forced over a drop-in", service: "DynamicUser=yes\n",
+			dropin: "PrivateTmp=no\nProtectHome=false\nNoNewPrivileges=no\nRestrictSUIDSGID=no\n",
+			want:   []string{"private-tmp = yes", "protect-home = read-only", "options = no-new-privs", "restrict-suidsgid = yes"},
+			absent: []string{"private-tmp = no", "protect-home = false", "restrict-suidsgid = no"}},
+		{name: "home kept, after", service: "DynamicUser=yes\nProtectHome=tmpfs\n",
+			want: []string{"protect-home = tmpfs"}, absent: []string{"protect-home = read-only"}},
+		// RootDirectory= after DynamicUser=, or in a drop-in, must not
+		// leave private-tmp beside chroot: the loader refuses the pair.
+		{name: "chroot after", service: "DynamicUser=yes\nRootDirectory=/srv/jail\n",
+			want: []string{"dynamic-user = yes"}, absent: []string{"private-tmp", "protect-home"}, warn: "cannot combine chroot"},
+		{name: "chroot in a drop-in", service: "DynamicUser=yes\n", dropin: "RootDirectory=/srv/jail\n",
+			want: []string{"dynamic-user = yes", "chroot = /srv/jail"}, absent: []string{"private-tmp", "protect-home"}},
+		// A drop-in turning it off takes the implied settings along.
+		{name: "no in a drop-in", service: "DynamicUser=yes\n", dropin: "DynamicUser=no\n",
+			absent: []string{"dynamic-user", "remove-ipc", "restrict-suidsgid", "private-tmp", "protect-home", "options = no-new-privs"}},
+		{name: "invalid after yes", service: "DynamicUser=yes\nDynamicUser=sometimes\n",
+			want: []string{"dynamic-user = yes", "private-tmp = yes"}, warn: "DynamicUser=sometimes ignored"},
+		{name: "invalid before yes", service: "DynamicUser=sometimes\nDynamicUser=yes\n", want: []string{"dynamic-user = yes"}},
+		{name: "invalid after no", service: "DynamicUser=no\nDynamicUser=sometimes\n", refused: "DynamicUser=sometimes confines"},
+		{name: "empty ignored", service: "DynamicUser=yes\nDynamicUser=\n", want: []string{"dynamic-user = yes"}},
 	})
-	d := secLoad(t, "DynamicUser=yes\n")
+	d := secLoad(t, "DynamicUser=yes\nPrivateTmp=no\nNoNewPrivileges=no\nRestrictSUIDSGID=no\n")
 	if !d.DynamicUser || !d.RemoveIPC || !d.RestrictSUIDSGID || !d.PrivateTmp || !d.NoNewPrivs || d.ProtectHome != "read-only" {
 		t.Errorf("loaded %+v", d)
 	}
+}
+
+// RootDirectory= with BindPaths= or an LSM label: slinit-runner cannot
+// apply either inside a chroot, and the loader refuses the pair. The
+// bind mounts are dropped with a WARN; a label is never dropped
+// silently, so the converter refuses the unit and names both
+// directives. Whichever comes first, and through a drop-in.
+func TestSystemdSecChroot(t *testing.T) {
+	src := t.TempDir()
+	secLSMHost(t, true)
+	runSecCases(t, []secCase{
+		{name: "bind then chroot", service: "BindPaths=" + src + "\nRootDirectory=/srv/jail\n",
+			want: []string{"chroot = /srv/jail"}, absent: []string{"bind-paths"}, warn: "BindPaths= with RootDirectory=/srv/jail"},
+		{name: "chroot then bind", service: "RootDirectory=/srv/jail\nBindPaths=" + src + "\n",
+			absent: []string{"bind-paths"}, warn: "BindPaths= with RootDirectory=/srv/jail"},
+		{name: "chroot in a drop-in", service: "BindPaths=" + src + "\n", dropin: "RootDirectory=/srv/jail\n",
+			absent: []string{"bind-paths"}, warn: "BindPaths= with RootDirectory="},
+		{name: "chroot reset in a drop-in", service: "RootDirectory=/srv/jail\nBindPaths=" + src + "\n",
+			dropin: "RootDirectory=\n", want: []string{"bind-paths = " + src + ":" + src}, absent: []string{"chroot"}},
+		{name: "apparmor then chroot", service: "AppArmorProfile=p\nRootDirectory=/srv/jail\n",
+			refused: "AppArmorProfile=p together with RootDirectory=/srv/jail"},
+		{name: "chroot then apparmor", service: "RootDirectory=/srv/jail\nAppArmorProfile=p\n",
+			refused: "AppArmorProfile=p together with RootDirectory=/srv/jail"},
+		{name: "apparmor, chroot in a drop-in", service: "AppArmorProfile=p\n", dropin: "RootDirectory=/srv/jail\n",
+			refused: "AppArmorProfile=p together with RootDirectory="},
+		{name: "selinux and chroot", service: "SELinuxContext=-c\nRootDirectory=/srv/jail\n",
+			refused: "SELinuxContext=-c together with RootDirectory="},
+		{name: "smack and chroot", service: "SmackProcessLabel=l\nRootDirectory=/srv/jail\n",
+			refused: "SmackProcessLabel=l together with RootDirectory="},
+		{name: "label reset in a drop-in", service: "AppArmorProfile=p\nRootDirectory=/srv/jail\n", dropin: "AppArmorProfile=\n",
+			want: []string{"chroot = /srv/jail"}, absent: []string{"apparmor-switch"}},
+	})
+	// "-" on a host without the LSM: left out, so nothing to conflict.
+	secLSMHost(t, false)
+	runSecCases(t, []secCase{
+		{name: "lenient label, no LSM", service: "AppArmorProfile=-p\nRootDirectory=/srv/jail\n",
+			want: []string{"chroot = /srv/jail"}, absent: []string{"apparmor-switch"}, warn: "AppArmor is not active"},
+	})
 }
 
 func TestSystemdSecProcessAttributes(t *testing.T) {

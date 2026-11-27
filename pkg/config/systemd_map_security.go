@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -21,32 +22,24 @@ import (
 // would stop a great many upstream units from loading at all.
 
 func init() {
+	// The lines below record what the unit says in secState; secFinish
+	// decides once the whole unit and its drop-ins are read, so that the
+	// order of the lines does not change the result (DynamicUser= before
+	// RootDirectory=, a drop-in saying PrivateMounts=no), as it does not
+	// in systemd.
+	registerFinisher(secFinish)
+
 	// --- LSM labels ---
-	//
-	// systemd skips all three when the LSM is not active on the host
-	// (mac_*_use()), and a "-" prefix ignores a failure to apply the
-	// label. slinit's runner fails the start in both cases, so the
-	// mapping asks the host the question systemd asks at exec time.
-	registerService("AppArmorProfile", secLSMRule("apparmor-switch", "AppArmor", &secAppArmorDir))
-	registerService("SELinuxContext", secLSMRule("selinux-context", "SELinux", &secSELinuxDir))
-	registerService("SmackProcessLabel", secLSMRule("smack-process-label", "SMACK", &secSmackDir))
+	for _, l := range secLSMs {
+		registerService(l.directive, sdRule{custom: secLSMLine})
+	}
 
 	// --- Namespaces ---
-	registerService("PrivateIPC", sdRule{custom: secNamespace("namespace-ipc", true, nil)})
-	registerService("PrivatePIDs", sdRule{custom: secNamespace("namespace-pid", true, func(key, val string) []SystemdWarning {
-		// systemd mounts a /proc of the new namespace (MountAPIVFS=
-		// is implied); slinit's namespace-pid only clones, so /proc
-		// is still the host's.
-		return []SystemdWarning{{"WARN", fmt.Sprintf("%s=%s -> namespace-pid = yes; slinit mounts no /proc of the new "+
-			"PID namespace, so the service still sees every host process under /proc", key, val)}}
-	})})
-	// PrivateMounts= and MountFlags= both ask for a mount namespace, so
-	// one saying no must not undo the other: "no" leaves the setting as
-	// it is (the service may end up more confined than the unit says,
-	// never less).
-	registerService("PrivateMounts", sdRule{custom: secNamespace("namespace-mount", false, func(key, val string) []SystemdWarning {
-		return secPropagation(key, val, "slave")
-	})})
+	registerService("PrivateIPC", sdRule{custom: secFlagLine(func(s *secState) *secFlag { return &s.ipc }, false)})
+	registerService("PrivatePIDs", sdRule{custom: secFlagLine(func(s *secState) *secFlag { return &s.pids }, false)})
+	// PrivateMounts= is a tristate in systemd: empty is "auto", which
+	// asks for no namespace of its own.
+	registerService("PrivateMounts", sdRule{custom: secFlagLine(func(s *secState) *secFlag { return &s.mounts }, true)})
 	registerService("MountFlags", sdRule{custom: secMountFlags})
 
 	// --- Paths ---
@@ -76,7 +69,7 @@ func init() {
 	registerService("RuntimeDirectoryPreserve", sdRule{key: "runtime-directory-preserve", conv: secPreserve})
 
 	// --- Identity and process attributes ---
-	registerService("DynamicUser", sdRule{custom: secDynamicUser})
+	registerService("DynamicUser", sdRule{custom: secFlagLine(func(s *secState) *secFlag { return &s.dyn }, false)})
 	registerService("RemoveIPC", sdRule{custom: secRemoveIPC})
 	registerService("SecureBits", sdRule{custom: secSecureBits})
 	registerService("Personality", sdRule{custom: secScalar(sdRule{key: "personality", conv: secPersonality})})
@@ -197,109 +190,262 @@ func secScalar(r sdRule) func(cfg *SystemdConfig, key, val string) []SystemdWarn
 	}
 }
 
+// --- Per-unit state ---
+
+// secState is what the unit's lines said, for secFinish to decide on.
+type secState struct {
+	dyn, ipc, pids, mounts secFlag
+	// mountFlags is MountFlags=: on for slave or private, want the one
+	// asked for.
+	mountFlags secFlag
+	want       string
+	// lsm holds the last assignment of each LSM directive, by
+	// directive name; nil once an empty assignment reset it.
+	lsm map[string]*secLabel
+}
+
+// secFlag is a boolean directive as systemd ends up with it: the last
+// valid assignment wins and an invalid one is ignored. invalid keeps an
+// invalid assignment made after the last valid one, for secSettle.
+type secFlag struct {
+	on       bool
+	key, val string // the assignment that set on
+	invalid  string // "Key=value", or ""
+}
+
+func secStateOf(cfg *SystemdConfig) *secState {
+	return sdState(cfg, "security", func() *secState { return &secState{lsm: map[string]*secLabel{}} })
+}
+
+// secFlagLine records a boolean directive. emptyResets is the tristate
+// PrivateMounts=, whose empty value is "auto" (off here); for the plain
+// booleans systemd's parse_boolean refuses "" and the line is ignored.
+func secFlagLine(field func(*secState) *secFlag, emptyResets bool) func(*SystemdConfig, string, string) []SystemdWarning {
+	return func(cfg *SystemdConfig, key, val string) []SystemdWarning {
+		f := field(secStateOf(cfg))
+		v := secValue(val)
+		if v == "" {
+			if emptyResets {
+				*f = secFlag{}
+			}
+			return nil
+		}
+		on, err := secBool(v)
+		if err != nil {
+			f.invalid = key + "=" + val
+			return nil
+		}
+		*f = secFlag{on: on, key: key, val: val}
+		return nil
+	}
+}
+
+// secSettle is the final value of a boolean directive. systemd ignores
+// an invalid assignment and keeps the one before it. When that one
+// confines the service anyway, ignoring the line costs nothing and is
+// what systemd does: a WARN. When it does not, the line may have meant
+// yes (DynamicUser=enabled), and running the service unconfined on a
+// guess is the one outcome a confining directive must not have: the
+// unit is refused, as a confining value slinit cannot take is.
+func (f *secFlag) settle(cfg *SystemdConfig) []SystemdWarning {
+	if f.invalid == "" {
+		return nil
+	}
+	if f.on {
+		return []SystemdWarning{{"WARN", fmt.Sprintf("[Service] %s ignored: not a boolean; systemd ignores it too "+
+			"and keeps %s=%s", f.invalid, f.key, f.val)}}
+	}
+	cfg.errs = append(cfg.errs, fmt.Sprintf("%s confines the service, and slinit cannot apply it (not a boolean; "+
+		"systemd ignores the line, which may have meant yes)", f.invalid))
+	return nil
+}
+
 // --- LSM labels ---
 
-// The directories slinit-runner checks before it applies each label
-// (cmd/slinit-runner: changeOnExec, lsm_extra.go). Variables so a test
-// can point them at a directory that is or is not there.
-var (
-	secAppArmorDir = "/sys/kernel/security/apparmor"
-	secSELinuxDir  = "/sys/fs/selinux"
-	secSmackDir    = "/sys/fs/smackfs"
-)
-
-// secLSMRule maps AppArmorProfile=, SELinuxContext= and
-// SmackProcessLabel=, each "[-]label". All three apply the same way on
+// secLSM is one LSM label directive. All three apply the same way on
 // both sides: apparmor-switch writes "exec <profile>" to
 // /proc/self/attr/exec, which is what aa_change_onexec() does,
 // selinux-context is setexeccon(), and smack-process-label writes the
 // task's own label. The difference is what happens when the label
 // cannot be applied:
 //
-//   - LSM not active on the host: systemd skips the directive without
-//     a word; slinit's runner fails the start. The mapping leaves it out,
-//     as systemd would, with a note.
+//   - LSM not active: systemd skips the directive without a word;
+//     slinit's runner fails the start. Whether it is active is a
+//     question about the host the service runs on, which need not be
+//     the one converting the unit (a build chroot, a container without
+//     securityfs). So a label is emitted whatever this host says, and
+//     the runner fails closed where it cannot apply it; only the "-"
+//     form, where the unit itself allows running without the label, is
+//     left out when this host has no such LSM, with a WARN.
 //   - "-" with the LSM active (profile not loaded, context invalid):
 //     systemd runs the service without the label; slinit fails the
 //     start. Kept fail-closed, since the alternative is a service
-//     running unconfined while its unit names a profile; the note says
-//     so.
-func secLSMRule(slinitKey, lsm string, dir *string) sdRule {
-	return sdRule{custom: func(cfg *SystemdConfig, key, val string) []SystemdWarning {
-		v, warns := expandSpecifiers(cfg, key, secValue(val))
-		if v == "" {
-			cfg.dropMapped(slinitKey)
-			return warns
+//     running unconfined while its unit names a profile; a NOTE says so.
+type secLSM struct {
+	directive, key, name string
+	active               func() bool
+}
+
+var secLSMs = []secLSM{
+	{"AppArmorProfile", "apparmor-switch", "AppArmor", secAppArmorActive},
+	{"SELinuxContext", "selinux-context", "SELinux", secSELinuxActive},
+	{"SmackProcessLabel", "smack-process-label", "SMACK", secSmackActive},
+}
+
+// The files systemd's mac_*_use() look at. Variables so a test can
+// point them at a file that is or is not there.
+var (
+	// mac_apparmor_use: the module parameter, a boolean ("Y").
+	secAppArmorEnabled = "/sys/module/apparmor/parameters/enabled"
+	// mac_selinux_use is libselinux's is_selinux_enabled(): selinuxfs
+	// is mounted, which its enforce file shows.
+	secSELinuxDir = "/sys/fs/selinux"
+	// mac_smack_use: access("/sys/fs/smackfs/").
+	secSmackDir = "/sys/fs/smackfs"
+)
+
+func secAppArmorActive() bool {
+	b, err := os.ReadFile(secAppArmorEnabled)
+	if err != nil {
+		return false
+	}
+	on, err := secBool(strings.TrimSpace(string(b)))
+	return err == nil && on
+}
+
+func secSELinuxActive() bool {
+	_, err := os.Stat(filepath.Join(secSELinuxDir, "enforce"))
+	return err == nil
+}
+
+func secSmackActive() bool {
+	_, err := os.Stat(secSmackDir)
+	return err == nil
+}
+
+// secLabel is the last assignment of one LSM directive.
+type secLabel struct {
+	val     string // as written, for messages
+	label   string // specifiers expanded, "-" taken off
+	lenient bool   // the "-" form
+	err     error  // why slinit cannot apply it
+}
+
+// secLSMLine records AppArmorProfile=, SELinuxContext= or
+// SmackProcessLabel=, "[-]label"; the last assignment wins and an empty
+// one resets.
+func secLSMLine(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	s := secStateOf(cfg)
+	v := secValue(val)
+	if v == "" {
+		s.lsm[key] = nil
+		return nil
+	}
+	l := &secLabel{val: val}
+	exp, w := expandSpecifiers(cfg, key, v)
+	l.label, l.lenient = strings.CutPrefix(exp, "-")
+	switch {
+	case len(w) > 0:
+		// The literal "%H" would name another profile than the one
+		// the unit means; the label cannot be applied as written.
+		l.err = fmt.Errorf("it uses a specifier slinit cannot expand")
+	case l.label == "":
+		l.err = fmt.Errorf("no label after the \"-\"")
+	}
+	s.lsm[key] = l
+	return nil
+}
+
+// secFinishLSM maps the LSM labels the unit ends up with.
+func secFinishLSM(cfg *SystemdConfig, s *secState) []SystemdWarning {
+	var warns []SystemdWarning
+	for _, m := range secLSMs {
+		l := s.lsm[m.directive]
+		if l == nil {
+			continue
 		}
-		label, lenient := strings.CutPrefix(v, "-")
-		if _, err := os.Stat(*dir); err != nil {
-			return append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s not applied: %s is not active on this host "+
-				"(no %s), and systemd skips the directive then too", key, val, lsm, *dir)})
+		if l.err != nil {
+			secRefuse(cfg, m.directive, l.val, l.err)
+			continue
 		}
-		r := sdRule{key: slinitKey, class: sdConfine, conv: func(string) (string, []SystemdWarning, error) {
-			if label == "" {
-				return "", nil, fmt.Errorf("no label after the \"-\"")
-			}
-			return label, nil, nil
-		}}
-		warns = append(warns, cfg.applyRule("Service", key, v, r)...)
-		if lenient {
+		active := m.active()
+		if l.lenient && !active {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s=%s not applied: %s is not active on the host "+
+				"converting the unit, and with \"-\" the unit allows running without it. Where the service runs on a "+
+				"host with %s, it runs unconfined", m.directive, l.val, m.name, m.name)})
+			continue
+		}
+		if strings.TrimSpace(cfg.chroot) != "" {
+			// slinit-runner applies the label through /proc after
+			// the chroot, so the jail would decide whether the
+			// transition happens; the loader refuses the pair.
+			// Dropping the label would run the service unconfined.
+			cfg.errs = append(cfg.errs, fmt.Sprintf("%s=%s together with RootDirectory=%s: slinit cannot apply an LSM "+
+				"label to a chrooted service, and leaving the label out would run it unconfined", m.directive, l.val, cfg.chroot))
+			continue
+		}
+		r := sdRule{key: m.key, class: sdConfine}
+		warns = append(warns, cfg.applyRule("Service", m.directive, l.label, r)...)
+		if l.lenient {
 			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s: with \"-\" systemd runs the service "+
-				"without the label when it cannot be applied; slinit's %s fails the start instead", key, val, slinitKey)})
+				"without the label when it cannot be applied; slinit's %s fails the start instead", m.directive, l.val, m.key)})
+		} else if !active {
+			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s: %s is not active on the host converting "+
+				"the unit. Where it is not active when the service starts, slinit's %s fails the start, "+
+				"where systemd skips the directive", m.directive, l.val, m.name, m.key)})
 		}
-		return warns
-	}}
+	}
+	return warns
 }
 
 // --- Namespaces ---
 
-// secNamespace maps a boolean Private*= onto a namespace-* switch.
-// dropOnNo says whether "no" may undo an earlier yes: it may when this
-// directive is the only one that sets key. extra adds the warnings of a
-// yes. A value that is not a boolean refuses the unit.
-func secNamespace(slinitKey string, dropOnNo bool, extra func(key, val string) []SystemdWarning) func(*SystemdConfig, string, string) []SystemdWarning {
-	return func(cfg *SystemdConfig, key, val string) []SystemdWarning {
-		v := secValue(val)
-		if v == "" {
-			// For PrivateIPC= and PrivatePIDs= an invalid value
-			// systemd ignores, keeping the earlier one; for the
-			// tristate PrivateMounts= a reset to "auto", which asks
-			// for no namespace either. Nothing to change.
-			return nil
-		}
-		on, err := secBool(v)
-		if err != nil {
-			secRefuse(cfg, key, val, err)
-			return nil
-		}
-		if !on {
-			if dropOnNo {
-				cfg.dropMapped(slinitKey)
-			}
-			return nil
-		}
-		cfg.setMapped(slinitKey, "yes")
-		if extra != nil {
-			return extra(key, val)
-		}
-		return nil
-	}
-}
-
-// secMountFlags maps MountFlags=. slave and private each make systemd
-// create a mount namespace (exec_needs_mount_namespace); shared, the
-// default, does not on its own.
+// secMountFlags records MountFlags=. slave and private each make
+// systemd create a mount namespace (exec_needs_mount_namespace); shared,
+// the default, and empty do not on their own. An unknown value systemd
+// ignores, keeping the one before.
 func secMountFlags(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	s := secStateOf(cfg)
 	switch v := strings.ToLower(secValue(val)); v {
 	case "", "shared":
-		return nil
+		s.mountFlags, s.want = secFlag{key: key, val: val}, ""
 	case "slave", "private":
-		cfg.setMapped("namespace-mount", "yes")
-		return secPropagation(key, val, v)
+		s.mountFlags, s.want = secFlag{on: true, key: key, val: val}, v
 	default:
-		secRefuse(cfg, key, val, fmt.Errorf("expected shared, slave or private"))
-		return nil
+		s.mountFlags.invalid = key + "=" + val
 	}
+	return nil
+}
+
+// secFinishNamespaces maps PrivateIPC=, PrivatePIDs=, PrivateMounts=
+// and MountFlags=. The last two each ask for a mount namespace, and
+// systemd makes one when either does: PrivateMounts=no does not undo
+// MountFlags=slave.
+func secFinishNamespaces(cfg *SystemdConfig, s *secState) []SystemdWarning {
+	var warns []SystemdWarning
+	for _, f := range []*secFlag{&s.ipc, &s.pids, &s.mounts, &s.mountFlags} {
+		warns = append(warns, f.settle(cfg)...)
+	}
+	if s.ipc.on {
+		cfg.setMapped("namespace-ipc", "yes")
+	}
+	if s.pids.on {
+		cfg.setMapped("namespace-pid", "yes")
+		// systemd mounts a /proc of the new namespace (MountAPIVFS=
+		// is implied); slinit's namespace-pid only clones, so /proc
+		// is still the host's.
+		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s=%s -> namespace-pid = yes; slinit mounts no /proc "+
+			"of the new PID namespace, so the service still sees every host process under /proc", s.pids.key, s.pids.val)})
+	}
+	switch {
+	case s.mountFlags.on:
+		cfg.setMapped("namespace-mount", "yes")
+		warns = append(warns, secPropagation(s.mountFlags.key, s.mountFlags.val, s.want)...)
+	case s.mounts.on:
+		cfg.setMapped("namespace-mount", "yes")
+		warns = append(warns, secPropagation(s.mounts.key, s.mounts.val, "slave")...)
+	}
+	return warns
 }
 
 // secPropagation says how slinit's mount namespace differs from the
@@ -364,11 +510,42 @@ func secRootSharedIn(r io.Reader) bool {
 // secBindPaths maps BindPaths= as the BindReadOnlyPaths= case maps its
 // list ("[-]src[:dst[:rbind|norbind]]" to slinit's "src:dst"). Neither is
 // in specifierKeys, so the specifiers are expanded here.
+//
+// slinit's bind-paths has no optional form: a source that is missing
+// when the service starts fails the start. So whether a "-" source is
+// there is decided now, when the unit is converted (or loaded, for a
+// unit slinit reads directly), and the notes say so.
 func secBindPaths(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	v, warns := expandSpecifiers(cfg, key, val)
 	entries, w := systemdBindPaths(key, v)
+	for i := range w {
+		if strings.Contains(w[i].Msg, "does not exist") {
+			w[i].Msg += "; decided when the unit was converted, since slinit's bind-paths has no optional form " +
+				"(convert or reload the unit again once the path exists)"
+		}
+	}
+	warns = append(warns, w...)
+	for _, e := range entries {
+		src, _, _ := strings.Cut(e, ":")
+		if secBindOptional(v, src) {
+			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s: -%s exists now and is bound; slinit's "+
+				"bind-paths has no optional form, so the start fails if it is gone by then, where systemd skips it", key, src)})
+		}
+	}
 	cfg.setMappedList("bind-paths", v, entries)
-	return append(warns, w...)
+	return warns
+}
+
+// secBindOptional reports whether src is given with "-" in the
+// BindPaths= value v.
+func secBindOptional(v, src string) bool {
+	for _, word := range strings.Fields(v) {
+		first, _, _ := strings.Cut(trimQuotes(word), ":")
+		if strings.HasPrefix(first, "-") && strings.TrimLeft(first, "-") == src {
+			return true
+		}
+	}
+	return false
 }
 
 // secPathAlias maps a deprecated *Directories= through the case of the
@@ -429,50 +606,62 @@ func secPreserve(v string) (string, []SystemdWarning, error) {
 
 // --- Identity and process attributes ---
 
-// secDynamicUser maps DynamicUser=. Besides the transient UID, systemd
-// enforces a sandbox on such a service so it cannot leave files or IPC
-// behind for the next owner of the UID (unit_patch_contexts):
+// secFinish decides what the security lines recorded in secState.
+func secFinish(cfg *SystemdConfig) []SystemdWarning {
+	s := secStateOf(cfg)
+	warns := secFinishNamespaces(cfg, s)
+	warns = append(warns, secFinishDynamicUser(cfg, s)...)
+	warns = append(warns, secFinishLSM(cfg, s)...)
+	if strings.TrimSpace(cfg.chroot) != "" {
+		if v, ok := cfg.hasMapped("bind-paths"); ok {
+			// slinit-runner makes the bind mounts on host paths
+			// before it enters the chroot, and the loader refuses the
+			// pair. A bind mount gives the service access rather
+			// than taking it away, so leaving it out is a WARN.
+			cfg.dropMapped("bind-paths")
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("BindPaths= with RootDirectory=%s: slinit cannot "+
+				"make bind mounts for a chrooted service (they would land on the host, not in the jail), so %s is "+
+				"not bound; make the bind mounts inside the jail on the host instead", cfg.chroot, v)})
+		}
+	}
+	return warns
+}
+
+// secFinishDynamicUser maps DynamicUser=. Besides the transient UID,
+// systemd enforces a sandbox on such a service so it cannot leave files
+// or IPC behind for the next owner of the UID (unit_patch_contexts):
 // RemoveIPC=, NoNewPrivileges= and RestrictSUIDSGID= forced on,
 // PrivateTmp= on, ProtectHome=read-only unless set, ProtectSystem=strict.
-// slinit's dynamic-user is the UID alone, so the rest is spelled out.
+// slinit's dynamic-user is the UID alone, so the rest is spelled out,
+// forced over whatever the unit's own lines say, before or after
+// DynamicUser=, as unit_patch_contexts runs after the whole unit is read.
 //
 // ProtectSystem=strict is not: slinit's protect-system = strict leaves
 // the service no write access to its own state-, cache- and
 // logs-directory, which systemd keeps writable, so it would break most
 // such services. Said with a WARN instead.
-//
-// The implied settings are written when DynamicUser= is read; a later
-// ProtectHome=, PrivateTmp= or NoNewPrivileges= line in the unit
-// overrides them, where systemd would keep its forced values.
-func secDynamicUser(cfg *SystemdConfig, key, val string) []SystemdWarning {
-	if secValue(val) == "" {
-		// Not a boolean; systemd ignores it and keeps the last.
-		return nil
-	}
-	on, err := secBool(secValue(val))
-	if err != nil {
-		secRefuse(cfg, key, val, err)
-		return nil
-	}
-	if !on {
-		cfg.dropMapped("dynamic-user")
-		return nil
+func secFinishDynamicUser(cfg *SystemdConfig, s *secState) []SystemdWarning {
+	warns := s.dyn.settle(cfg)
+	if !s.dyn.on {
+		return warns
 	}
 	cfg.setMapped("dynamic-user", "yes")
 	secForce(cfg, "remove-ipc", "yes")
 	secForce(cfg, "restrict-suidsgid", "yes")
 	cfg.noNewPrivs = true
-	warns := []SystemdWarning{{"NOTE", "DynamicUser=yes -> dynamic-user = yes, with remove-ipc, restrict-suidsgid, " +
+	warns = append(warns, SystemdWarning{"NOTE", "DynamicUser=yes -> dynamic-user = yes, with remove-ipc, restrict-suidsgid, " +
 		"no-new-privs, private-tmp and protect-home = read-only, as systemd implies. If User= names an existing " +
-		"user, systemd runs the service as that user; slinit still allocates a transient UID"}}
-	if cfg.chroot != "" {
+		"user, systemd runs the service as that user; slinit still allocates a transient UID"})
+	if strings.TrimSpace(cfg.chroot) != "" {
 		// slinit refuses a chroot together with the filesystem
-		// sandbox; the unit would not load at all.
+		// sandbox; the unit would not load at all. What the unit's
+		// own PrivateTmp= and ProtectHome= lines say is left alone.
 		return append(warns, SystemdWarning{"WARN", "DynamicUser=yes with RootDirectory=: slinit cannot combine chroot " +
 			"with private-tmp or protect-home, so the private /tmp and read-only /home systemd implies are not applied"})
 	}
 	secForce(cfg, "private-tmp", "yes")
-	if h, ok := secMappedValue(cfg, "protect-home"); !ok || h == "" || h == "no" {
+	h, _ := secMappedValue(cfg, "protect-home")
+	if off, err := secBool(h); h == "" || (err == nil && !off) {
 		secForce(cfg, "protect-home", "read-only")
 	}
 	return append(warns, SystemdWarning{"WARN", "DynamicUser=yes implies ProtectSystem=strict in systemd; not applied, " +
@@ -483,16 +672,15 @@ func secDynamicUser(cfg *SystemdConfig, key, val string) []SystemdWarning {
 // secRemoveIPC maps RemoveIPC=. systemd removes the user's IPC objects
 // when the last unit running as that user stops; slinit's remove-ipc
 // sweeps when this service stops, whatever else runs as the same user.
-// "no" cannot undo a DynamicUser=yes, which forces it on in systemd.
+// A DynamicUser=yes forces it on in secFinishDynamicUser, whatever this
+// says.
 func secRemoveIPC(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	on, err := secBool(secValue(val))
 	if err != nil {
 		return []SystemdWarning{{"WARN", fmt.Sprintf("[Service] %s=%s ignored: %v", key, val, err)}}
 	}
 	if !on {
-		if v, _ := secMappedValue(cfg, "dynamic-user"); v != "yes" {
-			cfg.dropMapped("remove-ipc")
-		}
+		cfg.dropMapped("remove-ipc")
 		return nil
 	}
 	cfg.setMapped("remove-ipc", "yes")

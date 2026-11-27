@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -109,9 +110,30 @@ func TestSystemdConditionPrefixesAndReset(t *testing.T) {
 			warn: "WARN:must be absolute"},
 		{name: "path form keeps the blank after !", lines: "ConditionPathExists=! /x",
 			warn: "WARN:must be absolute"},
-		{name: "triggering condition", lines: "ConditionPathExists=|/a",
-			warn: "WARN:triggering"},
-		{name: "triggering assertion", lines: "AssertPathExists=|/a", err: "triggering"},
+		// The only triggering check of its list must hold, as a plain
+		// one must; two or more need one of them, which slinit cannot
+		// express.
+		{name: "lone triggering condition", lines: "ConditionPathExists=|/a",
+			want: []string{"condition-path-exists = /a"}},
+		{name: "lone triggering condition, negated, beside plain ones",
+			lines: "ConditionPathExists=/b\nConditionHost=|! box\nAssertPathExists=|/c",
+			want:  []string{"condition-path-exists = /b", "condition-host = !box", "assert-path-exists = /c"}},
+		{name: "triggering conditions", lines: "ConditionPathExists=|/a\nConditionPathExists=|/b",
+			want: []string{}, warn: "WARN:this unit has 2"},
+		{name: "triggering assertions", lines: "AssertPathExists=|/a\nAssertHost=|box", err: "triggering"},
+		// A triggering check slinit cannot read still counts: with it,
+		// /a is not the only one.
+		{name: "triggering, one unexpandable", lines: "ConditionHost=|%H\nConditionPathExists=|/a",
+			want: []string{}, warn: "WARN:this unit has 2"},
+		// One condition and one assertion are each alone in their list.
+		{name: "triggering in each list", lines: "ConditionPathExists=|/a\nAssertPathExists=|/b",
+			want: []string{"condition-path-exists = /a", "assert-path-exists = /b"}},
+		// An empty Condition*= empties the triggering ones as well.
+		{name: "reset takes back a triggering condition",
+			lines: "ConditionPathExists=|/a\nConditionHost=\nConditionPathExists=|/b",
+			want:  []string{"condition-path-exists = /b"}},
+		{name: "a gap is unchecked, triggering or not", lines: "ConditionCapability=|CAP_SYS_ADMIN",
+			want: []string{}, warn: "WARN:bounding set"},
 		{name: "repeated assignments add up", lines: "ConditionPathExists=/a\nConditionPathExists=/b\nConditionPathIsDirectory=/c",
 			want: []string{"condition-path-exists = /a", "condition-path-exists = /b", "condition-path-is-directory = /c"}},
 		{name: "an empty condition empties every condition",
@@ -135,6 +157,40 @@ func TestSystemdConditionPrefixesAndReset(t *testing.T) {
 		{name: "specifier slinit cannot expand, assertion", lines: "AssertHost=%H", err: "specifier"},
 		{name: "nothing after the prefix", lines: "ConditionHost=!", warn: "WARN:nothing follows"},
 	}, "condition-", "assert-")
+}
+
+// A drop-in's triggering check joins the unit's: the unit's lone one
+// is no longer alone. And one only in the drop-in is.
+func TestSystemdTriggeringDropin(t *testing.T) {
+	for _, c := range []struct {
+		name, unit, dropin string
+		want               []string
+	}{
+		{"two together", "ConditionPathExists=|/a\n", "ConditionPathExists=|/b\n", nil},
+		{"one in the drop-in", "ConditionPathExists=/a\n", "ConditionPathExists=|/b\n",
+			[]string{"condition-path-exists = /a", "condition-path-exists = /b"}},
+		{"drop-in resets the unit's", "ConditionPathExists=|/a\n", "ConditionPathExists=\nConditionPathExists=|/b\n",
+			[]string{"condition-path-exists = /b"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := writeUnit(t, dir, "probe.service", "[Unit]\n"+c.unit+"[Service]\nExecStart=/bin/true\n")
+			writeTree(t, filepath.Join(dir, "probe.service.d", "10-x.conf"), "[Unit]\n"+c.dropin)
+			cfg, warns, err := ConvertSystemdUnitIn(p, []string{dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+			EmitSlinitFile(&buf, cfg)
+			got := emittedLines(buf.String(), "condition-")
+			if strings.Join(got, "\n") != strings.Join(c.want, "\n") {
+				t.Errorf("emitted %q, want %q\nwarnings: %v", got, c.want, warns)
+			}
+			if c.want == nil && !warnWith(warns, "WARN", "this unit has 2") {
+				t.Errorf("no WARN about the two triggering checks: %v", warns)
+			}
+		})
+	}
 }
 
 func TestSystemdConditionKinds(t *testing.T) {
@@ -235,8 +291,10 @@ func TestSystemdConditionKinds(t *testing.T) {
 		{name: "glob leading wildcard", lines: "ConditionPathExistsGlob=/etc/foo.d/*.conf",
 			want: []string{"condition-path-exists-glob = /etc/foo.d/*.conf"}, warn: "NOTE:dot"},
 		{name: "glob brace", lines: "ConditionPathExistsGlob=/dev/{a,b}", warn: "WARN:{a,b}"},
-		{name: "dir not empty", lines: "ConditionDirectoryNotEmpty=/etc/foo.d",
-			want: []string{"condition-directory-not-empty = /etc/foo.d"}, warn: "NOTE:hidden"},
+		// slinit's check counts hidden and backup files and fails on
+		// EACCES; neither is what systemd's does.
+		{name: "dir not empty", lines: "ConditionDirectoryNotEmpty=/etc/foo.d", warn: "WARN:hidden and backup files"},
+		{name: "dir not empty, assertion", lines: "AssertDirectoryNotEmpty=/etc/foo.d", err: "hidden and backup files"},
 		{name: "symlink", lines: "ConditionPathIsSymbolicLink=/etc/localtime", want: []string{"condition-path-is-symbolic-link = /etc/localtime"}},
 		{name: "read-write", lines: "AssertPathIsReadWrite=/var", want: []string{"assert-path-is-read-write = /var"}},
 		{name: "socket", lines: "ConditionPathIsSocket=/run/dbus/system_bus_socket", want: []string{"condition-path-is-socket = /run/dbus/system_bus_socket"}},

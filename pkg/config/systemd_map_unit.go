@@ -86,7 +86,6 @@ var sdConditionKinds = map[string]sdCondKind{
 	"PathIsReadWrite":        {pred: "path-is-read-write", path: true},
 	"PathIsSocket":           {pred: "path-is-socket", path: true},
 	"FileIsExecutable":       {pred: "file-is-executable", path: true},
-	"DirectoryNotEmpty":      {pred: "directory-not-empty", path: true, conv: sdCondDirNotEmpty},
 	"FirstBoot":              {pred: "first-boot", conv: sdCondBool},
 	"ACPower":                {pred: "ac-power", conv: sdCondBool},
 	"Architecture":           {pred: "architecture", conv: sdCondArchitecture},
@@ -112,6 +111,12 @@ var sdConditionKinds = map[string]sdCondKind{
 	"NeedsUpdate": {path: true, gap: "slinit's needs-update looks for marker files under /run, " +
 		"not at whether /usr is newer than this directory's .updated stamp"},
 	"PathIsEncrypted": {path: true, gap: "slinit has no check for a path on an encrypted block device"},
+	// systemd's dir_is_empty skips hidden and backup files (.foo, foo~,
+	// *.rpmnew) and counts an unreadable directory (EACCES) as not
+	// empty; slinit's check counts every entry and fails when it
+	// cannot read the directory.
+	"DirectoryNotEmpty": {path: true, gap: "slinit's directory-not-empty counts hidden and backup files " +
+		"(.foo, foo~, *.rpmnew), which systemd skips, and fails on a directory it cannot read, which systemd counts as not empty"},
 	"KernelModuleLoaded": {gap: "slinit's kernel-module-loaded reads /proc/modules, " +
 		"which leaves out built-in modules that systemd counts as loaded (/sys/module)"},
 	"MemoryPressure": {gap: sdPSIGap},
@@ -124,6 +129,7 @@ const sdPSIGap = "slinit's pressure checks hold when the 10s 'some' average is A
 	"and pass without PSI"
 
 func init() {
+	registerFinisher(sdFinishTriggers)
 	for kind, k := range sdConditionKinds {
 		k := k
 		registerUnit("Condition"+kind, sdRule{custom: func(cfg *SystemdConfig, key, val string) []SystemdWarning {
@@ -196,7 +202,16 @@ func (cfg *SystemdConfig) applyCondition(key, val string, k sdCondKind, assert b
 	if !specifierKeys[key] {
 		exp, w := expandSpecifiers(cfg, key, v)
 		if len(w) > 0 {
-			return cfg.conditionUnchecked(key, val, assert, "it uses a specifier slinit cannot expand")
+			const why = "it uses a specifier slinit cannot expand"
+			if trigger {
+				// It still counts among the unit's triggering
+				// checks, so that another is not taken for the
+				// only one.
+				st := sdUnitStateOf(cfg)
+				st.triggers = append(st.triggers, sdTrigger{key: key, val: val, k: k, assert: assert, unchecked: why})
+				return nil
+			}
+			return cfg.conditionUnchecked(key, val, assert, why)
 		}
 		v = exp
 	}
@@ -207,9 +222,19 @@ func (cfg *SystemdConfig) applyCondition(key, val string, k sdCondKind, assert b
 			"[Unit] %s=%s ignored: the path must be absolute, and systemd ignores this assignment too", key, val)}}
 	}
 	if trigger {
-		return cfg.conditionUnchecked(key, val, assert,
-			"slinit has no triggering (|) checks, only ones that must all hold")
+		// Whether slinit can check it depends on the other
+		// triggering checks of the unit, drop-ins included:
+		// sdFinishTriggers decides.
+		st := sdUnitStateOf(cfg)
+		st.triggers = append(st.triggers, sdTrigger{key: key, val: val, k: k, assert: assert, v: v, negate: negate})
+		return nil
 	}
+	return cfg.emitCondition(key, val, k, assert, v, negate)
+}
+
+// emitCondition maps one check, its prefixes taken off and its value
+// expanded, onto slinit's predicates.
+func (cfg *SystemdConfig) emitCondition(key, val string, k sdCondKind, assert bool, v string, negate bool) []SystemdWarning {
 	if v == "" {
 		return cfg.conditionUnchecked(key, val, assert, "nothing follows the prefix")
 	}
@@ -236,6 +261,59 @@ func (cfg *SystemdConfig) applyCondition(key, val string, k sdCondKind, assert b
 			param = "!" + param
 		}
 		cfg.conditions = append(cfg.conditions, condDir{prefix + k.pred, param})
+	}
+	return warns
+}
+
+// sdUnitState is the [Unit] state sdFinishTriggers reads.
+type sdUnitState struct {
+	triggers []sdTrigger
+}
+
+// sdTrigger is one triggering ("|") check, read up to its value.
+type sdTrigger struct {
+	key, val  string
+	k         sdCondKind
+	assert    bool
+	v         string // expanded, "|" and "!" taken off; "" when unexpandable
+	negate    bool
+	unchecked string // why slinit cannot check it whatever the others say
+}
+
+func sdUnitStateOf(cfg *SystemdConfig) *sdUnitState {
+	return sdState(cfg, "unit", func() *sdUnitState { return &sdUnitState{} })
+}
+
+// sdFinishTriggers maps the triggering checks. systemd requires every
+// plain check of a list (conditions, assertions) to hold, and, when the
+// list has triggering ones, at least one of those
+// (condition_test_list). slinit has no "at least one of": its checks
+// must all hold. When a list has exactly one triggering check, "at
+// least one of" that one is the check itself, so it is mapped as a
+// plain one. With two or more none of them can be mapped: requiring
+// each would skip the service where systemd runs it.
+func sdFinishTriggers(cfg *SystemdConfig) []SystemdWarning {
+	var warns []SystemdWarning
+	st := sdUnitStateOf(cfg)
+	for _, assert := range []bool{false, true} {
+		var list []sdTrigger
+		for _, t := range st.triggers {
+			if t.assert == assert {
+				list = append(list, t)
+			}
+		}
+		for _, t := range list {
+			switch {
+			case t.unchecked != "":
+				warns = append(warns, cfg.conditionUnchecked(t.key, t.val, assert, t.unchecked)...)
+			case len(list) == 1:
+				warns = append(warns, cfg.emitCondition(t.key, t.val, t.k, assert, t.v, t.negate)...)
+			default:
+				warns = append(warns, cfg.conditionUnchecked(t.key, t.val, assert, fmt.Sprintf(
+					"slinit has no triggering (|) checks, only ones that must all hold, and this unit has %d, "+
+						"of which systemd needs one to hold", len(list)))...)
+			}
+		}
 	}
 	return warns
 }
@@ -273,6 +351,14 @@ func (cfg *SystemdConfig) resetConditions(assert bool) {
 		}
 	}
 	cfg.conditions = kept
+	st := sdUnitStateOf(cfg)
+	keptT := st.triggers[:0]
+	for _, t := range st.triggers {
+		if t.assert != assert {
+			keptT = append(keptT, t)
+		}
+	}
+	st.triggers = keptT
 	if assert {
 		errs := cfg.errs[:0]
 		for _, e := range cfg.errs {
@@ -344,11 +430,6 @@ func sdCondGlob(v string, negate bool) ([]sdPred, []SystemdWarning, error) {
 			"path-exists-glob %s: slinit's wildcard also matches names that begin with a dot, which systemd's does not", v)})
 	}
 	return sdOne(v, negate), warns, nil
-}
-
-func sdCondDirNotEmpty(v string, negate bool) ([]sdPred, []SystemdWarning, error) {
-	return sdOne(v, negate), []SystemdWarning{{"NOTE", fmt.Sprintf(
-		"directory-not-empty %s: slinit counts hidden and backup files (.foo, foo~, *.rpmnew), which systemd skips", v)}}, nil
 }
 
 // sdArchNames are systemd's architecture names, mapped to the names
