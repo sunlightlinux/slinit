@@ -452,3 +452,17 @@ func TestSystemdLifecycleNits(t *testing.T) {
 		t.Errorf("FailureAction=exit: %v", warns)
 	}
 }
+
+func TestSystemdSendSIGHUP(t *testing.T) {
+	for val, want := range map[string]bool{"yes": true, "true": true, "no": false} {
+		emitted, warns, desc := lcConvert(t, "SendSIGHUP="+val)
+		if desc.SendSIGHUP != want {
+			t.Errorf("SendSIGHUP=%s: send-sighup %v, want %v (emitted %q)", val, desc.SendSIGHUP, want, emitted)
+		}
+		for _, w := range warns {
+			if strings.Contains(w.Msg, "SendSIGHUP") {
+				t.Errorf("SendSIGHUP=%s warned: %v", val, w)
+			}
+		}
+	}
+}

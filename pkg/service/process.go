@@ -2333,6 +2333,7 @@ func (s *ProcessService) issueStopLocked() {
 		s.logStopSignalFailure(err)
 	}
 	s.stopSignalSentLocked(sig)
+	s.sendHangupLocked(sig)
 
 	// Arm stop timeout for SIGKILL escalation
 	if s.stopTimeout > 0 {
@@ -2353,6 +2354,25 @@ func (s *ProcessService) stopSignalSentLocked(sig syscall.Signal) {
 	// kill-mode=control-group is set.
 	if s.Flags.KillAllOnStop || s.Record().KillMode() == KillModeControlGroup {
 		s.killCgroupTree(sig)
+	}
+}
+
+// sendHangupLocked follows the stop signal with SIGHUP when send-sighup
+// is set, as systemd's SendSIGHUP= does: to the processes the stop
+// signal went to, so a shell or anything else that ends only on a hangup
+// goes now rather than at the stop timeout. Not after a SIGHUP, nor for
+// the escalation's SIGKILL, nor in place of a control-command. Caller
+// holds queueMu.
+func (s *ProcessService) sendHangupLocked(sig syscall.Signal) {
+	if !s.Record().sendSIGHUP || sig == syscall.SIGHUP {
+		return
+	}
+	if err := process.SignalProcess(s.pid, syscall.SIGHUP, s.Flags.SignalProcessOnly); err != nil &&
+		!errors.Is(err, syscall.ESRCH) {
+		s.services.logger.Error("Service '%s': SIGHUP after the stop signal failed: %v", s.serviceName, err)
+	}
+	if s.Flags.KillAllOnStop || s.Record().KillMode() == KillModeControlGroup {
+		s.killCgroupTree(syscall.SIGHUP)
 	}
 }
 

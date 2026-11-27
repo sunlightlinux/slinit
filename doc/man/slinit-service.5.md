@@ -415,6 +415,16 @@ what tells you the oldest slinit your configuration will run on. See
 :   Signal sent on stop. Defaults to *TERM*. Aliases: **termsignal**
     (dinit), **stopsig** (OpenRC).
 
+**send-sighup**=*yes*|*no* (since 4.1.0)
+:   Send *SIGHUP* right after the stop signal, to the same processes
+    (the main process, its process group unless **signal-process-only**,
+    and the cgroup with **kill-mode** = *control-group*), so a shell or
+    another process that only ends on a hangup goes at once rather than
+    at **stop-timeout**. Not when the stop signal is *SIGHUP* itself,
+    nor for the escalation's *SIGKILL*, nor when a **control-command**
+    replaces the stop signal. **type** = *process* and *bgprocess*.
+    Default *no*. systemd's **SendSIGHUP=**.
+
 **reload-signal**=*signal*
 :   Signal sent to the running process when the operator runs
     **slinitctl reload-signal** *service*. The intended use is the

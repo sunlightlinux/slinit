@@ -318,6 +318,7 @@ var BuiltinDirectives = []string{
 	"sched-runtime",
 	"securebits",
 	"selinux-context",
+	"send-sighup",
 	"set-credential",
 	"shared-logger",
 	"shared-logger-lossy",

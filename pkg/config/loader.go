@@ -2266,6 +2266,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetNormalExitSignals(desc.NormalExitSignals)
 	rec.SetFlags(desc.Flags)
 	rec.SetTermSignal(desc.TermSignal)
+	rec.SetSendSIGHUP(desc.SendSIGHUP)
 	rec.SetReloadSignal(desc.ReloadSignal)
 	rec.SetChainTo(desc.ChainTo)
 	rec.SetPartOf(desc.PartOf)

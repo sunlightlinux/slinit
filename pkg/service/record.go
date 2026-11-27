@@ -247,6 +247,7 @@ type ServiceRecord struct {
 
 	// Process settings (shared across service types)
 	termSignal      syscall.Signal
+	sendSIGHUP      bool // send-sighup: SIGHUP right after the stop signal
 	reloadSignal    syscall.Signal // 0 = unset; sent by `slinitctl reload-signal`
 	socketPath      string         // primary socket path (for backwards compat)
 	socketPaths     []string       // all socket-listen paths (for multiple sockets)
@@ -1585,6 +1586,7 @@ func (sr *ServiceRecord) SetPartOf(names []string)           { sr.partOf = names
 func (sr *ServiceRecord) PartOf() []string                   { return sr.partOf }
 func (sr *ServiceRecord) SetServiceDscDir(dir string)        { sr.serviceDscDir = dir }
 func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)   { sr.termSignal = sig }
+func (sr *ServiceRecord) SetSendSIGHUP(v bool)               { sr.sendSIGHUP = v }
 func (sr *ServiceRecord) SetReloadSignal(sig syscall.Signal) { sr.reloadSignal = sig }
 func (sr *ServiceRecord) ReloadSignal() syscall.Signal       { return sr.reloadSignal }
 

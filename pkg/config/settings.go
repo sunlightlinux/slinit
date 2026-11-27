@@ -93,6 +93,7 @@ var KnownSettings = map[string]OperatorType{
 	"restart-limit-interval":     OpEquals,
 	"restart-limit-count":        OpEquals,
 	"term-signal":                OpEquals,
+	"send-sighup":                OpEquals,
 	"termsignal":                 OpEquals, // deprecated alias (dinit compat)
 	"stopsig":                    OpEquals, // OpenRC alias
 	"reload-signal":              OpEquals, // upstart-inspired: signal sent by `slinitctl reload-signal`

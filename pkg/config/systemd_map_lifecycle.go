@@ -99,6 +99,7 @@ func init() {
 
 	registerService("IgnoreSIGPIPE", sdRule{key: "ignore-sigpipe", conv: lcBool})
 	registerService("GuessMainPID", sdRule{key: "guess-main-pid", conv: lcBool})
+	registerService("SendSIGHUP", sdRule{key: "send-sighup", conv: lcBool})
 	registerService("NotifyAccess", sdRule{key: "notify-access"})
 	registerService("BusName", sdRule{custom: lcBusName})
 	registerService("FileDescriptorStoreMax", sdRule{key: "file-descriptor-store-max", conv: lcUnsigned})
@@ -119,8 +120,6 @@ func init() {
 			"not exponentially up to RestartMaxDelaySec=; the delay stays at restart-delay unless those are set by hand",
 		"RestartMaxDelaySec": "it is the end of RestartSteps= backoff, which slinit does not do; slinit's restart-max-delay " +
 			"caps the delay with its jitter instead, so set restart-delay-step and restart-delay-cap by hand",
-		"SendSIGHUP": "slinit does not follow the stop signal with SIGHUP; a shell or other process that only " +
-			"exits on a hangup lives until the stop timeout",
 		"NonBlocking": "the socket descriptors slinit passes keep the blocking mode they were created with",
 		"PermissionsStartOnly": "slinit runs ExecStartPre=, ExecStartPost= and ExecStop= with the service's run-as; " +
 			"give those commands slinit's \"+\" prefix to run them as root",

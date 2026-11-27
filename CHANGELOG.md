@@ -51,6 +51,13 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`send-sighup = yes`**, systemd's `SendSIGHUP=`: SIGHUP right after
+  the stop signal, to the same processes, so a shell or anything else
+  that ends only on a hangup goes at once instead of at the stop
+  timeout. Not after a SIGHUP stop signal, nor for the SIGKILL
+  escalation. `type = process` and `bgprocess`; a unit's `SendSIGHUP=`
+  maps onto it (six of this host's units set it).
+
 - **`part-of: X`**, systemd's `PartOf=`: a stop asked of X stops this
   service, and a restart of X, asked for or automatic, restarts it if
   it is running, once X starts again (after its restart-delay). It does

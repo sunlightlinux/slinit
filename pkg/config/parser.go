@@ -318,6 +318,7 @@ type ServiceDescription struct {
 	// the two cases apart because Go zero-init also gives 0.
 	RestartLimitCountSet bool
 	TermSignal           syscall.Signal
+	SendSIGHUP           bool // follow the stop signal with SIGHUP
 	ReloadSignal         syscall.Signal // upstart-inspired; 0 = unset
 	PIDFile              string
 	FollowPID            string // adopt an already-running process named by this pid file
@@ -2236,6 +2237,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.TermSignal = sig
+	case "send-sighup":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.SendSIGHUP = b
 	case "reload-signal":
 		sig, err := parseSignal(value)
 		if err != nil {

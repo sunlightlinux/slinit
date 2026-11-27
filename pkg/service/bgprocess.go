@@ -640,6 +640,13 @@ func (s *BGProcessService) BringDown() {
 	if s.Flags.KillAllOnStop {
 		s.killCgroupTree(sig)
 	}
+	// send-sighup: see ProcessService.sendHangupLocked.
+	if s.Record().sendSIGHUP && sig != syscall.SIGHUP {
+		_ = process.SignalDaemonGroup(pid, syscall.SIGHUP, s.signalProcessOnly(pid))
+		if s.Flags.KillAllOnStop {
+			s.killCgroupTree(syscall.SIGHUP)
+		}
+	}
 
 	if s.stopTimeout > 0 {
 		s.armTimer(s.stopTimeout, bgTimerStopTimeout)

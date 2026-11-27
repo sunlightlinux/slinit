@@ -132,6 +132,7 @@ var provenanceTable = []Feature{
 	{Name: "normal-exit", Kind: KindDirective, Source: SourceUpstart, Category: CatLifecycle, Notes: "exit codes considered clean (no restart)"},
 	{Name: "reload-signal", Kind: KindDirective, Source: SourceUpstart, Category: CatLifecycle, Notes: "signal for CmdReloadSignal"},
 	{Name: "term-signal", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "signal sent on stop (default SIGTERM); dinit's stop-signal name"},
+	{Name: "send-sighup", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "follow the stop signal with SIGHUP (SendSIGHUP=)"},
 	{Name: "kill-mode", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "control-group / process / mixed / none"},
 	{Name: "stop-timeout", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "grace period before SIGKILL after term-signal"},
 	{Name: "start-timeout", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle},
