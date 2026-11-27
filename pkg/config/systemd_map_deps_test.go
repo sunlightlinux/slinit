@@ -1,12 +1,9 @@
 package config
 
 import (
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 func TestSystemdDependencyMapping(t *testing.T) {
@@ -14,28 +11,27 @@ func TestSystemdDependencyMapping(t *testing.T) {
 		name                     string
 		unit                     string
 		depends, waits           []string
-		after, before            []string
 		asserts                  []string
+		stopWhenUnneeded         bool
 		noteContains, notWarnFor string
 	}{
 		{
-			name:  "After= orders only",
+			name:  "After= is still waits-for (see applyUnitKey)",
 			unit:  "[Unit]\nAfter=db.service\n",
-			after: []string{"db"},
-		},
-		{
-			name:   "Before= orders only",
-			unit:   "[Unit]\nBefore=web.service\n",
-			before: []string{"web"},
-		},
-		{
-			name:  "Wants= with After= is one waits-for, no extra after:",
-			unit:  "[Unit]\nWants=db.service\nAfter=db.service cache.service\n",
 			waits: []string{"db"},
-			after: []string{"cache"},
 		},
 		{
-			name:    "BindsTo= is depends-on",
+			name:         "Before= is reported, not mapped",
+			unit:         "[Unit]\nBefore=web.service\n",
+			noteContains: "Before=web.service is not carried over",
+		},
+		{
+			name:  "Wants= and After= on one service is one edge",
+			unit:  "[Unit]\nWants=db.service\nAfter=db.service cache.service\n",
+			waits: []string{"db", "cache"},
+		},
+		{
+			name:    "BindsTo= is depends-on, and After= adds no second edge",
 			unit:    "[Unit]\nBindsTo=dev.service\nAfter=dev.service\n",
 			depends: []string{"dev"},
 		},
@@ -57,7 +53,7 @@ func TestSystemdDependencyMapping(t *testing.T) {
 		{
 			name:  "a target in After= is dropped, the service kept",
 			unit:  "[Unit]\nAfter=network.target db.service\n",
-			after: []string{"db"},
+			waits: []string{"db"},
 		},
 		{
 			name:         "PartOf= has no equivalent and says so",
@@ -65,12 +61,13 @@ func TestSystemdDependencyMapping(t *testing.T) {
 			noteContains: "PartOf=db.service has no slinit equivalent",
 		},
 		{
-			name:         "StopWhenUnneeded=yes explains slinit's default",
-			unit:         "[Unit]\nStopWhenUnneeded=yes\n",
-			noteContains: "started only as a dependency",
+			name:             "StopWhenUnneeded=yes is stop-when-unneeded",
+			unit:             "[Unit]\nStopWhenUnneeded=yes\n",
+			stopWhenUnneeded: true,
+			notWarnFor:       "StopWhenUnneeded",
 		},
 		{
-			name:       "StopWhenUnneeded=no restates the default: no note",
+			name:       "StopWhenUnneeded=no",
 			unit:       "[Unit]\nStopWhenUnneeded=no\n",
 			notWarnFor: "StopWhenUnneeded",
 		},
@@ -93,8 +90,8 @@ func TestSystemdDependencyMapping(t *testing.T) {
 			}
 			eq("depends-on", desc.DependsOn, tc.depends)
 			eq("waits-for", desc.WaitsFor, tc.waits)
-			eq("after", desc.After, tc.after)
-			eq("before", desc.Before, tc.before)
+			eq("after", desc.After, nil)
+			eq("before", desc.Before, nil)
 			var asserts []string
 			for _, p := range desc.Predicates {
 				if strings.Contains(p.String(), "service-started") {
@@ -102,6 +99,9 @@ func TestSystemdDependencyMapping(t *testing.T) {
 				}
 			}
 			eq("assert-service-started", asserts, tc.asserts)
+			if desc.StopWhenUnneeded != tc.stopWhenUnneeded {
+				t.Errorf("stop-when-unneeded = %v, want %v", desc.StopWhenUnneeded, tc.stopWhenUnneeded)
+			}
 			all := ""
 			for _, w := range warns {
 				all += w.Level + ": " + w.Msg + "\n"
@@ -113,52 +113,5 @@ func TestSystemdDependencyMapping(t *testing.T) {
 				t.Errorf("unexpected warning about %s:\n%s", tc.notWarnFor, all)
 			}
 		})
-	}
-}
-
-// A unit loaded directly with Before= naming a service that is not
-// installed still loads, as in systemd, and one that is installed gets
-// the ordering edge.
-func TestSystemdBeforeOnMissingUnitLoads(t *testing.T) {
-	root := t.TempDir()
-	units := filepath.Join(root, "systemd")
-	writeUnit(t, units, "early.service", `[Unit]
-Before=late.service gone.service
-[Service]
-ExecStart=/usr/bin/early
-`)
-	writeUnit(t, units, "late.service", "[Service]\nExecStart=/usr/bin/late\n")
-	var got []string
-	OnSystemdUnitWarning = func(svc, path, level, msg string) {
-		got = append(got, level+": "+msg)
-	}
-	t.Cleanup(func() { OnSystemdUnitWarning = nil })
-
-	ss := service.NewServiceSet(&testConsumerLogger{})
-	dl := NewDirLoader(ss, []string{filepath.Join(root, "slinit.d")})
-	dl.SetSystemdDirs([]string{units})
-	ss.SetLoader(dl)
-	svc, err := dl.LoadService("early")
-	if err != nil {
-		t.Fatalf("unit with Before= on a missing unit does not load: %v", err)
-	}
-	var before bool
-	for _, d := range svc.Record().Dependencies() {
-		if d.To.Name() == "late" && d.DepType == service.DepBefore {
-			before = true
-		}
-		if d.To.Name() == "gone" {
-			t.Errorf("an edge to the missing unit was kept")
-		}
-	}
-	if !before {
-		t.Errorf("no before: edge to late; dependencies: %v", svc.Record().Dependencies())
-	}
-	found := false
-	for _, g := range got {
-		found = found || (strings.HasPrefix(g, "NOTE") && strings.Contains(g, "before: gone"))
-	}
-	if !found {
-		t.Errorf("no NOTE that gone was left out: %v", got)
 	}
 }

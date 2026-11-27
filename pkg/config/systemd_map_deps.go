@@ -25,12 +25,14 @@ func init() {
 		"WantsMountsFor": {why: "slinit does not order services after the mounts of a path"},
 		"OnSuccess": {why: "`chain-to` starts a service when this one exits 0 on its own; " +
 			"systemd also starts it after a clean stop. Use chain-to if that is the case that matters"},
-		"StopWhenUnneeded": {why: "slinit already stops a service started only as a dependency " +
-			"once nothing needs it; one started by hand stays up"},
 	}
 	for k, g := range gaps {
 		sdUnitNoEquivalent[k] = g
 	}
+	// Same meaning, same values: the service stops once nothing that
+	// depends on it needs it any more.
+	registerUnit("StopWhenUnneeded", sdRule{key: "stop-when-unneeded"})
+
 	for k, why := range map[string]string{
 		"OnFailureJobMode": "a job mode for OnFailure=; slinit has no job queue",
 		"OnSuccessJobMode": "a job mode for OnSuccess=; slinit has no job queue",

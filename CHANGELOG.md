@@ -24,20 +24,6 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
-### Changed
-
-- **A systemd unit's `After=` orders only, as in systemd.** A `.service`
-  unit loaded directly or converted with `slinit-systemd-convert` turned
-  `After=X` into `waits-for: X`, which also started X: a unit ordered
-  after an optional daemon pulled the daemon up with it. `After=` is now
-  `after:` and `Before=`, which was dropped with a warning, is `before:`,
-  both ordering only: they apply when both services start and start
-  neither. *Compat:* a unit that relied on `After=` to start the other
-  service (bolt for polkit, systemd-remount-fs for systemd-fsck-root
-  among systemd's own) needs `Wants=` or `Requires=` for it, or a
-  native `waits-for:`. A directly loaded unit still leaves out an
-  ordering reference to a unit that is not installed, with a note.
-
 ### Added
 
 - **systemd drop-ins are applied.** A `.service` unit loaded directly, or
@@ -55,12 +41,20 @@ verified with `git tag -v`.
 - **`BindsTo=`** (and its old spelling `BindTo=`) becomes `depends-on:`,
   which stops the service when its dependency stops, as `BindsTo=`
   does; the obsolete `RequiresOverridable=` and `RequisiteOverridable=`
-  read as `Requires=` and `Requisite=`, as systemd reads them. They were
+  read as `Requires=` and `Requisite=`, as systemd reads them, and
+  `StopWhenUnneeded=` is slinit's `stop-when-unneeded`. They were
   dropped without a word, like every `[Unit]` key the loader did not
   know; such a key now draws a warning, and `PartOf=`, `Upholds=`,
   `PropagatesReloadTo=`, `PropagatesStopTo=`, `JoinsNamespaceOf=`,
-  `RequiresMountsFor=`, `OnSuccess=` and `StopWhenUnneeded=` say what to
-  use instead.
+  `RequiresMountsFor=` and `OnSuccess=` say what to use instead.
+  *Compat:* like `Requires=`, a `BindsTo=` naming a service that is not
+  installed now fails the load, as it fails the unit in systemd.
+
+### Fixed
+
+- **A systemd unit naming one service in both `Wants=` and `After=`**,
+  as most do, gave that service two identical `waits-for:` edges. Each
+  name is now one dependency.
 
 ## [4.0.5] — 2026-11-27
 
