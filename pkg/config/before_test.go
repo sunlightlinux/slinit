@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -82,4 +83,74 @@ func countEdges(svc service.Service, to string, dt service.DependencyType) int {
 		}
 	}
 	return n
+}
+
+// A before: whose target this service already waits for is a cycle: the
+// target would wait for a service that waits for it. Found by review:
+// with the edge stored on its target and no check, a, b and x sat in
+// STARTING for good.
+func TestBeforeCycleIsRefused(t *testing.T) {
+	load := func(t *testing.T, files map[string]string, name string) error {
+		dir := t.TempDir()
+		for n, body := range files {
+			writeServiceFile(t, dir, n, body)
+		}
+		ss := service.NewServiceSet(&testConsumerLogger{})
+		dl := NewDirLoader(ss, []string{dir})
+		ss.SetLoader(dl)
+		_, err := dl.LoadService(name)
+		return err
+	}
+	t.Run("through a dependency", func(t *testing.T) {
+		err := load(t, map[string]string{
+			"x": "type = internal\n",
+			"b": "type = internal\ndepends-on: x\n",
+			"a": "type = internal\nwaits-for: b\nbefore: x\n",
+		}, "a")
+		if err == nil || !strings.Contains(err.Error(), "already waits for x") {
+			t.Fatalf("a waits for x through b and says before: x; want a cycle error, got %v", err)
+		}
+	})
+	t.Run("directly", func(t *testing.T) {
+		if err := load(t, map[string]string{
+			"x": "type = internal\n",
+			"a": "type = internal\ndepends-on: x\nbefore: x\n",
+		}, "a"); err == nil {
+			t.Fatal("depends-on: x with before: x loaded")
+		}
+	})
+	t.Run("itself", func(t *testing.T) {
+		if err := load(t, map[string]string{"a": "type = internal\nbefore: a\n"}, "a"); err == nil {
+			t.Fatal("before: a on a loaded")
+		}
+	})
+	t.Run("the same order said from both ends loads", func(t *testing.T) {
+		if err := load(t, map[string]string{
+			"x": "type = internal\nafter: a\n",
+			"a": "type = internal\nbefore: x\n",
+		}, "x"); err != nil {
+			t.Fatalf("x: after: a with a: before: x is no cycle: %v", err)
+		}
+	})
+}
+
+// The target's depth follows the edge put on it.
+func TestBeforeUpdatesTheTargetsDepth(t *testing.T) {
+	dir := t.TempDir()
+	writeServiceFile(t, dir, "x", "type = internal\n")
+	writeServiceFile(t, dir, "c", "type = internal\n")
+	writeServiceFile(t, dir, "b", "type = internal\ndepends-on: c\n")
+	writeServiceFile(t, dir, "a", "type = internal\ndepends-on: b\nbefore: x\n")
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	dl := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(dl)
+	if _, err := dl.LoadService("x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dl.LoadService("a"); err != nil {
+		t.Fatal(err)
+	}
+	if d := ss.FindService("x", false).Record().DepDepth(); d != 3 {
+		t.Errorf("x waits for a (depth 2), so its depth is 3, got %d", d)
+	}
 }

@@ -84,7 +84,15 @@ verified with `git tag -v`.
   now held by `x`, which waits while `a` starts; a reload keeps or
   removes it with `a`'s description, also when `a` changes type, and
   `slinitctl graph` draws it from `a`. Present since `before:` was
-  added; `after:` was right all along.
+  added; `after:` was right all along. *Compat:* every existing
+  `before:` line, and every scripted `slinitctl add-dep a before x`, now
+  orders as written, the opposite of what it did (the
+  `before: boot` of slinit-seedrng(8)'s example now runs seedrng before
+  boot, as meant). A `before:` that this service could never keep — one
+  naming itself, or one whose target the service already waits for,
+  directly or through other services — is refused at load as a cycle,
+  as dinit refuses it; stored the right way round, it would have left
+  every service on the loop STARTING.
 
 - **A systemd unit naming one service in both `Wants=` and `After=`**,
   as most do, gave that service two identical `waits-for:` edges. Each
