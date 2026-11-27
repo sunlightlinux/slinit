@@ -869,7 +869,7 @@ error. Repeat the line for several targets.
     when only the other is given (since 3.20.0; before, giving only the
     interval set the count to *0*, so restarts were unlimited). A
     service with restart-limit-count *N* thus runs *N*+1 times inside
-    the window (from 3.14.0 until 4.0.4 each failure was counted twice,
+    the window (from 3.14.0 through 4.0.4 each failure was counted twice,
     so *N* allowed only *N*/2 restarts, rounded up).
 
 **start-limit-action**=*none*|*reboot*|*poweroff*|*halt*|*exit*

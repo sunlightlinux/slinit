@@ -26,6 +26,21 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **4.0.4 died at start in a container with a small pids limit.** The
+  thread reserve that 4.0.4 makes at start-up (GOMAXPROCS+16 threads,
+  28 on 12 CPUs, 80 on 64) was sized by the host's CPUs alone: under
+  `docker run --pids-limit 25` slinit stopped before its first service
+  with `failed to create new OS thread`, exit 2 after about 12 ms. The
+  reserve now takes at most a quarter of the tasks the pids cgroup still
+  allows (cgroup v2, or the v1 pids controller) and, where
+  `RLIMIT_NPROC` binds (also for root in a rootless container), an
+  eighth of it or a quarter of what it leaves the uid, whichever is
+  less, with GOMAXPROCS lowered by what such a limit cut (at most to
+  half the reserve); when no limit can be read outside PID 1 of a
+  machine it is 8 threads and GOMAXPROCS is left unchanged. A limit set
+  above the container's cgroup namespace (Kubernetes podPidsLimit) is
+  not visible and cannot be taken into account.
+
 - **`restart-limit-count = N` allows N restarts again, not about half
   as many.** Each exit of a service was counted twice against its
   restart limit (once for its own restart, once on behalf of the

@@ -661,7 +661,7 @@ In container mode (**-o**) the same supervision logic runs but
 shutdown is replaced with a clean process exit, leaving teardown to
 the container runtime. slinit then also exits when nothing is active any
 more (see **EXIT STATUS**), but not while a **slinitctl restart** is
-between its stop and its start (since 4.0.4).
+between its stop and its start (since 4.0.5).
 
 A container that runs as a non-root user (**docker run \--user**,
 Kubernetes *runAsNonRoot*) usually cannot write under */run*: slinit
