@@ -1679,6 +1679,26 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 				return desc, path, nil
 			}
 		}
+		// No foo.service: foo.socket with Accept=yes and foo@.service
+		// are systemd's per-connection service, slinit's socket-accept.
+		if base := strings.TrimSuffix(name, ".service"); !strings.Contains(base, "@") {
+			if tmpl, ok := SystemdAcceptTemplate(dl.systemdDirs, base); ok && !systemdUnitMasked(tmpl) {
+				desc, err := SystemdAcceptToServiceDescription(tmpl, name, dl.systemdDirs...)
+				if err != nil {
+					return nil, "", &ServiceLoadError{ServiceName: name, Message: err.Error()}
+				}
+				if !desc.SocketAccept {
+					// The socket had no listener slinit can open
+					// (systemd-coredump.socket's is a SEQPACKET one):
+					// without it the template is no service at all.
+					return nil, "", &ServiceLoadError{ServiceName: name,
+						Message: fmt.Sprintf("%s.socket has no listener slinit can open, so %s is not loaded from it", strings.TrimSuffix(name, ".service"), tmpl)}
+				}
+				desc.fromSystemd = true
+				dl.dropMissingSystemdRefs(desc, name, tmpl)
+				return desc, tmpl, nil
+			}
+		}
 	}
 
 	return nil, "", &ServiceLoadError{

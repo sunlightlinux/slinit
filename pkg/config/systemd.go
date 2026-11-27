@@ -132,6 +132,10 @@ type SystemdConfig struct {
 	conditions  []condDir
 	comments    []string
 
+	// acceptTmpl: this is foo@.service read as service foo for
+	// foo.socket's Accept=yes (ConvertSystemdAcceptUnitIn).
+	acceptTmpl bool
+
 	// res holds the systemd state of the resource-control directives that
 	// share slinit settings (systemd_map_resources.go).
 	res *sdResState
@@ -279,20 +283,38 @@ func ConvertSystemdUnitIn(path string, unitDirs []string) (*SystemdConfig, []Sys
 	if strings.Contains(base, "@") {
 		return nil, nil, fmt.Errorf("template unit (contains '@') — instantiate first, then convert")
 	}
+	// Strip .service or .service.in — leave a bare svc name for slinit.
+	name := strings.TrimSuffix(base, ".in")
+	name = strings.TrimSuffix(name, ".service")
+	return convertSystemdUnit(abs, name, unitDirs, false)
+}
+
+// ConvertSystemdAcceptUnitIn converts the template foo@.service at path
+// as the service foo, for foo.socket with Accept=yes: systemd starts an
+// instance of the template per connection, which is slinit's
+// socket-accept, one run of the command per connection with the
+// connection on stdin, stdout and stderr. The instance (%i) is empty.
+func ConvertSystemdAcceptUnitIn(path, name string, unitDirs []string) (*SystemdConfig, []SystemdWarning, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return convertSystemdUnit(abs, name, unitDirs, true)
+}
+
+func convertSystemdUnit(abs, name string, unitDirs []string, accept bool) (*SystemdConfig, []SystemdWarning, error) {
+	base := filepath.Base(abs)
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read: %w", err)
 	}
-
-	// Strip .service or .service.in — leave a bare svc name for slinit.
-	name := strings.TrimSuffix(base, ".in")
-	name = strings.TrimSuffix(name, ".service")
 	cfg := &SystemdConfig{
 		svcName:  name,
 		unitPath: abs,
 		svcType:  "process", // default; overridden by Type=
 		restart:  "no",      // systemd default is Restart=no
 	}
+	cfg.acceptTmpl = accept
 
 	var dropins []string
 	var applied []string
@@ -2128,6 +2150,18 @@ func systemdUnitMasked(path string) bool {
 // unitDirs are searched for the unit's drop-ins (see systemdDropins).
 func SystemdUnitToServiceDescription(unitPath, name string, unitDirs ...string) (*ServiceDescription, error) {
 	cfg, warns, err := ConvertSystemdUnitIn(unitPath, unitDirs)
+	return systemdToDescription(cfg, warns, err, unitPath, name)
+}
+
+// SystemdAcceptToServiceDescription is SystemdUnitToServiceDescription
+// for a template read for its socket's Accept=yes
+// (ConvertSystemdAcceptUnitIn).
+func SystemdAcceptToServiceDescription(tmplPath, name string, unitDirs ...string) (*ServiceDescription, error) {
+	cfg, warns, err := ConvertSystemdAcceptUnitIn(tmplPath, name, unitDirs)
+	return systemdToDescription(cfg, warns, err, tmplPath, name)
+}
+
+func systemdToDescription(cfg *SystemdConfig, warns []SystemdWarning, err error, unitPath, name string) (*ServiceDescription, error) {
 	if err != nil {
 		return nil, fmt.Errorf("systemd unit %q: %w", unitPath, err)
 	}
@@ -2223,6 +2257,11 @@ func (dl *DirLoader) descriptionExists(name string) bool {
 			return false
 		}
 		if IsSystemdUnit(p) {
+			return true
+		}
+	}
+	if base := strings.TrimSuffix(name, ".service"); !strings.Contains(base, "@") {
+		if _, ok := SystemdAcceptTemplate(dl.systemdDirs, base); ok {
 			return true
 		}
 	}

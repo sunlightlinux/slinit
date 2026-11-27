@@ -798,6 +798,8 @@ func exFinishStdio(cfg *SystemdConfig, st *exState) []SystemdWarning {
 		}
 	case in.kind == "file":
 		cfg.setMapped("standard-input-file", literalDollars(in.path))
+	case in.kind == "socket" && cfg.acceptTmpl:
+		// socket-accept puts the connection on stdin, stdout and stderr.
 	default:
 		warns = append(warns, exNote("StandardInput", in.raw, "has no slinit equivalent; the service's stdin is /dev/null"))
 	}
@@ -819,6 +821,9 @@ func exFinishStdio(cfg *SystemdConfig, st *exState) []SystemdWarning {
 		cfg.setMapped("close-stdout", "yes")
 	case "tty", "journal", "syslog":
 	default:
+		if out.kind == "socket" && cfg.acceptTmpl {
+			break // the connection, as socket-accept gives it
+		}
 		gap, _ := exOutputGap("StandardOutput", out.raw, out.kind)
 		warns = append(warns, gap...)
 	}

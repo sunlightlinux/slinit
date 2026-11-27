@@ -633,9 +633,17 @@ drop-ins, from the unit's directory or the unit directories. Its
 rather than on the first connection; **socket-activation** =
 *on-demand* in an override gives the lazy start. Listeners slinit
 cannot open (Unix datagram, abstract, FIFO, netlink, ...) are left out
-with a warning, and a socket with **Accept=yes**, which is for a
-template service, is not read. slinit also creates the directory of a
-Unix socket, as systemd does.
+with a warning. Without **SocketMode=** a Unix socket gets systemd's
+default, *0666*, not **socket-permissions**' *0600*. slinit also
+creates the directory of a Unix socket, as systemd does.
+
+A socket with **Accept=yes** is for a template, *foo@.service*, of
+which systemd starts an instance per connection. When there is no
+*foo.service*, the name *foo* loads that pair: the template's command
+with **socket-accept** = *yes*, run once per connection with the
+connection on its standard input, output and error (*cups-lpd*,
+*polkit-agent-helper*, *xvnc* are such pairs). A template whose socket
+has no listener slinit can open is not loaded.
 
 A unit's **Wants=** becomes **waits-for:**, and **After=** and
 **Before=** become **after:** and **before:**, which order two services

@@ -86,9 +86,14 @@ func applySystemdSockets(cfg *SystemdConfig, unitDirs []string) []SystemdWarning
 		}
 		cfg.mapped = append(cfg.mapped, kvPair{key, l})
 	}
-	if opts.mode != "" {
-		cfg.setMapped("socket-permissions", opts.mode)
+	// systemd's SocketMode= defaults to 0666, slinit's
+	// socket-permissions to 0600: a socket unit that relies on the
+	// default (cups.socket, polkit-agent-helper.socket) is for clients
+	// that are not root, which 0600 would turn away.
+	if opts.mode == "" {
+		opts.mode = "0666"
 	}
+	cfg.setMapped("socket-permissions", opts.mode)
 	if opts.uid != "" {
 		cfg.setMapped("socket-uid", opts.uid)
 	}
@@ -98,13 +103,46 @@ func applySystemdSockets(cfg *SystemdConfig, unitDirs []string) []SystemdWarning
 	if opts.reusePort {
 		cfg.setMapped("socket-reuseport", "yes")
 	}
+	if opts.accept {
+		cfg.setMapped("socket-accept", "yes")
+	}
 	return warns
+}
+
+// SystemdAcceptTemplate returns foo@.service when foo.socket in dirs has
+// Accept=yes and the template exists beside it: what systemd starts per
+// connection on that socket, and what loading the name foo means when
+// there is no foo.service.
+func SystemdAcceptTemplate(dirs []string, name string) (string, bool) {
+	sock := findUnitFile(name+".socket", dirs)
+	tmpl := findUnitFile(name+"@.service", dirs)
+	if sock == "" || tmpl == "" {
+		return "", false
+	}
+	b, err := os.ReadFile(sock)
+	if err != nil {
+		return "", false
+	}
+	section := ""
+	accept := false
+	for _, raw := range joinSystemdLines(string(b)) {
+		line := strings.TrimSpace(raw)
+		if m := sectionRe.FindStringSubmatch(line); m != nil {
+			section = m[1]
+			continue
+		}
+		if m := kvRe.FindStringSubmatch(line); m != nil && section == "Socket" && m[1] == "Accept" {
+			accept = truthy(strings.TrimSpace(m[2]))
+		}
+	}
+	return tmpl, accept
 }
 
 // sdSocketOpts are the [Socket] settings that apply to every listener.
 type sdSocketOpts struct {
 	mode, uid, gid string
 	reusePort      bool
+	accept         bool
 }
 
 // merge folds the settings of another socket unit of the same service
@@ -124,6 +162,7 @@ func (o *sdSocketOpts) merge(n sdSocketOpts, unit string, warns *[]SystemdWarnin
 	pick("SocketUser", &o.uid, n.uid)
 	pick("SocketGroup", &o.gid, n.gid)
 	o.reusePort = o.reusePort || n.reusePort
+	o.accept = o.accept || n.accept
 }
 
 type sdSocket struct {
@@ -233,9 +272,15 @@ func readSystemdSocket(cfg *SystemdConfig, path, name string, unitDirs []string)
 			}
 		}
 	}
+	if accept != cfg.acceptTmpl {
+		if accept {
+			return nil, append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s has Accept=yes, which starts an instance of %s@.service per connection; "+
+				"slinit does not read it for %s.service — set socket-accept on the service instead", name, cfg.svcName, cfg.svcName)})
+		}
+		return nil, append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s has no Accept=yes, so it is not for the template %s@.service", name, cfg.svcName)})
+	}
 	if accept {
-		return nil, append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s has Accept=yes, which starts an instance of %s@.service per connection; "+
-			"slinit does not read it for %s.service — set socket-accept on the service instead", name, cfg.svcName, cfg.svcName)})
+		s.opts.accept = true
 	}
 	if len(s.listens) == 0 {
 		return nil, warns

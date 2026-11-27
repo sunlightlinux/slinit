@@ -94,3 +94,63 @@ func TestSystemdSocketEdges(t *testing.T) {
 		})
 	}
 }
+
+// foo.socket with Accept=yes and the template foo@.service, no
+// foo.service: loading foo is systemd's per-connection service, the
+// template's command run once per connection (socket-accept).
+func TestSystemdAcceptSocketWithTemplate(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "units")
+	writeUnit(t, units, "lpd.socket", "[Socket]\nListenStream=515\nAccept=yes\n")
+	writeUnit(t, units, "lpd@.service", "[Unit]\nRequires=lpd.socket\n[Service]\nExecStart=-/usr/lib/cups/daemon/cups-lpd\nStandardInput=socket\n")
+	_, dl, _ := cycleLoader(t, root)
+	desc, path, err := dl.findAndParse("lpd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(path) != "lpd@.service" || !desc.SocketAccept || !slices.Equal(desc.SocketPaths, []string{"tcp:[::]:515"}) {
+		t.Errorf("path %s accept %v listen %q", path, desc.SocketAccept, desc.SocketPaths)
+	}
+	if !dl.descriptionExists("lpd") {
+		t.Error("descriptionExists does not see the accept pair")
+	}
+
+	// Accept=no with only a template: nothing to load.
+	writeUnit(t, units, "x.socket", "[Socket]\nListenStream=516\n")
+	writeUnit(t, units, "x@.service", "[Service]\nExecStart=/bin/x\n")
+	if _, _, err := dl.findAndParse("x"); err == nil {
+		t.Error("a template behind an Accept=no socket loaded as x")
+	}
+	// The converter reads it the same way.
+	cfg, warns, err := ConvertSystemdAcceptUnitIn(filepath.Join(units, "lpd@.service"), "lpd", []string{units})
+	if err != nil || cfg.svcName != "lpd" {
+		t.Fatalf("%v %v", cfg, err)
+	}
+	if sockWarned(warns, "StandardInput") {
+		t.Errorf("StandardInput=socket noted as a gap under socket-accept: %v", warns)
+	}
+}
+
+// No SocketMode=: systemd's 0666, not slinit's 0600, or clients that
+// are not root are turned away.
+func TestSystemdSocketDefaultMode(t *testing.T) {
+	dir := t.TempDir()
+	writeUnit(t, dir, "foo.socket", "[Socket]\nListenStream=/run/foo.sock\n")
+	desc, _ := sockConvert(t, dir, sockSvc)
+	if desc.SocketPerms != 0o666 {
+		t.Errorf("socket-permissions %o, want 0666", desc.SocketPerms)
+	}
+}
+
+// A template behind an Accept=yes socket with no listener slinit can
+// open is not loaded as a service with no socket.
+func TestSystemdAcceptWithoutListenerIsNotLoaded(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "units")
+	writeUnit(t, units, "cd.socket", "[Socket]\nListenSequentialPacket=/run/cd\nAccept=yes\n")
+	writeUnit(t, units, "cd@.service", "[Service]\nExecStart=/bin/cd\n")
+	_, dl, _ := cycleLoader(t, root)
+	if _, _, err := dl.findAndParse("cd"); err == nil || !strings.Contains(err.Error(), "no listener") {
+		t.Errorf("err %v, want refused for having no listener", err)
+	}
+}

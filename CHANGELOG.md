@@ -74,9 +74,14 @@ verified with `git tag -v`.
   `SocketMode=`/`SocketUser=`/`SocketGroup=`/`ReusePort=` the matching
   `socket-*` settings, so a daemon written to be handed its sockets
   (cups, docker, avahi, mariadb among this host's 20 pairs) starts with
-  them. Listeners slinit cannot open, and `Accept=yes` sockets (for a
-  template), are left out with a warning. Also, slinit now creates a
-  Unix `socket-listen` path's directory (0755) as systemd does.
+  them; a Unix socket without `SocketMode=` gets systemd's 0666, not
+  slinit's 0600 default, which would turn non-root clients away.
+  Listeners slinit cannot open are left out with a warning. A socket
+  with `Accept=yes` and its template `foo@.service`, with no
+  `foo.service`, load as the name `foo` with `socket-accept`, one run
+  per connection (cups-lpd, polkit-agent-helper, xvnc on this host).
+  Also, slinit now creates a Unix `socket-listen` path's directory
+  (0755) as systemd does.
 
 - **`restart-steps = N`**, systemd's `RestartSteps=`: the restart delay
   grows geometrically from `restart-delay` to `restart-delay-cap` over N
