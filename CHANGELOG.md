@@ -564,6 +564,11 @@ verified with `git tag -v`.
   start/stop cycles, 602 pidfds open (none after the fix). The handle is
   now released once the wait has returned, and the command's pid is
   kept for the callers that kill its process group afterwards.
+- **PID 1 kept a pidfd for every output-logger restart its orphan reaper
+  collected first**: the same leak in the logger supervisor. Measured
+  with slinit as PID 1 and the collector off, killing a service's
+  `output-logger` once a second: 53 more pidfds open after 540 restarts
+  (none after the fix).
 
 ### Changed
 
