@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (320 cases)
+# Run all tests (324 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -451,6 +451,10 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 319 | pin-shutdown-holds | three pin paths that left a service for the shutdown to wait out, each on its own nested instance: a start refused by the dependency's stop pin (c83cad8), a service pinned while STARTING with a dependency still starting (54dd6e5), two failed starts leaving the leaf pinned (9bf0acc) |
 | 320 | rm-dep-wakes-stopping-dependency | `rm-dep` of the edge a stopping dependency was waiting on lets it finish stopping; a nested poweroff finishes at once |
 | 321 | pidfile-symlink-path | a `run-as = nobody` bgprocess reaching root's own pid file through a symlink in a directory nobody owns: not adopted, the root process survives; a root daemon's pid file in its user's directory (no symlink) is still accepted |
+| 322 | cpu-affinity-all-threads | a nested `slinit --user --cpu-affinity 0` in a two-CPU VM: every one of its threads, and every hook it forks, is on CPU 0 (v4.0.3: 9 of 10 threads and 20 of 20 hooks were not) |
+| 323 | control-socket-reopen-after-failed-bind | a nested instance whose control socket cannot be bound at start, fixed and SIGUSR1'd: the first connection is answered (v4.0.3: nil-pointer panic) |
+| 324 | shared-logger-producer-fd | 30 start/stop cycles of a process and of a scripted shared-logger producer on a nested GOGC=off instance: its descriptors stay flat (v4.0.3: +30 each) |
+| 325 | journald-dirty-file-rotated | a binary `slinit-journald` killed with SIGKILL and restarted sets the file left online aside and starts a new one; the directory still reads |
 
 ## How It Works
 
