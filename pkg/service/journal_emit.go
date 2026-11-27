@@ -50,15 +50,22 @@ func targetPIDFields(pidStr string) map[string]string {
 // subscribers and the socket encoder only read them), so the events can
 // share it; it saved a map allocation per line.
 func emitJournalLogLineFields(serviceName string, lineLevel int, matchLine []byte, fields map[string]string) {
+	emitJournalLogLineIdent(serviceName, "", lineLevel, matchLine, fields)
+}
+
+// emitJournalLogLineIdent is emitJournalLogLineFields with the
+// service's syslog-identifier ("" for none: the journal shows the unit).
+func emitJournalLogLineIdent(serviceName, ident string, lineLevel int, matchLine []byte, fields map[string]string) {
 	if !journal.Enabled() {
 		return
 	}
 	journal.Emit(&journal.Event{
-		Unit:      serviceName,
-		Prio:      journal.Priority(lineLevel),
-		Transport: journal.TransportStdout,
-		Msg:       string(matchLine),
-		Fields:    fields,
+		Unit:             serviceName,
+		SyslogIdentifier: ident,
+		Prio:             journal.Priority(lineLevel),
+		Transport:        journal.TransportStdout,
+		Msg:              string(matchLine),
+		Fields:           fields,
 	})
 }
 

@@ -601,6 +601,8 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLogSelect(desc.LogSelect)
 		s.SetLogRateLimit(desc.LogRateLimitInterval, desc.LogRateLimitBurst)
 		s.SetLogLevelMax(desc.LogLevelMax)
+		s.SetSyslogMeta(desc.SyslogIdentifier, desc.SyslogLevel, desc.SyslogLevelPrefix == nil || *desc.SyslogLevelPrefix,
+			desc.LogExtraFields)
 		s.SetLogSanitize(desc.LogSanitizeChar, desc.LogSanitizeExtra)
 		s.SetLogMaxLineLength(desc.LogMaxLineLength)
 		s.SetLogTimestamp(desc.LogTimestamp)

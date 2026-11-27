@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/features"
+	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/seccomp"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -221,6 +222,13 @@ type ServiceDescription struct {
 	// systemd-style severity filter. -1 = disabled, 0..7 = drop lines
 	// with priority above the threshold.
 	LogLevelMax int
+	// Journal metadata of the output lines (systemd's SyslogIdentifier=,
+	// SyslogLevel=, SyslogLevelPrefix=, LogExtraFields=). SyslogLevel is
+	// -1 when unset (info); SyslogLevelPrefix nil means yes.
+	SyslogIdentifier  string
+	SyslogLevel       int
+	SyslogLevelPrefix *bool
+	LogExtraFields    map[string]string
 	// svlogd -r / -R: sanitize non-printable bytes in log output.
 	// LogSanitizeChar is the single-byte replacement (0 = disabled).
 	// LogSanitizeExtra lists additional bytes replaced with the same
@@ -823,6 +831,7 @@ func NewServiceDescription(name string) *ServiceDescription {
 		LogFileUID:        -1,
 		LogFileGID:        -1,
 		LogLevelMax:       -1,
+		SyslogLevel:       -1,
 		AlertLevel:        -1,
 		SocketPerms:       0600,
 		SocketUID:         -1,
@@ -2336,6 +2345,38 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.LogLevelMax = lvl
+	case "syslog-identifier":
+		if value == "" || strings.ContainsAny(value, "\n\r") {
+			return fmt.Errorf("syslog-identifier: %q is empty or holds a line break", value)
+		}
+		desc.SyslogIdentifier = value
+	case "syslog-level":
+		lvl, err := service.ParseLogLevel(value)
+		if err != nil {
+			return err
+		}
+		desc.SyslogLevel = lvl
+	case "syslog-level-prefix":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.SyslogLevelPrefix = &b
+	case "log-extra-fields":
+		// Space-separated FIELD=VALUE words; = replaces the set, +=
+		// adds to it. Field names follow the journal's rules (upper case,
+		// digits, underscore, no leading underscore), so a service cannot
+		// forge a trusted field.
+		if op != OpPlusEqual || desc.LogExtraFields == nil {
+			desc.LogExtraFields = map[string]string{}
+		}
+		for _, w := range strings.Fields(value) {
+			k, v, ok := strings.Cut(w, "=")
+			if !ok || !journal.IsValidFieldName(k) || strings.HasPrefix(k, "_") {
+				return fmt.Errorf("log-extra-fields: %q is not FIELD=VALUE with a journal field name", w)
+			}
+			desc.LogExtraFields[k] = v
+		}
 	case "log-include":
 		desc.LogInclude = append(desc.LogInclude, value)
 	case "log-exclude":

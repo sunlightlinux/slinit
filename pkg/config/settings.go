@@ -438,6 +438,10 @@ var KnownSettings = map[string]OperatorType{
 	"log-rate-limit-interval": OpEquals,
 	"log-rate-limit-burst":    OpEquals,
 	"log-level-max":           OpEquals,
+	"syslog-identifier":       OpEquals,
+	"syslog-level":            OpEquals,
+	"syslog-level-prefix":     OpEquals,
+	"log-extra-fields":        OpEquals | OpPlusEqual,
 	"log-sanitize":            OpEquals, // svlogd -r: replace control chars with this single ASCII char
 	"log-sanitize-extra":      OpEquals, // svlogd -R: additional bytes to treat as replaceable
 	"log-max-line-length":     OpEquals, // svlogd -l: truncate lines longer than N bytes with '+' marker

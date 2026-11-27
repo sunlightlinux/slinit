@@ -120,3 +120,23 @@ func TestSystemdOutputDefaultsToJournal(t *testing.T) {
 		}
 	}
 }
+
+func TestSyslogMetaParsed(t *testing.T) {
+	desc, err := Parse(strings.NewReader("type = process\ncommand = /bin/true\n"+
+		"syslog-identifier = webd\nsyslog-level = notice\nsyslog-level-prefix = no\n"+
+		"log-extra-fields = TEAM=web TIER=1\nlog-extra-fields += ZONE=a\n"), "s", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc.SyslogIdentifier != "webd" || desc.SyslogLevel != 5 || desc.SyslogLevelPrefix == nil || *desc.SyslogLevelPrefix {
+		t.Errorf("got ident %q level %d prefix %v", desc.SyslogIdentifier, desc.SyslogLevel, desc.SyslogLevelPrefix)
+	}
+	if len(desc.LogExtraFields) != 3 || desc.LogExtraFields["ZONE"] != "a" {
+		t.Errorf("extra fields %v", desc.LogExtraFields)
+	}
+	for _, bad := range []string{"log-extra-fields = _PID=1", "log-extra-fields = lower=x", "log-extra-fields = NOVALUE", "syslog-level = loud"} {
+		if _, err := Parse(strings.NewReader("type = process\ncommand = /bin/true\n"+bad+"\n"), "s", "s"); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

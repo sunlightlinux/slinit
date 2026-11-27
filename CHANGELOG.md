@@ -38,6 +38,13 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`syslog-identifier`, `syslog-level`, `syslog-level-prefix` and
+  `log-extra-fields`**: the journal metadata of a service's output
+  lines, as systemd's `SyslogIdentifier=`, `SyslogLevel=`,
+  `SyslogLevelPrefix=` and `LogExtraFields=`. A line's `<N>` prefix is
+  now left out of its text in the journal by default, as systemd leaves
+  it out (*Compat:* the log file keeps the line as written).
+
 - **`reboot-argument` reaches the kernel.** A `failure-action` or
   `success-action` that reboots now passes the service's
   `reboot-argument` to `reboot(2)` through `LINUX_REBOOT_CMD_RESTART2`,

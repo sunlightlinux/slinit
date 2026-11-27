@@ -1205,6 +1205,36 @@ apply OS-level changes:
     *info* (6), so plain text passes any threshold >= info. Accepts
     the kebab-case keyword (`warning`, `error` are also accepted)
     or the numeric 0..7. *off* / *none* / *any* disable the filter.
+    A line's level is the one **syslog-level** and
+    **syslog-level-prefix** below give it.
+
+**syslog-identifier**=*name* (since 4.1.0)
+:   The identifier the journal shows the service's output lines under
+    (**slinit-journalctl** prints it where it prints the service
+    name), as systemd's **SyslogIdentifier=**. The service name by
+    default.
+
+**syslog-level**=*level* (since 4.1.0)
+:   The level of an output line that names none (no `<N>` prefix, no
+    *KEYWORD*`:`), as systemd's **SyslogLevel=**: one of the names or
+    0..7 of **log-level-max**. *info* by default.
+
+**syslog-level-prefix**=*yes*|*no* (since 4.1.0)
+:   With *yes*, the default, a line starting `<N>` takes level *N*,
+    and the prefix is left out of the line's text in the journal, as
+    systemd does; the log file keeps the line as written. With *no*,
+    the prefix is ordinary text and the line takes **syslog-level**.
+
+**log-extra-fields**=*FIELD*=*value* ... (since 4.1.0)
+:   Journal fields added to every output line of the service, as
+    systemd's **LogExtraFields=**: space-separated *FIELD*`=`*value*
+    words, `+=` adding to the set. A field name is upper-case letters,
+    digits and underscores, not starting with an underscore (those are
+    the journal's trusted fields).
+
+    These four apply to the lines the journal receives: with
+    **log-type** = *journal*, or *file* with any setting that puts
+    the output through slinit's log pipeline (they do so themselves).
 
 **log-timestamp**=*tai64n*|*human*|*iso8601*|*off*
 :   svlogd(8) `-t`/`-tt`/`-ttt`-style per-line timestamp prefix,

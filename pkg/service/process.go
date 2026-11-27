@@ -291,6 +291,10 @@ type ProcessService struct {
 	logRateLimitInterval time.Duration
 	logRateLimitBurst    int
 	logLevelMax          int
+	syslogIdent          string
+	syslogLevel          int
+	noLevelPrefix        bool
+	logExtraFields       map[string]string
 	logSanitizeChar      byte
 	logSanitizeExtra     []byte
 	logMaxLineLength     int
@@ -379,6 +383,7 @@ func NewProcessService(set *ServiceSet, name string) *ProcessService {
 		maxRestartCount: defaultMaxRestarts,
 		readyNotifyFD:   -1,
 		logLevelMax:     -1,
+		syslogLevel:     -1,
 		alertLevel:      -1,
 	}
 	svc.ServiceRecord = *NewServiceRecord(svc, set, name, TypeProcess)
@@ -893,6 +898,10 @@ func (s *ProcessService) rotatorConfig(path string, maxSize int64, maxFiles int,
 		RateInterval:   s.logRateLimitInterval,
 		RateBurst:      s.logRateLimitBurst,
 		LogLevelMax:    s.logLevelMax,
+		SyslogIdent:    s.syslogIdent,
+		DefaultLevel:   s.syslogLevel,
+		NoLevelPrefix:  s.noLevelPrefix,
+		ExtraFields:    s.logExtraFields,
 		SanitizeChar:   s.logSanitizeChar,
 		SanitizeExtra:  s.logSanitizeExtra,
 		MaxLineLength:  s.logMaxLineLength,
@@ -1244,6 +1253,19 @@ func (s *ProcessService) SetAlertLog(path string, level int) {
 func (s *ProcessService) SetLogRateLimit(interval time.Duration, burst int) {
 	s.logRateLimitInterval = interval
 	s.logRateLimitBurst = burst
+}
+
+// SetSyslogMeta sets the journal metadata of the service's output lines:
+// the identifier they are shown under (syslog-identifier, "" for the
+// service name), the level of a line that names none (syslog-level, -1
+// for info), whether a "<N>" prefix gives a line's level and is left out
+// of its text (syslog-level-prefix), and extra journal fields
+// (log-extra-fields).
+func (s *ProcessService) SetSyslogMeta(ident string, level int, levelPrefix bool, extra map[string]string) {
+	s.syslogIdent = ident
+	s.syslogLevel = level
+	s.noLevelPrefix = !levelPrefix
+	s.logExtraFields = extra
 }
 
 // SetLogLevelMax sets the maximum syslog severity (0..7) to keep.
@@ -2866,6 +2888,7 @@ func (s *ProcessService) startProcess() error {
 			len(s.logSelect) > 0 ||
 			(s.logRateLimitInterval > 0 && s.logRateLimitBurst > 0) ||
 			s.logLevelMax >= 0 ||
+			s.syslogIdent != "" || s.syslogLevel >= 0 || s.noLevelPrefix || len(s.logExtraFields) > 0 ||
 			s.logSanitizeChar != 0 || len(s.logSanitizeExtra) > 0 ||
 			s.logMaxLineLength > 0 ||
 			s.logTimestampMode != "" || s.logLinePrefix != "" ||

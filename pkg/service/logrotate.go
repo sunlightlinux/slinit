@@ -155,6 +155,14 @@ type LogRotator struct {
 	journalPID    int
 	journalFields map[string]string
 
+	// Journal metadata (syslog-identifier, syslog-level,
+	// syslog-level-prefix, log-extra-fields). defaultLevel is the level
+	// of a line that names none (6, info, unless syslog-level).
+	syslogIdent   string
+	defaultLevel  int
+	noLevelPrefix bool
+	extraFields   map[string]string
+
 	// Batched writes, used by readLoop for the lines of one read chunk
 	// (processLine called from anywhere else writes each line at once).
 	// batching is the reader goroutine's own. pend holds the bytes of
@@ -224,6 +232,12 @@ type LogRotatorConfig struct {
 	RateBurst    int
 	// Severity filter: 0..7 (syslog), -1 to disable.
 	LogLevelMax int
+	// Journal metadata; see LogRotator.syslogIdent. DefaultLevel < 0
+	// is info.
+	SyslogIdent   string
+	DefaultLevel  int
+	NoLevelPrefix bool
+	ExtraFields   map[string]string
 	// svlogd -r: replacement byte for control chars (0 = disabled).
 	SanitizeChar byte
 	// svlogd -R: bytes to additionally sanitize (each becomes SanitizeChar).
@@ -295,7 +309,16 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 		rateInterval: cfg.RateInterval,
 		rateBurst:    cfg.RateBurst,
 		levelMax:     cfg.LogLevelMax,
+		syslogIdent:  cfg.SyslogIdent,
+		defaultLevel: 6,
+		extraFields:  cfg.ExtraFields,
 	}
+	lr.noLevelPrefix = cfg.NoLevelPrefix
+	if cfg.DefaultLevel >= 0 && cfg.DefaultLevel <= 7 {
+		lr.defaultLevel = cfg.DefaultLevel
+	}
+	// Without a pid the line fields are the extra fields alone.
+	lr.journalFields = lr.lineFields("")
 	if cfg.RateInterval > 0 && cfg.RateBurst > 0 {
 		lr.rateTokens = float64(cfg.RateBurst)
 		lr.rateLastRefill = time.Now()
@@ -618,9 +641,9 @@ func (lr *LogRotator) processLine(line []byte) {
 	// of byte comparisons; doing it once keeps the two decisions
 	// consistent (both read the same prefix on the same line) even if
 	// the alert channel later grows more knobs.
-	lineLevel := 6
+	lineLevel := lr.defaultLevel
 	if lr.levelMax >= 0 || lr.alertLevel >= 0 {
-		lineLevel = extractSyslogLevel(matchLine)
+		lineLevel = lr.levelOf(matchLine)
 	}
 
 	// Rate limiter (token bucket). When the bucket is empty the line
@@ -667,16 +690,17 @@ func (lr *LogRotator) processLine(line []byte) {
 	emitLine := false
 	var emitLevel int
 	var emitFields map[string]string
+	journalMsg := matchLine
 	defer func() {
 		if !emitLine {
 			return
 		}
 		if !lr.batching {
-			emitJournalLogLineFields(lr.serviceName, emitLevel, matchLine, emitFields)
+			emitJournalLogLineIdent(lr.serviceName, lr.syslogIdent, emitLevel, journalMsg, emitFields)
 			return
 		}
 		off := len(lr.journalBuf)
-		lr.journalBuf = append(lr.journalBuf, matchLine...)
+		lr.journalBuf = append(lr.journalBuf, journalMsg...)
 		lr.journalQ = append(lr.journalQ, journalLine{emitLevel, emitFields, off, len(lr.journalBuf)})
 		if len(lr.journalQ) >= rotatorBatchLines || len(lr.journalBuf) >= rotatorBatchBytes {
 			lr.flushBatch()
@@ -754,16 +778,24 @@ func (lr *LogRotator) processLine(line []byte) {
 	// earlier extraction — journal callers care about priority.
 	if len(matchLine) > 0 {
 		if lr.levelMax < 0 && lr.alertLevel < 0 {
-			lineLevel = extractSyslogLevel(matchLine)
+			lineLevel = lr.levelOf(matchLine)
 		}
 		pid := 0
 		if lr.getPID != nil {
 			pid = lr.getPID()
 		}
 		if pid != lr.journalPID {
-			lr.journalPID, lr.journalFields = pid, nil
+			pidStr := ""
 			if pid > 0 {
-				lr.journalFields = targetPIDFields(strconv.Itoa(pid))
+				pidStr = strconv.Itoa(pid)
+			}
+			lr.journalPID, lr.journalFields = pid, lr.lineFields(pidStr)
+		}
+		// The "<N>" a line's level came from is not part of its text in
+		// the journal, as systemd strips it (SyslogLevelPrefix=yes).
+		if !lr.noLevelPrefix {
+			if n := levelPrefixLen(matchLine); n > 0 {
+				journalMsg = matchLine[n:]
 			}
 		}
 		emitLine, emitLevel, emitFields = true, lineLevel, lr.journalFields
@@ -790,7 +822,7 @@ func (lr *LogRotator) flushBatch() {
 	lr.flushPendLocked()
 	lr.mu.Unlock()
 	for _, e := range lr.journalQ {
-		emitJournalLogLineFields(lr.serviceName, e.level, lr.journalBuf[e.off:e.end], e.fields)
+		emitJournalLogLineIdent(lr.serviceName, lr.syslogIdent, e.level, lr.journalBuf[e.off:e.end], e.fields)
 	}
 	lr.journalQ = lr.journalQ[:0]
 	lr.journalBuf = lr.journalBuf[:0]
@@ -1378,4 +1410,70 @@ func ParseLogLevel(s string) (int, error) {
 		return 7, nil
 	}
 	return -1, fmt.Errorf("unknown log level %q (use emerg/alert/crit/err/warn/notice/info/debug or 0..7)", s)
+}
+
+// levelOf is the syslog level of a line: its "<N>" prefix unless
+// syslog-level-prefix = no, else an ERROR:/WARN:-style keyword, else the
+// default level (syslog-level, or info).
+func (lr *LogRotator) levelOf(line []byte) int {
+	if !lr.noLevelPrefix {
+		if n := levelPrefixLen(line); n > 0 {
+			return extractSyslogLevel(line)
+		}
+	}
+	if lvl, ok := keywordLevel(line); ok {
+		return lvl
+	}
+	return lr.defaultLevel
+}
+
+// levelPrefixLen is the length of a line's "<N>" level prefix (N of one
+// to three digits), 0 when it has none.
+func levelPrefixLen(line []byte) int {
+	if len(line) < 3 || line[0] != '<' {
+		return 0
+	}
+	for i := 1; i < len(line) && i <= 4; i++ {
+		if line[i] == '>' {
+			if i < 2 {
+				return 0
+			}
+			return i + 1
+		}
+		if line[i] < '0' || line[i] > '9' {
+			return 0
+		}
+	}
+	return 0
+}
+
+// keywordLevel is matchKeywordLevel reporting whether a keyword matched,
+// so a line without one can take the configured default.
+func keywordLevel(line []byte) (int, bool) {
+	lvl := matchKeywordLevel(line)
+	if lvl != 6 {
+		return lvl, true
+	}
+	// matchKeywordLevel's 6 is both "INFO:" and "no keyword".
+	if len(line) >= 5 && string(line[:5]) == "INFO:" {
+		return 6, true
+	}
+	return 0, false
+}
+
+// lineFields is the Fields map of the journal events of a line of
+// output: the producing pid (SLINIT_TARGET_PID) and log-extra-fields.
+func (lr *LogRotator) lineFields(pidStr string) map[string]string {
+	f := targetPIDFields(pidStr)
+	if len(lr.extraFields) == 0 {
+		return f
+	}
+	out := make(map[string]string, len(f)+len(lr.extraFields))
+	for k, v := range lr.extraFields {
+		out[k] = v
+	}
+	for k, v := range f {
+		out[k] = v
+	}
+	return out
 }
