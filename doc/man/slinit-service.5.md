@@ -3336,7 +3336,10 @@ mounted at `/run/credentials/<name>/`).
 ## OTHER RUNNER-SIDE SETTINGS
 
 **coredump-filter**=*mask*
-:   Hex or decimal mask written to `/proc/self/coredump_filter`;
+:   Mask written to `/proc/self/coredump_filter`, read as the kernel
+    reads it: *0x33* is hex, *51* decimal (a systemd unit's bare number is
+    hex, and the converter writes it with *0x*). A value that is no
+    number is a load error (since 4.1.0; it failed each start before);
     inherited across fork+exec so the child sees it.
 
 **timer-slack-nsec**=*N*

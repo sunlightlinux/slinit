@@ -2926,7 +2926,14 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 
 	case "coredump-filter":
-		desc.CoredumpFilter = strings.TrimSpace(value)
+		// Read as the kernel reads /proc/PID/coredump_filter (kstrtouint,
+		// base 0): 0x33 is hex, 33 decimal. A value it would refuse used
+		// to load and then fail every start in slinit-runner.
+		v := strings.TrimSpace(value)
+		if _, err := strconv.ParseUint(v, 0, 32); err != nil {
+			return fmt.Errorf("coredump-filter: expected a mask such as 0x33, got %q", value)
+		}
+		desc.CoredumpFilter = v
 	case "timer-slack-nsec":
 		n, err := strconv.ParseInt(strings.TrimSpace(value), 0, 64)
 		if err != nil || n < 0 {

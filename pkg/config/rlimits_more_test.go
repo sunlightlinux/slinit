@@ -215,3 +215,12 @@ func TestSystemdNotifyMapped(t *testing.T) {
 		t.Fatalf("Type=notify + WatchdogSec= does not load: %v", err)
 	}
 }
+
+func TestCoredumpFilterValidatedAtLoad(t *testing.T) {
+	for v, ok := range map[string]bool{"0x33": true, "51": true, "0": true, "0xzz": false, "lots": false, "": false} {
+		_, err := Parse(strings.NewReader("type = process\ncommand = /bin/true\ncoredump-filter = "+v+"\n"), "c", "c")
+		if (err == nil) != ok {
+			t.Errorf("coredump-filter = %q: err %v, want ok=%v", v, err, ok)
+		}
+	}
+}
