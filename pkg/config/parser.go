@@ -302,6 +302,7 @@ type ServiceDescription struct {
 	RestartDelay     time.Duration
 	RestartDelayStep time.Duration // additive backoff increment per failed restart
 	RestartDelayCap  time.Duration // max capped delay for progressive backoff
+	RestartSteps     int           // geometric backoff to RestartDelayCap over N restarts
 	// systemd RestartRandomizedDelaySec: additive jitter added to each
 	// computed restart delay to spread reconnect storms.
 	RestartRandomizedDelay time.Duration
@@ -2187,6 +2188,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("restart-delay-cap must be >= 0")
 		}
 		desc.RestartDelayCap = d
+	case "restart-steps":
+		n, err := strconv.Atoi(value)
+		// systemd caps RestartSteps= at 3000.
+		if err != nil || n < 0 || n > 3000 {
+			return fmt.Errorf("invalid restart-steps %q: want 0 to 3000", value)
+		}
+		desc.RestartSteps = n
 	case "restart-max-delay":
 		d, err := parseDuration(value)
 		if err != nil {

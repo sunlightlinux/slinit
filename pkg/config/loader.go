@@ -620,6 +620,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetExitType(desc.ExitType)
 		s.SetRestartDelay(desc.RestartDelay)
 		s.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
+		s.SetRestartSteps(desc.RestartSteps)
 		s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
 		s.SetRestartMaxDelay(desc.RestartMaxDelay)
 		s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
@@ -685,6 +686,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetExitType(desc.ExitType)
 		s.SetRestartDelay(desc.RestartDelay)
 		s.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
+		s.SetRestartSteps(desc.RestartSteps)
 		s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
 		s.SetRestartMaxDelay(desc.RestartMaxDelay)
 		s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
@@ -1191,6 +1193,20 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 // field rule. Load and reload both call it, so a reload cannot install a
 // description a fresh load would refuse.
 func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
+	// restart-steps grows the delay geometrically from restart-delay to
+	// restart-delay-cap; restart-delay-step grows it linearly. One curve:
+	// the two together would leave which one applies to a precedence
+	// rule nobody reads.
+	if desc.RestartSteps > 0 {
+		if desc.RestartDelayStep > 0 {
+			return &ServiceLoadError{ServiceName: name,
+				Message: "restart-steps and restart-delay-step both set: choose the geometric or the linear backoff"}
+		}
+		if desc.RestartDelay <= 0 || desc.RestartDelayCap <= desc.RestartDelay {
+			return &ServiceLoadError{ServiceName: name,
+				Message: "restart-steps needs restart-delay above 0 and restart-delay-cap above restart-delay, the two ends of its curve"}
+		}
+	}
 	// Platform keyword filtering: skip services that declare keywords
 	// matching the detected platform (e.g. "keyword -docker -lxc")
 	if dl.platformSys != platform.None && platform.ShouldSkip(desc.Keywords, dl.platformSys) {

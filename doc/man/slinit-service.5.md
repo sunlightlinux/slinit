@@ -886,6 +886,20 @@ error. Repeat the line for several targets.
 **restart-delay-cap**=*duration*
 :   Upper bound on the restart delay.
 
+**restart-steps**=*N* (since 4.1.0)
+:   Grow the delay geometrically instead: from **restart-delay** at the
+    first automatic restart to **restart-delay-cap** at restart *N*+1,
+    each step the same factor, and **restart-delay-cap** from then on.
+    With *restart-delay = 1s*, *restart-delay-cap = 1m* and
+    *restart-steps = 5* the delays are 1s, 2.3s, 5.1s, 11.7s, 26.5s,
+    then 1m. systemd's **RestartSteps=** with **RestartMaxDelaySec=**,
+    computed the same way. Needs **restart-delay** above 0 and
+    **restart-delay-cap** above it; refused with
+    **restart-delay-step**. Like the linear backoff, it starts over once
+    the service has run through a **restart-limit-interval**.
+    **restart-randomized-delay** and **restart-max-delay** apply on top.
+    0 to 3000; 0 (default) is off.
+
 **restart-limit-interval**=*duration*, **restart-limit-count**=*N*
 :   Rate-limit: more than *N* failures inside this window puts the
     service into the *failed* state. Defaults are *10* seconds and *3*

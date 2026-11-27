@@ -123,6 +123,7 @@ var provenanceTable = []Feature{
 	{Name: "restart-delay", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "delay between restart attempts"},
 	{Name: "restart-max-delay", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle},
 	{Name: "restart-delay-cap", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "systemd RestartMaxDelaySec analog"},
+	{Name: "restart-steps", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "geometric restart backoff from restart-delay to restart-delay-cap over N restarts (RestartSteps=)"},
 	{Name: "io-uring-filter", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "IOUringFilter=: allow or deny list of io_uring operations; refuses io_uring_setup where the kernel cannot filter (before 7.0)"},
 	{Name: "start-when-idle", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "systemd Type=idle: wait for the other services to finish starting, at most 5s"},
 	{Name: "restart-delay-step", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "linear backoff: the delay grows by this much per consecutive restart, up to restart-delay-cap"},

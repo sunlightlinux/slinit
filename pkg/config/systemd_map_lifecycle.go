@@ -24,8 +24,9 @@ import (
 // on Type=. Their rules record what the lines say
 // in lcState, and lcFinish decides once the whole unit is read, so the
 // order of the lines does not change the result. The rest say what
-// holds in every case (RemainAfterExit=), or are gaps (TimeoutAbortSec=,
-// RestartSteps=).
+// holds in every case (RemainAfterExit=), or are gaps (TimeoutAbortSec=).
+// RestartSteps= and RestartMaxDelaySec= apply only together, and on top
+// of RestartSec=.
 
 // lcState is what the lifecycle rules saw, for lcFinish.
 type lcState struct {
@@ -38,6 +39,9 @@ type lcState struct {
 	runtimeMaxRaw string
 
 	busName, busNameRaw string
+
+	// RestartSteps= and RestartMaxDelaySec=, as written.
+	restartSteps, restartMaxDelay string
 }
 
 func lcStateOf(cfg *SystemdConfig) *lcState {
@@ -116,10 +120,6 @@ func init() {
 	for k, why := range map[string]string{
 		"TimeoutAbortSec": "it bounds the wait after a watchdog abort, and slinit's timeout-abort-sec instead puts a SIGABRT " +
 			"phase into every stop timeout; with TimeoutStopFailureMode=abort, set timeout-abort-sec by hand",
-		"RestartSteps": "slinit's restart backoff grows linearly, by restart-delay-step up to restart-delay-cap, " +
-			"not exponentially up to RestartMaxDelaySec=; the delay stays at restart-delay unless those are set by hand",
-		"RestartMaxDelaySec": "it is the end of RestartSteps= backoff, which slinit does not do; slinit's restart-max-delay " +
-			"caps the delay with its jitter instead, so set restart-delay-step and restart-delay-cap by hand",
 		"NonBlocking": "the socket descriptors slinit passes keep the blocking mode they were created with",
 		"PermissionsStartOnly": "slinit runs ExecStartPre=, ExecStartPost= and ExecStop= with the service's run-as; " +
 			"give those commands slinit's \"+\" prefix to run them as root",
@@ -138,6 +138,14 @@ func init() {
 	sdServiceIgnored["SysVStartPriority"] = "SysV ordering hint; systemd ignores it"
 	sdServiceIgnored["TimeoutCleanSec"] = "bounds `systemctl clean`, an operation slinit does not have"
 
+	registerService("RestartSteps", sdRule{custom: func(cfg *SystemdConfig, _, val string) []SystemdWarning {
+		lcStateOf(cfg).restartSteps = strings.TrimSpace(val)
+		return nil
+	}})
+	registerService("RestartMaxDelaySec", sdRule{custom: func(cfg *SystemdConfig, _, val string) []SystemdWarning {
+		lcStateOf(cfg).restartMaxDelay = strings.TrimSpace(val)
+		return nil
+	}})
 	registerFinisher(lcFinish)
 }
 
@@ -223,6 +231,7 @@ func lcFinish(cfg *SystemdConfig) []SystemdWarning {
 
 	warns = append(warns, lcFinishRuntimeMax(cfg, st)...)
 	warns = append(warns, lcFinishBusName(cfg, st)...)
+	warns = append(warns, lcFinishRestartSteps(cfg, st)...)
 	return warns
 }
 
@@ -250,6 +259,61 @@ func lcSuccessWarning(cfg *SystemdConfig, raw string) SystemdWarning {
 	return SystemdWarning{"NOTE", "SuccessExitStatus=" + raw + " → normal-exit, which only keeps slinit from " +
 		"restarting the service on these: unlike systemd it does so under restart = yes and on-success as well, " +
 		"and the exit still counts as a failure, for failure-action and for a oneshot's start"}
+}
+
+// lcFinishRestartSteps maps RestartSteps= and RestartMaxDelaySec= onto
+// restart-steps and restart-delay-cap, the same geometric curve from
+// restart-delay. They need each other, as systemd's service_verify says:
+// one alone is ignored with a warning. A RestartMaxDelaySec= below
+// RestartSec= lowers RestartSec= to it, as systemd does, and leaves no
+// curve. Without RestartSec= the curve starts at systemd's 100ms.
+func lcFinishRestartSteps(cfg *SystemdConfig, st *lcState) []SystemdWarning {
+	if st.restartSteps == "" && st.restartMaxDelay == "" {
+		return nil
+	}
+	steps := 0
+	if st.restartSteps != "" {
+		n, err := strconv.Atoi(st.restartSteps)
+		if err != nil || n < 0 || n > 3000 {
+			return []SystemdWarning{{"WARN", "RestartSteps=" + st.restartSteps + " is not 0 to 3000 — ignored, as systemd does"}}
+		}
+		steps = n
+	}
+	maxSecs := ""
+	if st.restartMaxDelay != "" && st.restartMaxDelay != "infinity" {
+		s, ok := parseSystemdSeconds(st.restartMaxDelay, "")
+		if !ok {
+			return []SystemdWarning{{"WARN", "RestartMaxDelaySec=" + st.restartMaxDelay + " is no time span — ignored, as systemd does"}}
+		}
+		maxSecs = s
+	}
+	switch {
+	case steps > 0 && maxSecs == "":
+		return []SystemdWarning{{"WARN", "RestartSteps= without RestartMaxDelaySec= — ignored, as systemd ignores it"}}
+	case steps == 0 && maxSecs != "":
+		return []SystemdWarning{{"WARN", "RestartMaxDelaySec= without RestartSteps= — ignored, as systemd ignores it"}}
+	case steps == 0:
+		return nil
+	}
+	if cfg.restartDelay == "" {
+		cfg.restartDelay = "0.1" // systemd's RestartSec= default
+	}
+	base, _ := strconv.ParseFloat(cfg.restartDelay, 64)
+	limit, _ := strconv.ParseFloat(maxSecs, 64)
+	if base <= 0 {
+		// systemd's backoff needs RestartSec= above 0 to grow from.
+		return []SystemdWarning{{"NOTE", "RestartSteps= has no effect with RestartSec=0, as in systemd"}}
+	}
+	if limit <= base {
+		if limit < base {
+			cfg.restartDelay = maxSecs
+		}
+		return []SystemdWarning{{"NOTE", "RestartMaxDelaySec= is not above RestartSec=: the delay stays at " +
+			cfg.restartDelay + "s, as in systemd"}}
+	}
+	cfg.setMapped("restart-steps", strconv.Itoa(steps))
+	cfg.setMapped("restart-delay-cap", maxSecs)
+	return nil
 }
 
 // lcFinishRuntimeMax: systemd ignores RuntimeMaxSec= on Type=oneshot,

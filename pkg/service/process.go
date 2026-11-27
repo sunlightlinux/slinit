@@ -204,6 +204,12 @@ type ProcessService struct {
 	restartDelayStep    time.Duration // increment added per successive restart (0 = disabled)
 	restartDelayCap     time.Duration // max capped delay (0 = no cap, default 60s when step > 0)
 	currentRestartDelay time.Duration // current effective delay, advances on each restart
+	// restart-steps (systemd's RestartSteps=): the delay grows
+	// geometrically from restartDelay to restartDelayCap over this many
+	// restarts (expBackoffDelay); backoffRestarts counts them, and starts
+	// over with the linear backoff when a stable period ends.
+	restartSteps    int
+	backoffRestarts int
 
 	// systemd-style RestartRandomizedDelaySec: jitter drawn from
 	// [0, restartRandomizedDelay) added to the effective restart delay
@@ -669,6 +675,9 @@ func (s *ProcessService) SetRestartBackoff(step, cap time.Duration) {
 	s.restartDelayCap = cap
 }
 
+// SetRestartSteps configures restart-steps (see expBackoffDelay).
+func (s *ProcessService) SetRestartSteps(n int) { s.restartSteps = n }
+
 // SetRestartRandomizedDelay configures jitter added to the restart delay
 // (systemd RestartRandomizedDelaySec). 0 disables jitter.
 func (s *ProcessService) SetRestartRandomizedDelay(d time.Duration) {
@@ -722,7 +731,7 @@ func (s *ProcessService) ScheduleRestartWithBackoff() bool {
 		return false
 	}
 	remaining := effectiveDelay - elapsed
-	if s.restartDelayStep > 0 && effectiveDelay > s.restartDelay {
+	if (s.restartDelayStep > 0 || s.restartSteps > 0) && effectiveDelay > s.restartDelay {
 		s.services.logger.Info("Service '%s': restart delayed %v (backoff %v)",
 			s.serviceName, remaining, effectiveDelay)
 	} else {
@@ -784,7 +793,10 @@ func (s *ProcessService) fireDelayedInitiateStart() {
 // Jitter (restartRandomizedDelay) is applied on top of the base value when set.
 func (s *ProcessService) nextRestartDelay() time.Duration {
 	var delay time.Duration
-	if s.restartDelayStep <= 0 {
+	if s.restartSteps > 0 {
+		s.backoffRestarts++
+		delay = expBackoffDelay(s.restartDelay, s.restartDelayCap, s.restartSteps, s.backoffRestarts)
+	} else if s.restartDelayStep <= 0 {
 		delay = s.restartDelay
 	} else {
 		if s.currentRestartDelay < s.restartDelay {
@@ -2623,6 +2635,7 @@ func (s *ProcessService) CheckRestart() bool {
 			s.restartIntervalTime = now
 			s.restartIntervalCount = 1
 			s.currentRestartDelay = s.restartDelay
+			s.backoffRestarts = 0
 		}
 	}
 
@@ -3983,7 +3996,7 @@ func (s *ProcessService) doSmoothRecovery() {
 	s.closeReadyPipe()
 
 	effectiveDelay := s.nextRestartDelay()
-	if s.restartDelayStep > 0 && effectiveDelay > s.restartDelay {
+	if (s.restartDelayStep > 0 || s.restartSteps > 0) && effectiveDelay > s.restartDelay {
 		s.services.logger.Info("Service '%s': smooth recovery - restarting process (backoff %v)",
 			s.serviceName, effectiveDelay)
 	} else {

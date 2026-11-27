@@ -88,6 +88,7 @@ var KnownSettings = map[string]OperatorType{
 	"restart-delay":              OpEquals,
 	"restart-delay-step":         OpEquals,
 	"restart-delay-cap":          OpEquals,
+	"restart-steps":              OpEquals,
 	"restart-randomized-delay":   OpEquals,
 	"restart-max-delay":          OpEquals,
 	"restart-limit-interval":     OpEquals,

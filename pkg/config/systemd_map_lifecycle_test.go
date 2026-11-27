@@ -269,8 +269,9 @@ func TestSystemdLifecycleMappings(t *testing.T) {
 		// Gaps.
 		{name: "abort sec", unit: "TimeoutAbortSec=30", none: []string{"timeout-abort-sec"},
 			warn: []string{"NOTE", "TimeoutAbortSec=30 has no slinit equivalent"}},
-		{name: "steps", unit: "RestartSteps=5\nRestartMaxDelaySec=1min", none: []string{"restart-max-delay", "restart-delay-step"},
-			warn: []string{"NOTE", "RestartSteps=5 has no slinit equivalent"}},
+		{name: "steps", unit: "RestartSteps=5\nRestartMaxDelaySec=1min",
+			want: []string{"restart-steps = 5", "restart-delay-cap = 60", "restart-delay = 0.1"},
+			none: []string{"restart-max-delay", "restart-delay-step"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			emitted, warns, desc := lcConvert(t, tc.unit)
@@ -462,6 +463,42 @@ func TestSystemdSendSIGHUP(t *testing.T) {
 		for _, w := range warns {
 			if strings.Contains(w.Msg, "SendSIGHUP") {
 				t.Errorf("SendSIGHUP=%s warned: %v", val, w)
+			}
+		}
+	}
+}
+
+func TestSystemdRestartSteps(t *testing.T) {
+	for _, tc := range []struct {
+		lines        string
+		steps        int
+		delay, cap   time.Duration
+		warnContains string
+	}{
+		{lines: "RestartSec=1\nRestartSteps=5\nRestartMaxDelaySec=1min", steps: 5, delay: time.Second, cap: time.Minute},
+		// In either order, in a drop-in or not: decided once the unit is read.
+		{lines: "RestartMaxDelaySec=30s\nRestartSteps=3\nRestartSec=2", steps: 3, delay: 2 * time.Second, cap: 30 * time.Second},
+		// No RestartSec=: systemd's 100ms.
+		{lines: "RestartSteps=4\nRestartMaxDelaySec=10", steps: 4, delay: 100 * time.Millisecond, cap: 10 * time.Second},
+		{lines: "RestartSteps=4", warnContains: "without RestartMaxDelaySec"},
+		{lines: "RestartMaxDelaySec=10", warnContains: "without RestartSteps"},
+		{lines: "RestartSteps=4\nRestartMaxDelaySec=infinity", warnContains: "without RestartMaxDelaySec"},
+		// Below RestartSec=: RestartSec= drops to it and there is no curve.
+		{lines: "RestartSec=20\nRestartSteps=4\nRestartMaxDelaySec=5", delay: 5 * time.Second, warnContains: "not above RestartSec"},
+		{lines: "RestartSec=0\nRestartSteps=4\nRestartMaxDelaySec=5", warnContains: "RestartSec=0"},
+		{lines: "RestartSteps=lots\nRestartMaxDelaySec=5", warnContains: "not 0 to 3000"},
+	} {
+		_, warns, desc := lcConvert(t, tc.lines)
+		if desc.RestartSteps != tc.steps || (tc.delay != 0 && desc.RestartDelay != tc.delay) || (tc.cap != 0 && desc.RestartDelayCap != tc.cap) {
+			t.Errorf("%q: steps %d delay %v cap %v, want %d %v %v", tc.lines, desc.RestartSteps, desc.RestartDelay, desc.RestartDelayCap, tc.steps, tc.delay, tc.cap)
+		}
+		if tc.warnContains != "" {
+			found := false
+			for _, w := range warns {
+				found = found || strings.Contains(w.Msg, tc.warnContains)
+			}
+			if !found {
+				t.Errorf("%q: no warning containing %q in %v", tc.lines, tc.warnContains, warns)
 			}
 		}
 	}

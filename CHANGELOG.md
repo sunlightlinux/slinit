@@ -51,6 +51,16 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`restart-steps = N`**, systemd's `RestartSteps=`: the restart delay
+  grows geometrically from `restart-delay` to `restart-delay-cap` over N
+  restarts (1s, 2.3s, 5.1s, 11.7s, 26.5s, then 1m for 1s/1m/5), the
+  formula of systemd's `service_restart_usec_nth`, and starts over after
+  a stable period as the linear backoff does. Refused with
+  `restart-delay-step`, or without a curve to walk. A unit's
+  `RestartSteps=` with `RestartMaxDelaySec=` maps onto it and
+  `restart-delay-cap` (from systemd's 100ms when RestartSec= is unset);
+  one without the other is ignored with a warning, as in systemd.
+
 - **`slinitctl clean [--what=KIND] SERVICE...`**, systemd's `systemctl
   clean`: removes what a stopped service keeps between runs, the
   directories of its runtime-, state-, cache-, logs- and

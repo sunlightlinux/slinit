@@ -282,6 +282,7 @@ var BuiltinDirectives = []string{
 	"restart-max-delay",
 	"restart-mode",
 	"restart-randomized-delay",
+	"restart-steps",
 	"restrict-address-families",
 	"restrict-file-systems",
 	"restrict-namespaces",

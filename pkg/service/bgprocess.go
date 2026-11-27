@@ -98,6 +98,12 @@ type BGProcessService struct {
 	restartDelayStep    time.Duration
 	restartDelayCap     time.Duration
 	currentRestartDelay time.Duration
+	// restart-steps (systemd's RestartSteps=): the delay grows
+	// geometrically from restartDelay to restartDelayCap over this many
+	// restarts (expBackoffDelay); backoffRestarts counts them, and starts
+	// over with the linear backoff when a stable period ends.
+	restartSteps    int
+	backoffRestarts int
 
 	// systemd-style RestartRandomizedDelaySec: additive jitter drawn
 	// from [0, restartRandomizedDelay). 0 disables.
@@ -269,6 +275,9 @@ func (s *BGProcessService) SetRestartBackoff(step, cap time.Duration) {
 	s.restartDelayCap = cap
 }
 
+// SetRestartSteps configures restart-steps (see expBackoffDelay).
+func (s *BGProcessService) SetRestartSteps(n int) { s.restartSteps = n }
+
 // SetRestartRandomizedDelay configures additive jitter on the restart delay.
 func (s *BGProcessService) SetRestartRandomizedDelay(d time.Duration) {
 	s.restartRandomizedDelay = d
@@ -285,7 +294,10 @@ func (s *BGProcessService) SetRestartMaxDelay(d time.Duration) {
 // Jitter (restartRandomizedDelay) is applied on top of the base value when set.
 func (s *BGProcessService) nextRestartDelay() time.Duration {
 	var delay time.Duration
-	if s.restartDelayStep <= 0 {
+	if s.restartSteps > 0 {
+		s.backoffRestarts++
+		delay = expBackoffDelay(s.restartDelay, s.restartDelayCap, s.restartSteps, s.backoffRestarts)
+	} else if s.restartDelayStep <= 0 {
 		delay = s.restartDelay
 	} else {
 		if s.currentRestartDelay < s.restartDelay {
@@ -859,6 +871,7 @@ func (s *BGProcessService) CheckRestart() bool {
 			s.restartIntervalTime = now
 			s.restartIntervalCount = 1
 			s.currentRestartDelay = s.restartDelay
+			s.backoffRestarts = 0
 		}
 	}
 
@@ -1649,7 +1662,7 @@ func (s *BGProcessService) handleUnexpectedTerminationLocked() {
 // doSmoothRecovery restarts the bgprocess without affecting dependents.
 func (s *BGProcessService) doSmoothRecovery() {
 	effectiveDelay := s.nextRestartDelay()
-	if s.restartDelayStep > 0 && effectiveDelay > s.restartDelay {
+	if (s.restartDelayStep > 0 || s.restartSteps > 0) && effectiveDelay > s.restartDelay {
 		s.services.logger.Info("Service '%s': smooth recovery - restarting bgprocess (backoff %v)",
 			s.serviceName, effectiveDelay)
 	} else {

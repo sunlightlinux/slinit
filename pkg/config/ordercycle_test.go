@@ -365,3 +365,22 @@ func TestSystemdBeforeRespectsMaxDepth(t *testing.T) {
 		}
 	}
 }
+
+func TestRestartStepsValidation(t *testing.T) {
+	for body, ok := range map[string]bool{
+		"restart-delay = 1\nrestart-delay-cap = 60\nrestart-steps = 5\n":                         true,
+		"restart-delay = 1\nrestart-delay-cap = 60\nrestart-steps = 5\nrestart-delay-step = 2\n": false,
+		"restart-delay = 1\nrestart-steps = 5\n":                                                 false,
+		"restart-delay = 0\nrestart-delay-cap = 60\nrestart-steps = 5\n":                         false,
+		"restart-delay = 1\nrestart-delay-cap = 60\nrestart-steps = 3001\n":                      false,
+	} {
+		root := t.TempDir()
+		dir := filepath.Join(root, "slinit.d")
+		os.MkdirAll(dir, 0o755)
+		writeServiceFile(t, dir, "s", "type = process\ncommand = /bin/true\n"+body)
+		_, dl, _ := cycleLoader(t, root)
+		if _, err := dl.LoadService("s"); (err == nil) != ok {
+			t.Errorf("%q: err = %v, want ok=%v", body, err, ok)
+		}
+	}
+}
