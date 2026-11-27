@@ -670,6 +670,14 @@ verified with `git tag -v`.
   373 to 298 ns per state event, 332 to 255 ns per 100-byte output line.
   What is delivered, and when the emitter redials, is unchanged.
 
+- **Each captured output line built its own one-entry fields map**: the
+  journal event of every line a rotated logfile accepted carried a fresh
+  `SLINIT_TARGET_PID` map, two of the line's four allocations, kept
+  alive in the ring. The lines of one pid now share one map (nothing
+  writes to an emitted event's fields). BenchmarkLogRotatorThroughput,
+  journal without listener: 193 to 240 MiB/s, half the allocated bytes;
+  with a listener, all three journal changes: 32 to 51 MiB/s.
+
 - **A rotated or filtered logfile wrote each line with its own
   write(2)**: a service whose `logfile` goes through the log rotator
   (`log-max-size`, filters, rate limit, alert file...) cost PID 1 one

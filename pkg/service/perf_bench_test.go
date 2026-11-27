@@ -200,10 +200,10 @@ func BenchmarkAsyncDepsStart(b *testing.B) {
 // pipe and the rotator's reader goroutine into a size-rotated logfile,
 // the path a logfile with log-max-size takes in PID 1.
 func BenchmarkLogRotatorThroughput(b *testing.B) {
-	for _, mode := range []string{"nojournal", "journal-nolistener"} {
+	for _, mode := range []string{"nojournal", "journal-nolistener", "journal-listener"} {
 		b.Run(mode, func(b *testing.B) {
 			if mode != "nojournal" {
-				benchJournal(b, false)
+				benchJournal(b, mode == "journal-listener")
 			}
 			line := []byte("Accepted publickey for root from 10.0.0.1 port 51234 ssh2: ED25519 SHA256:abc\n")
 			chunk := bytes.Repeat(line, 64<<10/len(line))

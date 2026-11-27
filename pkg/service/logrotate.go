@@ -149,10 +149,11 @@ type LogRotator struct {
 		Error(string, ...interface{})
 	}
 
-	// journalPID/journalPIDStr cache getPID's last value as the
-	// SLINIT_TARGET_PID string of journal line events. Under mu.
+	// journalPID/journalFields cache getPID's last value as the
+	// SLINIT_TARGET_PID field of journal line events, shared by the
+	// events (see emitJournalLogLineFields). Under mu.
 	journalPID    int
-	journalPIDStr string
+	journalFields map[string]string
 
 	// Batched writes, used by readLoop for the lines of one read chunk
 	// (processLine called from anywhere else writes each line at once).
@@ -180,7 +181,7 @@ type LogRotator struct {
 // journalBuf[off:end].
 type journalLine struct {
 	level    int
-	pid      string
+	fields   map[string]string
 	off, end int
 }
 
@@ -665,18 +666,18 @@ func (lr *LogRotator) processLine(line []byte) {
 	// in the order they reach the file.
 	emitLine := false
 	var emitLevel int
-	var emitPID string
+	var emitFields map[string]string
 	defer func() {
 		if !emitLine {
 			return
 		}
 		if !lr.batching {
-			emitJournalLogLinePID(lr.serviceName, emitLevel, matchLine, emitPID)
+			emitJournalLogLineFields(lr.serviceName, emitLevel, matchLine, emitFields)
 			return
 		}
 		off := len(lr.journalBuf)
 		lr.journalBuf = append(lr.journalBuf, matchLine...)
-		lr.journalQ = append(lr.journalQ, journalLine{emitLevel, emitPID, off, len(lr.journalBuf)})
+		lr.journalQ = append(lr.journalQ, journalLine{emitLevel, emitFields, off, len(lr.journalBuf)})
 		if len(lr.journalQ) >= rotatorBatchLines || len(lr.journalBuf) >= rotatorBatchBytes {
 			lr.flushBatch()
 		}
@@ -758,12 +759,12 @@ func (lr *LogRotator) processLine(line []byte) {
 			pid = lr.getPID()
 		}
 		if pid != lr.journalPID {
-			lr.journalPID, lr.journalPIDStr = pid, ""
+			lr.journalPID, lr.journalFields = pid, nil
 			if pid > 0 {
-				lr.journalPIDStr = strconv.Itoa(pid)
+				lr.journalFields = targetPIDFields(strconv.Itoa(pid))
 			}
 		}
-		emitLine, emitLevel, emitPID = true, lineLevel, lr.journalPIDStr
+		emitLine, emitLevel, emitFields = true, lineLevel, lr.journalFields
 	}
 
 	if lr.batching && lr.file != nil && lr.fileRegular {
@@ -784,7 +785,7 @@ func (lr *LogRotator) flushBatch() {
 	lr.flushPendLocked()
 	lr.mu.Unlock()
 	for _, e := range lr.journalQ {
-		emitJournalLogLinePID(lr.serviceName, e.level, lr.journalBuf[e.off:e.end], e.pid)
+		emitJournalLogLineFields(lr.serviceName, e.level, lr.journalBuf[e.off:e.end], e.fields)
 	}
 	lr.journalQ = lr.journalQ[:0]
 	lr.journalBuf = lr.journalBuf[:0]
