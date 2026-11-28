@@ -93,6 +93,12 @@ func (c *CalendarStarter) armCatchUpLocked(name string, spec *CalendarSpec, dela
 	c.timers[name] = t
 }
 
+// CalendarStampPath is calendarStampPath, for slinitctl list-timers.
+func CalendarStampPath(name string) string { return calendarStampPath(name) }
+
+// ReadCalendarStamp reads the last recorded calendar start of name.
+func ReadCalendarStamp(name string) (time.Time, bool) { return readStamp(calendarStampPath(name)) }
+
 // calendarStampPath is where the last start of a persistent
 // start-on-calendar is kept: a directory of its own under
 // cron-persistent's, whose records are named after services too.

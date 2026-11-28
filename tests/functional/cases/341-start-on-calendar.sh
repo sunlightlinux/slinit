@@ -46,4 +46,9 @@ else
     echo "FAIL: the unit ran ${n:-0} times in 4s from its .timer, want at least 2"
 fi
 
+# list-timers shows the loaded calendar services, by next run.
+lt=$(slinitctl --system list-timers 2>&1)
+assert_contains "$lt" "test-341-unit" "list-timers lists the timer's service"
+assert_contains "$lt" "NEXT" "list-timers prints its header"
+
 test_summary

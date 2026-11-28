@@ -68,6 +68,7 @@ _slinitctl() {
         'dependents:List service dependents'
         'graph:Print dependency graph (DOT format)'
         'list5:List services with v5 protocol extended info'
+        'list-timers:Services started on a calendar, by next run'
         'status5:Show v5 protocol extended status'
         'platform:Detect and display virtualization/container platform'
         'completion:Generate shell completion script (bash/zsh/fish)'

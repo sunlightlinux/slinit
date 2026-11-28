@@ -287,6 +287,8 @@ doneFlags:
 	switch command {
 	case "list", "ls":
 		err = cmdList(conn)
+	case "list-timers":
+		err = cmdListTimers(conn, time.Now())
 	case "run":
 		err = cmdRun(conn, cmdArgs)
 	case "start":
@@ -586,6 +588,7 @@ Options:
 
 Commands:
   list                     List all loaded services
+  list-timers              Loaded services started on a calendar, by next run
   start <service>          Start a service (marks active)
   wake <service>           Start without marking active
   stop <service>           Stop a service
@@ -719,7 +722,7 @@ var commands = map[string]cmdArity{
 	"list": noArgs, "ls": noArgs, "reload-all": noArgs, "start-all": noArgs,
 	"active-profile": noArgs, "list-profiles": noArgs, "getallenv-global": noArgs,
 	"service-dirs": noArgs, "query-load-mech": noArgs, "load-mech": noArgs,
-	"list5": noArgs, "graph": noArgs, "analyze": noArgs, "boot-time": noArgs,
+	"list5": noArgs, "list-timers": noArgs, "graph": noArgs, "analyze": noArgs, "boot-time": noArgs,
 
 	"start": svcArg, "wake": svcArg, "stop": svcArg, "release": svcArg,
 	"restart": svcArg, "is-started": svcArg, "is-failed": svcArg,

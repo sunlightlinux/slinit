@@ -89,6 +89,11 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`slinitctl list-timers`**: the loaded services with
+  `start-on-calendar`, by next run, with the time left, the randomized
+  delay, the last start of a persistent one and the expression, as
+  `systemctl list-timers`. Reckoned client-side; no protocol change.
+
 - **`device-policy` / `device-allow`: a cgroup device filter**,
   systemd's DevicePolicy= / DeviceAllow=, with the program systemd's
   bpf-devices.c builds (new `pkg/bpfdev`, an eBPF assembler and loader

@@ -274,6 +274,16 @@ service name or rejected.
 :   List all loaded services and their state (started / stopped /
     starting / stopping / failed).
 
+**list-timers** (since 4.1.0)
+:   The loaded services with **start-on-calendar**, by the time each
+    next runs: *NEXT*, *LEFT* (with "+ up to" a
+    **start-on-calendar-randomized-delay**), *LAST* (the last calendar
+    start, known for a **start-on-calendar-persistent** service),
+    *SERVICE* and *CALENDAR*. The next time is reckoned by
+    **slinitctl** from the expression, in its own time zone.
+    **systemctl list-timers** for slinit's calendar activation. Human
+    oriented, like **status**.
+
 **status** [**-l** | **\--long** | **\--full**] *service*
 :   Print a multi-line status block for *service*. Human-oriented: the
     wording, colours and alignment are free to change between releases.

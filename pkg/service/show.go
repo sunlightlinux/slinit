@@ -500,6 +500,12 @@ func RenderShow(s Service) string {
 	}
 	if sr.startOnCalendarExpr != "" {
 		p("OnCalendar", sr.startOnCalendarExpr)
+		if sr.startOnCalendarPersistent {
+			p("OnCalendarPersistent", "yes")
+		}
+		if sr.startOnCalendarDelay > 0 {
+			p("OnCalendarRandomizedDelay", sr.startOnCalendarDelay.String())
+		}
 	}
 	if sr.socketPath != "" {
 		p("SocketPath", sr.socketPath)
