@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,5 +52,24 @@ func TestScriptedReadsEnvFile(t *testing.T) {
 	waitState(t, s, StateStarted, 3*time.Second)
 	if b, _ := os.ReadFile(out); strings.TrimSpace(string(b)) != "from-file" {
 		t.Errorf("scripted saw %q", b)
+	}
+}
+
+// A type-change reload carries over that a filter was configured, so
+// the new record detaches one left on the cgroup.
+func TestCarryFilterState(t *testing.T) {
+	set, _ := newTestSet()
+	old := NewProcessService(set, "f")
+	old.Record().SetIPFilter(nil, []string{"any"})
+	old.Record().SetSlice("x.slice")
+	var p process.ExecParams
+	old.Record().ApplyProcessAttrs(&p) // the start that attached it
+	nu := NewScriptedService(set, "f")
+	nu.Record().SetSlice("x.slice")
+	nu.Record().CarryFilterState(old.Record())
+	var q process.ExecParams
+	nu.Record().ApplyProcessAttrs(&q)
+	if !q.DetachIPFilter {
+		t.Error("the new record does not detach the filter the old one attached")
 	}
 }

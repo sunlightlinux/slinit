@@ -377,6 +377,9 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 		if changed && dl.set.OnServiceUnloaded != nil {
 			dl.set.OnServiceUnloaded(svc)
 		}
+		// A filter the old record attached may still be on the cgroup
+		// the new one inherits: the new record must know to detach it.
+		newSvc.Record().CarryFilterState(svc.Record())
 		dl.set.ReplaceService(svc, newSvc)
 		switch {
 		case changed && dl.set.OnServiceLoaded != nil:

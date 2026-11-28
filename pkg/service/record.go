@@ -2249,6 +2249,14 @@ func (sr *ServiceRecord) SetNoNewPrivs(v bool)       { sr.noNewPrivs = v }
 func (sr *ServiceRecord) SetIOPrio(class, level int) { sr.ioPrioClass = class; sr.ioPrioLevel = level }
 func (sr *ServiceRecord) SetCgroupPath(p string)     { sr.cgroupPath = p }
 
+// CarryFilterState takes over from the record a type-change reload
+// replaced whether a device or IP filter was ever configured, so one
+// left on the cgroup is detached at the next start.
+func (sr *ServiceRecord) CarryFilterState(from *ServiceRecord) {
+	sr.hadDeviceFilter = sr.hadDeviceFilter || from.hadDeviceFilter
+	sr.hadIPFilter = sr.hadIPFilter || from.hadIPFilter
+}
+
 // SetIPFilter sets ip-address-allow and ip-address-deny.
 func (sr *ServiceRecord) SetIPFilter(allow, deny []string) {
 	sr.ipAddressAllow, sr.ipAddressDeny = allow, deny
