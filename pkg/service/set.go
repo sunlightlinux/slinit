@@ -153,6 +153,11 @@ type ServiceSet struct {
 	OnServiceLoaded   func(svc Service)
 	OnServiceUnloaded func(svc Service)
 	OnServiceReplaced func(oldSvc, newSvc Service)
+	// OnServiceTimersChanged: a reload changed only the service's timers
+	// (start-on-calendar*, start-on-boot-sec, start-on-unit-active-sec),
+	// not its path or mount watch, which unload + load would re-arm and
+	// fire on arm.
+	OnServiceTimersChanged func(svc Service)
 
 	// OnConsoleAcquire fires from ProcessService.BringUp just before a
 	// service that has RunsOnConsole (or StartsOnConsole) opens

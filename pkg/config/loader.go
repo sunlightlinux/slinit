@@ -372,7 +372,8 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 		// With the watches unchanged it is only reported replaced:
 		// loading re-arms them, and a watch whose condition already
 		// holds fires on arm, starting a service the operator stopped.
-		changed := activationChanged(svc, desc)
+		changed := watchChanged(svc, desc)
+		timers := timersChanged(svc, desc)
 		if changed && dl.set.OnServiceUnloaded != nil {
 			dl.set.OnServiceUnloaded(svc)
 		}
@@ -382,6 +383,9 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 			dl.set.OnServiceLoaded(newSvc)
 		case !changed && dl.set.OnServiceReplaced != nil:
 			dl.set.OnServiceReplaced(svc, newSvc)
+		}
+		if !changed && timers && dl.set.OnServiceTimersChanged != nil {
+			dl.set.OnServiceTimersChanged(newSvc)
 		}
 
 		return newSvc, nil
@@ -480,7 +484,8 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	// start-on-path-* or start-on-mount follows it. Only a changed one:
 	// loading re-arms the watch, and one whose condition already holds
 	// fires on arm, so an unchanged reload started a stopped service.
-	changed := activationChanged(svc, desc)
+	changed := watchChanged(svc, desc)
+	timers := timersChanged(svc, desc)
 	if changed && dl.set.OnServiceUnloaded != nil {
 		dl.set.OnServiceUnloaded(svc)
 	}
@@ -513,19 +518,27 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 
 	if changed && dl.set.OnServiceLoaded != nil {
 		dl.set.OnServiceLoaded(svc)
+	} else if timers && dl.set.OnServiceTimersChanged != nil {
+		dl.set.OnServiceTimersChanged(svc)
 	}
 
 	return svc, nil
 }
 
-// activationChanged reports whether desc changes what the
+// watchChanged reports whether desc changes the watches the
 // OnServiceLoaded / OnServiceUnloaded hooks wire for svc: its
-// start-on-path-*, start-on-mount and start-on-calendar.
-func activationChanged(svc service.Service, desc *ServiceDescription) bool {
+// start-on-path-* and start-on-mount. Those re-arm on load and may fire
+// on arm, so only a change goes through unload + load.
+func watchChanged(svc service.Service, desc *ServiceDescription) bool {
 	path, trigger := svc.Record().StartOnPath()
 	return path != desc.StartOnPath || trigger != desc.StartOnPathTrigger ||
-		svc.Record().StartOnMount() != desc.StartOnMount ||
-		svc.Record().StartOnCalendarExpr() != desc.StartOnCalendar ||
+		svc.Record().StartOnMount() != desc.StartOnMount
+}
+
+// timersChanged reports whether desc changes svc's timers, which
+// OnServiceTimersChanged re-arms alone.
+func timersChanged(svc service.Service, desc *ServiceDescription) bool {
+	return svc.Record().StartOnCalendarExpr() != desc.StartOnCalendar ||
 		svc.Record().StartOnCalendarPersistent() != desc.StartOnCalendarPersistent ||
 		svc.Record().StartOnCalendarRandomizedDelay() != desc.StartOnCalendarRandomizedDelay ||
 		monotonicChanged(svc, desc)

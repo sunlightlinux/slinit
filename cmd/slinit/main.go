@@ -1539,6 +1539,13 @@ func main() {
 			}
 			monoStarter.Replace(oldSvc, newSvc)
 		}
+		// A reload that changed only the timers re-arms them alone:
+		// Add replaces a timer in place (and removes one a reload took
+		// away), keeping a run caught inside its randomized delay.
+		serviceSet.OnServiceTimersChanged = func(svc service.Service) {
+			calStarter.Add(svc)
+			monoStarter.Add(svc)
+		}
 	}
 
 	// Services-dir auto-watch (opt-in via --watch-services-dir): drop a

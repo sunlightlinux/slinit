@@ -186,3 +186,43 @@ func TestReloadDoesNotRefireMountActivation(t *testing.T) {
 		t.Errorf("type-change reload fired the mount activation again (%d fires)", n)
 	}
 }
+
+// A reload that changes only the timers re-arms the timers alone
+// (OnServiceTimersChanged): unload + load would re-arm the path watch,
+// which fires on arm and starts a service the operator stopped.
+func TestReloadTimersOnlyLeavesWatch(t *testing.T) {
+	dir := t.TempDir()
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	var loads, unloads, timers int
+	ss.OnServiceLoaded = func(service.Service) { loads++ }
+	ss.OnServiceUnloaded = func(service.Service) { unloads++ }
+	ss.OnServiceTimersChanged = func(svc service.Service) {
+		timers++
+		if svc.Record().StartOnCalendarExpr() != "weekly" {
+			t.Errorf("timers hook saw %q, want the new expression", svc.Record().StartOnCalendarExpr())
+		}
+	}
+	writeServiceFile(t, dir, "t", "type = scripted\ncommand = /bin/true\nstart-on-path-exists = /run/x\nstart-on-calendar = daily\n")
+	svc, err := loader.LoadService("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loads, unloads = 0, 0
+	writeServiceFile(t, dir, "t", "type = scripted\ncommand = /bin/true\nstart-on-path-exists = /run/x\nstart-on-calendar = weekly\n")
+	if _, err := loader.ReloadService(svc); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 0 || unloads != 0 || timers != 1 {
+		t.Errorf("timer-only reload: %d loads, %d unloads, %d timer re-arms; want 0, 0, 1", loads, unloads, timers)
+	}
+	// A changed watch still goes through unload + load.
+	writeServiceFile(t, dir, "t", "type = scripted\ncommand = /bin/true\nstart-on-path-exists = /run/y\nstart-on-calendar = weekly\n")
+	if _, err := loader.ReloadService(svc); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 1 || unloads != 1 {
+		t.Errorf("watch change: %d loads, %d unloads", loads, unloads)
+	}
+}
