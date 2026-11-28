@@ -680,6 +680,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetStopCommand(desc.StopCommand)
 		s.SetWorkingDir(desc.WorkingDir)
 		s.SetEnvFile(desc.EnvFile)
+		s.SetReloadCommand(desc.ReloadCommand)
 		s.SetStartTimeout(desc.StartTimeout)
 		s.SetStopTimeout(desc.StopTimeout)
 		applyLogSettings(s, desc)
@@ -1208,9 +1209,10 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
 	// reload-command needs a running main process to reload: a new
 	// setting, so refusing it elsewhere costs no config that loads today.
-	if len(desc.ReloadCommand) > 0 && desc.Type != service.TypeProcess && desc.Type != service.TypeBGProcess {
+	if len(desc.ReloadCommand) > 0 && desc.Type != service.TypeProcess && desc.Type != service.TypeBGProcess &&
+		desc.Type != service.TypeScripted {
 		return &ServiceLoadError{ServiceName: name,
-			Message: fmt.Sprintf("reload-command is for type = process and bgprocess (type = %s has no process to reload)", desc.Type)}
+			Message: fmt.Sprintf("reload-command is for type = process, bgprocess and scripted (type = %s has nothing to reload)", desc.Type)}
 	}
 
 	// restart-steps grows the delay geometrically from restart-delay to

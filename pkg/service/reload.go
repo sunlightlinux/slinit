@@ -33,6 +33,7 @@ var ErrNoReloadCommand = errors.New("no reload-command")
 type reloadSpec struct {
 	params  process.ExecParams
 	pid     int
+	running bool // started: a scripted job is, with no process (pid 0)
 	timeout time.Duration
 }
 
@@ -51,7 +52,7 @@ func (s *ProcessService) reloadSpec() (reloadSpec, bool) {
 		RunAsGID:          s.effectiveRunAsGID(),
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
-	return reloadSpec{params: params, pid: s.pid, timeout: reloadBound(s.startTimeout, s.effectiveHookTimeout())}, true
+	return reloadSpec{params: params, pid: s.pid, running: true, timeout: reloadBound(s.startTimeout, s.effectiveHookTimeout())}, true
 }
 
 func (s *BGProcessService) reloadSpec() (reloadSpec, bool) {
@@ -70,7 +71,28 @@ func (s *BGProcessService) reloadSpec() (reloadSpec, bool) {
 		RunAsGID:          s.effectiveRunAsGID(),
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
-	return reloadSpec{params: params, pid: pid, timeout: reloadBound(s.startTimeout, defaultFinishTimeout)}, true
+	return reloadSpec{params: params, pid: pid, running: true, timeout: reloadBound(s.startTimeout, defaultFinishTimeout)}, true
+}
+
+// A scripted job (a oneshot that stays started, nftables, apparmor)
+// reloads by its command while started: there is no main process, so
+// no $MAINPID, as systemd leaves it unset for a oneshot.
+func (s *ScriptedService) reloadSpec() (reloadSpec, bool) {
+	if len(s.reloadCommand) == 0 {
+		return reloadSpec{}, false
+	}
+	if s.state.Load() != StateStarted {
+		return reloadSpec{}, true
+	}
+	params := process.ExecParams{
+		Command:           s.reloadCommand,
+		WorkingDir:        s.workingDir,
+		Env:               s.Record().BuildEnvWithFile(s.envFile),
+		RunAsUID:          s.effectiveRunAsUID(),
+		RunAsGID:          s.effectiveRunAsGID(),
+		SupplementaryGIDs: s.supplementaryGIDs,
+	}
+	return reloadSpec{params: params, running: true, timeout: reloadBound(s.startTimeout, defaultFinishTimeout)}, true
 }
 
 // reloadBound is the reload's time limit: start-timeout, as systemd
@@ -97,7 +119,7 @@ func (ss *ServiceSet) RunReloadCommand(svc Service) (hasPID bool, err error) {
 		ss.queueMu.Unlock()
 		return true, ErrNoReloadCommand
 	}
-	if spec.pid <= 0 {
+	if !spec.running {
 		ss.queueMu.Unlock()
 		return false, nil
 	}

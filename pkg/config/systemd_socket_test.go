@@ -207,11 +207,11 @@ func TestReloadCommandTypes(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "slinit.d")
 	os.MkdirAll(dir, 0o755)
-	writeServiceFile(t, dir, "s", "type = scripted\ncommand = /bin/true\nreload-command = /bin/true\n")
+	writeServiceFile(t, dir, "s", "type = internal\nreload-command = /bin/true\n")
 	writeServiceFile(t, dir, "b", "type = bgprocess\ncommand = /bin/true\npid-file = /run/b.pid\nreload-command = /bin/true\n")
 	_, dl, _ := cycleLoader(t, root)
 	if _, err := dl.LoadService("s"); err == nil || !strings.Contains(err.Error(), "reload-command") {
-		t.Errorf("scripted with reload-command: %v, want refused", err)
+		t.Errorf("internal with reload-command: %v, want refused", err)
 	}
 	if _, err := dl.LoadService("b"); err != nil {
 		t.Errorf("bgprocess with reload-command: %v", err)
@@ -221,8 +221,10 @@ func TestReloadCommandTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cfg.hasMapped("reload-command"); ok || !sockWarned(warns, "reload-command for a process or bgprocess") {
-		t.Errorf("oneshot ExecReload=: %v", warns)
+	// A oneshot (scripted) reloads by its command while started
+	// (nftables, apparmor).
+	if v, ok := cfg.hasMapped("reload-command"); !ok || v != "/bin/r" {
+		t.Errorf("oneshot ExecReload=: %q %v %v", v, ok, warns)
 	}
 }
 

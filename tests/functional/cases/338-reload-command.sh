@@ -34,4 +34,17 @@ assert_exit_code "slinitctl --system reload-signal test-338-unit" 0 "the unit's 
 assert_exit_code "test -e /run/test-338-unit.reloaded" 0 "and did what it says"
 slinitctl --system stop test-338-unit >/dev/null 2>&1
 
+# A scripted job (a oneshot, as nftables.service) reloads by its command
+# while started.
+cat > /etc/slinit.d/test-338-job <<'SVC'
+type = scripted
+command = /bin/true
+reload-command = /bin/sh -c "touch /run/test-338-job.reloaded"
+SVC
+rm -f /run/test-338-job.reloaded
+slinitctl --system start test-338-job >/dev/null 2>&1
+assert_exit_code "slinitctl --system reload-signal test-338-job" 0 "a scripted job's reload-command ran"
+assert_exit_code "test -e /run/test-338-job.reloaded" 0 "and did what it says"
+slinitctl --system stop test-338-job >/dev/null 2>&1
+
 test_summary

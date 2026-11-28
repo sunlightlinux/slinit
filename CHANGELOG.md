@@ -89,6 +89,10 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`reload-command` for a scripted service**, run while it is started
+  (no $MAINPID, as systemd for a oneshot): a converted oneshot's
+  ExecReload= (nftables, apparmor, 12 units of the corpus) was dropped.
+
 - **`condition-mounts-for` / `assert-mounts-for`**: every /etc/fstab
   mount point on the way to a path is mounted. `RequiresMountsFor=`
   (31 units of the corpus, a gap until now) maps onto the assert: slinit

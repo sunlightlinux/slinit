@@ -234,7 +234,10 @@ what tells you the oldest slinit your configuration will run on. See
     it exits non-zero; what it left running in its process group is
     killed when it ends. A **reload-signal** set as well is sent after a
     command that succeeded. **type** = *process* and *bgprocess* (the
-    daemon's pid is *MAINPID*); on another type it is a load error.
+    daemon's pid is *MAINPID*), and *scripted* while it is started, with
+    no *MAINPID*, as systemd leaves it unset for a oneshot (*nftables*,
+    *apparmor*: the reload applies the rules again); on another type it
+    is a load error.
     systemd's **ExecReload=** with a command; its *kill -HUP $MAINPID*
     form is **reload-signal**.
 

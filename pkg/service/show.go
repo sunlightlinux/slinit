@@ -614,6 +614,9 @@ func RenderShow(s Service) string {
 		if len(ss.stopCommand) > 0 {
 			p("ExecStop", showCommand(ss.stopCommand, ss.privHooks.Stop))
 		}
+		if len(ss.reloadCommand) > 0 {
+			p("ExecReload", showCommand(ss.reloadCommand, ss.privHooks.Reload))
+		}
 		if ss.runAsUID != 0 {
 			p("User", strconv.FormatUint(uint64(ss.runAsUID), 10))
 		}

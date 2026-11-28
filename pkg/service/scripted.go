@@ -20,6 +20,8 @@ type ScriptedService struct {
 	stopCommand  []string
 	workingDir   string
 	envFile      string // read at each run, as for a process service
+	// reloadCommand: reload-command, run while started (reload.go).
+	reloadCommand []string
 
 	// Credentials
 	runAsUID          uint32
@@ -141,6 +143,9 @@ func (s *ScriptedService) SetStartCommand(cmd []string) { s.startCommand = cmd }
 func (s *ScriptedService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
 
 // SetWorkingDir sets the working directory.
+// SetReloadCommand sets reload-command.
+func (s *ScriptedService) SetReloadCommand(cmd []string) { s.reloadCommand = cmd }
+
 // SetEnvFile sets the env-file the commands' environment is read from.
 func (s *ScriptedService) SetEnvFile(path string) { s.envFile = path }
 
