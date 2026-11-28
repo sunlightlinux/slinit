@@ -182,9 +182,10 @@ dependency of any kind does not exist, so each name written must exist
 as a slinit service (or a unit slinit can load) on the target system.
 A unit loaded directly is more forgiving, as systemd is: see
 **slinit**(8). **PartOf** becomes **part-of**, **Conflicts**
-**conflicts** and **OnFailure** **on-failure** (a target in any of
-them is dropped; **OnFailure=emergency.target** is a
-**failure-action**'s job). **Upholds**, **PropagatesReloadTo**,
+**conflicts**, **OnFailure** **on-failure** and **Upholds**
+**upholds** (a target in any of them is dropped;
+**OnFailure=emergency.target** is a **failure-action**'s job).
+**PropagatesReloadTo**,
 **PropagatesStopTo**, **JoinsNamespaceOf**, **RequiresMountsFor** and
 **OnSuccess** have no slinit equivalent and are reported with what to
 use instead; **WantedBy** / **RequiredBy** produce a note suggesting
@@ -200,7 +201,7 @@ either mapped onto its slinit counterpart, with its value translated
 **Condition\*** and **Assert\*** keys become slinit's **condition-\***
 and **assert-\***, **ExecStopPost=** a **finish-command**, and so on);
 or reported with what to use instead, when slinit does without it
-(**PartOf=**, **DeviceAllow=**, **PAMName=**, the disk-image
+(**DeviceAllow=**, **IPAddressDeny=**, **PAMName=**, the disk-image
 directives, among others); or skipped as meaningless outside systemd
 (job modes, accounting switches that only feed systemd's own
 reporting). A mapped value slinit cannot take is dropped with a
