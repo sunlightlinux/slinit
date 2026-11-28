@@ -47,3 +47,12 @@ func TestCheckMountsFor(t *testing.T) {
 		t.Errorf("kind %v %v %q", k, ok, s)
 	}
 }
+
+// An x-systemd.automount entry is mounted on access: not required.
+func TestCheckMountsForAutomount(t *testing.T) {
+	tab := filepath.Join(t.TempDir(), "fstab")
+	os.WriteFile(tab, []byte("UUID=a /boot vfat noauto,x-systemd.automount 0 2\n"), 0o644)
+	if ok, why := checkMountsFor("/boot/x", tab, func(string) (bool, string) { return false, "" }); !ok {
+		t.Errorf("an automount entry required: %s", why)
+	}
+}

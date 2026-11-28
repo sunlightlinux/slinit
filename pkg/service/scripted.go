@@ -439,7 +439,9 @@ func (s *ScriptedService) BringUp() bool {
 
 // BringDown runs the stop command.
 func (s *ScriptedService) BringDown() {
-	if len(s.stopCommand) == 0 {
+	// A start a condition skipped ran nothing, so there is nothing for
+	// the stop command to undo.
+	if len(s.stopCommand) == 0 || s.startSkipped {
 		// No stop command = stopped immediately
 		s.Stopped()
 		return

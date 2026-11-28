@@ -253,3 +253,57 @@ func TestCalendarRearmInsideDelayKeepsTheRun(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A service a condition skipped is started over at the next fire, its
+// conditions checked again, as systemd does at every elapse; a skipped
+// job's stop runs no stop-command; one marked down is not started.
+func TestTimerFireSkippedAndDown(t *testing.T) {
+	set, _ := newTestSet()
+	dir := t.TempDir()
+	gate := dir + "/gate"
+	s := sleeper(set, "gated")
+	s.Record().SetPredicates([]Predicate{{Kind: PredPathExists, Param: gate}})
+	if err := s.Record().SetStartOnCalendar("*-*-* 03:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	set.StartService(s)
+	defer set.StopService(s)
+	waitState(t, s, StateStarted, 3*time.Second)
+	if s.PID() > 0 {
+		t.Fatal("ran with its condition false")
+	}
+	os.WriteFile(gate, nil, 0o644)
+	if !set.calendarFire(s) {
+		t.Fatal("the fire did nothing for a skipped service")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for s.PID() <= 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("not started over with its condition now true")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	j := NewScriptedService(set, "skipjob")
+	j.SetStartCommand([]string{"/bin/true"})
+	j.SetStopCommand([]string{"/bin/sh", "-c", "touch " + dir + "/stopped"})
+	j.Record().SetPredicates([]Predicate{{Kind: PredPathExists, Param: dir + "/never"}})
+	set.AddService(j)
+	set.StartService(j)
+	waitState(t, j, StateStarted, 3*time.Second)
+	set.StopService(j)
+	waitState(t, j, StateStopped, 3*time.Second)
+	if _, err := os.Stat(dir + "/stopped"); err == nil {
+		t.Error("a skipped job's stop ran its stop-command")
+	}
+
+	d := sleeper(set, "down")
+	if err := d.Record().SetStartOnCalendar("*-*-* 03:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	d.Record().SetMarkedDown(true)
+	defer set.StopService(d)
+	if set.calendarFire(d) {
+		t.Error("a service marked down was started by its timer")
+	}
+}

@@ -187,3 +187,12 @@ func TestSystemdRequiresMountsFor(t *testing.T) {
 		t.Errorf("an empty RequiresMountsFor= left %v", desc.Predicates)
 	}
 }
+
+func TestStartOnUnitActiveSecFloor(t *testing.T) {
+	if _, err := Parse(strings.NewReader("type = scripted\ncommand = /bin/true\nstart-on-unit-active-sec = 1ms\n"), "x", "x"); err == nil {
+		t.Error("start-on-unit-active-sec = 1ms accepted")
+	}
+	if _, err := Parse(strings.NewReader("type = scripted\ncommand = /bin/true\nstart-on-unit-active-sec = 1s\n"), "x", "x"); err != nil {
+		t.Error(err)
+	}
+}

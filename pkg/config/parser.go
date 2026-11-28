@@ -3306,6 +3306,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		if setting == "start-on-boot-sec" {
 			desc.StartOnBootSec = d
 		} else {
+			// Below a second it would start a job without pause, a
+			// failing one included: refused.
+			if d > 0 && d < time.Second {
+				return fmt.Errorf("start-on-unit-active-sec: %v is under a second", d)
+			}
 			desc.StartOnUnitActiveSec = d
 		}
 	case "start-on-calendar-randomized-delay":

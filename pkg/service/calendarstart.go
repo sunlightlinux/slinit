@@ -286,8 +286,20 @@ func (ss *ServiceSet) timerFire(s Service, what string, armed func(*ServiceRecor
 		// begin between the check and the start.
 		return false
 	}
+	if r.markedDown {
+		// The operator's down marker: only an explicit start lifts it,
+		// as for on-failure's starts.
+		ss.logger.Info("Service '%s': %s fired; marked down, so not started", s.Name(), what)
+		return false
+	}
 	_, scripted := s.(*ScriptedService)
 	switch st := r.state.Load(); {
+	case st == StateStarted && r.startSkipped && !r.IsStartPinned():
+		// A condition skipped the last start: systemd checks the
+		// conditions again at every elapse, so start it over.
+		ss.logger.Info("Service '%s': %s fired; checking its conditions again", s.Name(), what)
+		r.rerunJob = true
+		r.Restart()
 	case st == StateStopped:
 		ss.logger.Info("Service '%s': %s fired", s.Name(), what)
 		s.Start()

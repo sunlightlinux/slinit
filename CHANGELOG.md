@@ -407,6 +407,10 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A scripted service a condition skipped ran its stop-command** at its
+  stop (and at shutdown), undoing a start that never ran. systemd runs
+  no ExecStop= for a unit whose condition failed. Present in 4.0.x.
+
 - **A scripted service ignored its `env-file`**: its commands got the
   global environment and setenv only, though the setting is documented
   for every type (a converted oneshot's EnvironmentFile= was lost with

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/sunlightlinux/slinit/pkg/fstab"
@@ -33,7 +34,9 @@ func checkMountsFor(path, fstabPath string, isMount func(string) (bool, string))
 	}
 	for _, e := range entries {
 		mp := filepath.Clean(e.File)
-		if e.VFSType == "swap" || mp == "/" || !filepath.IsAbs(mp) {
+		if e.VFSType == "swap" || mp == "/" || !filepath.IsAbs(mp) || slices.Contains(e.Options(), "x-systemd.automount") {
+			// An automount entry is mounted on first access: the
+			// service's own access mounts it, as in systemd.
 			continue
 		}
 		if path != mp && !strings.HasPrefix(path, mp+"/") {
