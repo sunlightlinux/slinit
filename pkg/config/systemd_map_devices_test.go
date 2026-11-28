@@ -16,9 +16,9 @@ func TestSystemdDeviceFilter(t *testing.T) {
 	if desc.Slice != "system.slice" || !lcWarned(warns, "NOTE", "slice = system.slice") {
 		t.Errorf("slice %q warns %v", desc.Slice, warns)
 	}
-	// Slice= kept; an empty DeviceAllow= clears; auto is the default.
+	// Slice= kept; an empty DeviceAllow= clears; auto is carried.
 	_, _, desc = lcConvert(t, "Slice=foo.slice\nDevicePolicy=auto\nDeviceAllow=/dev/a\nDeviceAllow=\nDeviceAllow=/dev/b r")
-	if desc.DevicePolicy != "" || strings.Join(desc.DeviceAllow, "|") != "/dev/b r" || desc.Slice != "foo.slice" {
+	if desc.DevicePolicy != "auto" || strings.Join(desc.DeviceAllow, "|") != "/dev/b r" || desc.Slice != "foo.slice" {
 		t.Errorf("policy %q allow %q slice %q", desc.DevicePolicy, desc.DeviceAllow, desc.Slice)
 	}
 	// A value slinit cannot take refuses the unit: it confines.
@@ -63,6 +63,69 @@ func TestDeviceFilterSettings(t *testing.T) {
 		_, err := loader.LoadService("d")
 		if (err == nil) != c.ok || (err != nil && !strings.Contains(err.Error(), "cgroup of the service's own")) {
 			t.Errorf("with %q: err %v", c.extra, err)
+		}
+	}
+}
+
+func TestSystemdIPFilter(t *testing.T) {
+	_, warns, desc := lcConvert(t, "IPAddressDeny=any\nIPAddressAllow=localhost\nIPAddressAllow=10.0.0.0/8 ::1")
+	if strings.Join(desc.IPAddressDeny, "|") != "any" || strings.Join(desc.IPAddressAllow, "|") != "localhost|10.0.0.0/8 ::1" {
+		t.Errorf("deny %q allow %q", desc.IPAddressDeny, desc.IPAddressAllow)
+	}
+	if desc.Slice != "system.slice" || !lcWarned(warns, "NOTE", "slice = system.slice") {
+		t.Errorf("slice %q", desc.Slice)
+	}
+	_, _, desc = lcConvert(t, "IPAddressDeny=any\nIPAddressDeny=")
+	if len(desc.IPAddressDeny) != 0 {
+		t.Errorf("an empty IPAddressDeny= left %q", desc.IPAddressDeny)
+	}
+	if _, err := lcConvertErr(t, "IPAddressDeny=10.0.0.0/33"); err == nil {
+		t.Error("a bad prefix converted")
+	}
+	// Natively, and refused without a cgroup of its own.
+	d, err := Parse(strings.NewReader("type = process\ncommand = /bin/true\nip-address-deny = any\nip-address-allow += localhost\n"), "x", "x")
+	if err != nil || strings.Join(d.IPAddressDeny, "|") != "any" || strings.Join(d.IPAddressAllow, "|") != "localhost" {
+		t.Fatalf("%v %q %q", err, d.IPAddressDeny, d.IPAddressAllow)
+	}
+	dir := t.TempDir()
+	writeNSServiceFile(t, dir, "i", "type = process\ncommand = /bin/true\nip-address-deny = any\n")
+	ss := service.NewServiceSet(&testServiceLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	if _, err := loader.LoadService("i"); err == nil || !strings.Contains(err.Error(), "cgroup of the service's own") {
+		t.Errorf("no own cgroup: %v", err)
+	}
+}
+
+// Review fixes: a later DevicePolicy=auto relaxes an earlier strict; an
+// empty one is ignored, not a refusal; auto alone makes no filter and
+// needs no cgroup; a filter on the cgroup root or a slice is refused.
+func TestDeviceFilterEdges(t *testing.T) {
+	_, _, desc := lcConvert(t, "DevicePolicy=strict\nDevicePolicy=auto")
+	if desc.DevicePolicy != "auto" || desc.Slice != "" {
+		t.Errorf("strict then auto: policy %q slice %q", desc.DevicePolicy, desc.Slice)
+	}
+	_, _, desc = lcConvert(t, "DevicePolicy=closed\nDevicePolicy=")
+	if desc.DevicePolicy != "closed" {
+		t.Errorf("an empty DevicePolicy= changed it to %q", desc.DevicePolicy)
+	}
+	for _, c := range []struct {
+		body string
+		ok   bool
+	}{
+		{"device-policy = auto\n", true},
+		{"device-policy = closed\ncgroup = /sys/fs/cgroup\n", false},
+		{"device-policy = closed\ncgroup = /sys/fs/cgroup/system.slice\n", false},
+		{"ip-address-deny = any\ncgroup = /sys/fs/cgroup/\n", false},
+		{"ip-address-deny = any\ncgroup = /sys/fs/cgroup/svc-x\n", true},
+	} {
+		dir := t.TempDir()
+		writeNSServiceFile(t, dir, "e", "type = process\ncommand = /bin/true\n"+c.body)
+		ss := service.NewServiceSet(&testServiceLogger{})
+		loader := NewDirLoader(ss, []string{dir})
+		ss.SetLoader(loader)
+		if _, err := loader.LoadService("e"); (err == nil) != c.ok {
+			t.Errorf("%q: err %v", c.body, err)
 		}
 	}
 }

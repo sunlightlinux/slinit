@@ -67,4 +67,11 @@ assert_contains "$s2" "/dev/null r ok" "after reload + restart: the widened filt
 assert_contains "$s2" "kmsg w denied" "after reload + restart: still a filter"
 assert_eq "$(test -d /sys/fs/cgroup/test342.slice/test-342-strict/keep && echo kept)" "kept" "the cgroup was the same one"
 
+# A reload that takes the filter away, then a restart on the same
+# cgroup: the old program goes with it.
+sed -i '/^device-/d' /etc/slinit.d/test-342-strict
+slinitctl --system reload test-342-strict >/dev/null 2>&1
+slinitctl --system restart test-342-strict >/dev/null 2>&1
+assert_contains "$(cat /run/test-342-strict 2>/dev/null)" "kmsg w ok" "after the filter was removed: no filter left on the cgroup"
+
 test_summary

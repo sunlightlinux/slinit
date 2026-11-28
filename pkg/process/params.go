@@ -200,8 +200,18 @@ type ExecParams struct {
 	DevicePolicy string
 	DeviceAllow  []string
 	// DeviceFilterOwnCgroup: CgroupPath is the service's own, not the
-	// daemon's shared default, so the filter may go on it.
+	// daemon's shared default, so the filter may go on it (the device
+	// filter or the IP one).
 	DeviceFilterOwnCgroup bool
+
+	// IPAddressAllow / IPAddressDeny are ip-address-allow / -deny, one
+	// value per entry: the IP filter attached to CgroupPath before the
+	// fork (ipfilter.go). Both empty: no filter.
+	IPAddressAllow []string
+	IPAddressDeny  []string
+	// DetachDeviceFilter / DetachIPFilter: none is configured, but one
+	// may be attached from an earlier start; take it away.
+	DetachDeviceFilter, DetachIPFilter bool
 
 	// CgroupSettings are key-value pairs written to the cgroup directory
 	// before moving the child process into it. Each entry is {file, value},

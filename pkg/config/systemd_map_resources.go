@@ -123,9 +123,9 @@ func init() {
 		"IOPressureWatch", "IOPressureThresholdSec")
 
 	// eBPF and netfilter based confinement.
-	gap(true, "slinit has no per-service IP filter (systemd attaches an eBPF program to the cgroup); "+
+	gap(true, "slinit attaches no custom BPF program from a path (its ip-address-allow/-deny filter is its own); "+
 		"use namespace-net or a host firewall rule matching the service's cgroup",
-		"IPAddressAllow", "IPAddressDeny", "IPIngressFilterPath", "IPEgressFilterPath")
+		"IPIngressFilterPath", "IPEgressFilterPath")
 	gap(true, "slinit has no socket-bind filter (systemd attaches an eBPF program to the cgroup)",
 		"SocketBindAllow", "SocketBindDeny")
 	gap(true, "slinit has no per-service network interface filter (systemd attaches an eBPF program to the cgroup); "+

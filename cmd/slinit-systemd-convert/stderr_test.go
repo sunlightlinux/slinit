@@ -51,7 +51,7 @@ func checkWarnsByDefault(t *testing.T, args ...string) {
 func TestWarningsPrintByDefault(t *testing.T) {
 	dir := t.TempDir()
 	unit := dir + "/w.service"
-	// IPAddressDeny= is a WARN (no equivalent), ExecReload= a NOTE.
-	os.WriteFile(unit, []byte("[Service]\nExecStart=/usr/bin/w\nIPAddressDeny=any\nExecReload=/bin/kill -HUP $MAINPID\n"), 0o644)
+	// SocketBindDeny= is a WARN (no equivalent), ExecReload= a NOTE.
+	os.WriteFile(unit, []byte("[Service]\nExecStart=/usr/bin/w\nSocketBindDeny=any\nExecReload=/bin/kill -HUP $MAINPID\n"), 0o644)
 	checkWarnsByDefault(t, "--output-dir", dir+"/out", unit)
 }

@@ -399,6 +399,8 @@ var KnownSettings = map[string]OperatorType{
 	"private-devices":      OpEquals,
 	"device-policy":        OpEquals,
 	"device-allow":         OpEquals | OpPlusEqual,
+	"ip-address-allow":     OpEquals | OpPlusEqual,
+	"ip-address-deny":      OpEquals | OpPlusEqual,
 	"protect-system":       OpEquals,
 	"read-only-paths":      OpEquals | OpPlusEqual,
 	"read-write-paths":     OpEquals | OpPlusEqual,

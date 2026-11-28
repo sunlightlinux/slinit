@@ -1345,12 +1345,8 @@ func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
 	// RootDirectory= does.
 	// A device filter is attached to the service's cgroup: on the
 	// daemon's shared one it would confine every other service there.
-	if (desc.DevicePolicy != "" || len(desc.DeviceAllow) > 0) && desc.CgroupPath == "" && desc.Slice == "" {
-		return &ServiceLoadError{
-			ServiceName: name,
-			Message: "device-policy and device-allow need a cgroup of the service's own " +
-				"(slice or cgroup): the filter is attached to it",
-		}
+	if msg := cgroupFilterProblem(desc); msg != "" {
+		return &ServiceLoadError{ServiceName: name, Message: msg}
 	}
 	if desc.Chroot != "" {
 		if opts := chrootMountConflicts(desc); len(opts) > 0 {
@@ -2367,6 +2363,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	// both are set, so the precedence is unchanged.
 	rec.SetSlice(desc.Slice)
 	rec.SetDeviceFilter(desc.DevicePolicy, desc.DeviceAllow)
+	rec.SetIPFilter(desc.IPAddressAllow, desc.IPAddressDeny)
 	rec.SetDelegate(desc.Delegate, desc.DelegateControllers)
 	if desc.Delegate && desc.CgroupPath == "" && desc.Slice == "" {
 		// Only a cgroup of the service's own can be handed over; the
@@ -3167,4 +3164,35 @@ func importCredentials(explicit []process.CredentialSource, globs []string) []pr
 		}
 	}
 	return creds
+}
+
+// cgroupFilterProblem says why the device or IP filter of desc cannot
+// go on its cgroup, or "". A filter applies to the cgroup and every one
+// below it: on the daemon's shared cgroup, the root or a slice it would
+// confine other services too, so it needs the service's own, which a
+// slice-derived path is (slice/<service>); an explicit cgroup = must
+// not be the root or a slice. Two services naming the same explicit
+// cgroup would replace each other's filter: the cgroup must be the
+// service's alone (documented).
+func cgroupFilterProblem(desc *ServiceDescription) string {
+	dev := (desc.DevicePolicy != "" && desc.DevicePolicy != "auto") || len(desc.DeviceAllow) > 0
+	ip := len(desc.IPAddressAllow) > 0 || len(desc.IPAddressDeny) > 0
+	if !dev && !ip {
+		return ""
+	}
+	what := "device-policy / device-allow"
+	if !dev {
+		what = "ip-address-allow / ip-address-deny"
+	}
+	if desc.CgroupPath == "" && desc.Slice == "" {
+		return what + " need a cgroup of the service's own (slice or cgroup): the filter is attached to it"
+	}
+	if desc.CgroupPath != "" {
+		p := filepath.Clean(desc.CgroupPath)
+		if p == "/sys/fs/cgroup" || strings.HasSuffix(filepath.Base(p), ".slice") {
+			return fmt.Sprintf("%s on cgroup = %s would confine every service below it; give the service a cgroup of "+
+				"its own (slice = %s puts it in %s/<service>)", what, desc.CgroupPath, filepath.Base(p), p)
+		}
+	}
+	return ""
 }

@@ -299,7 +299,7 @@ func TestSystemdResourceGapsAndIgnored(t *testing.T) {
 	for _, c := range []struct{ body, level, text string }{
 		{"IOReadBandwidthMax=/dev/sda 1M\n", "NOTE", "MAJ:MIN"},
 		{"BlockIOReadBandwidth=/dev/sda 1M\n", "NOTE", "removed in systemd 258"},
-		{"IPAddressDeny=any\n", "WARN", "IP filter"},
+		{"SocketBindDeny=any\n", "WARN", "socket-bind filter"},
 		{"StartupCPUWeight=20\n", "NOTE", "boots"},
 		{"MemoryPressureWatch=yes\n", "NOTE", "PRESSURE_WATCH"},
 		{"ManagedOOMSwap=kill\n", "NOTE", "OOM"},

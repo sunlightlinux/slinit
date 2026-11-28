@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sunlightlinux/slinit/pkg/bpfdev"
+	"github.com/sunlightlinux/slinit/pkg/bpfip"
 )
 
 // DevicePolicy= and DeviceAllow= map onto device-policy and
@@ -18,16 +19,20 @@ import (
 func init() {
 	registerService("DevicePolicy", sdRule{key: "device-policy", class: sdConfine,
 		conv: func(val string) (string, []SystemdWarning, error) {
+			if strings.TrimSpace(trimQuotes(val)) == "" {
+				// systemd logs an empty value and keeps the previous.
+				return "", []SystemdWarning{{"NOTE", "DevicePolicy= empty: ignored, as systemd ignores it"}}, nil
+			}
 			p, err := bpfdev.ParsePolicy(trimQuotes(val))
 			if err != nil {
 				return "", nil, err
 			}
-			if p == bpfdev.PolicyAuto {
-				return "", nil, nil // the default
-			}
+			// auto too, so a drop-in relaxing an earlier strict wins.
 			return string(p), nil, nil
 		}})
 	registerService("DeviceAllow", sdRule{custom: mapDeviceAllow})
+	registerService("IPAddressAllow", sdRule{custom: mapIPAddressList})
+	registerService("IPAddressDeny", sdRule{custom: mapIPAddressList})
 	registerFinisher(finishDeviceFilter)
 }
 
@@ -47,10 +52,40 @@ func mapDeviceAllow(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	return nil
 }
 
+// mapIPAddressList: IPAddressAllow= / IPAddressDeny= onto
+// ip-address-allow / -deny (pkg/bpfip, systemd's bpf-firewall.c
+// program); each assignment adds, an empty one clears.
+func mapIPAddressList(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	slinitKey := "ip-address-allow"
+	if key == "IPAddressDeny" {
+		slinitKey = "ip-address-deny"
+	}
+	v := strings.TrimSpace(trimQuotes(val))
+	if v == "" {
+		cfg.dropMapped(slinitKey)
+		return nil
+	}
+	if _, err := bpfip.ParseList(v); err != nil {
+		cfg.errs = append(cfg.errs, fmt.Sprintf("%s=%s confines the service, and slinit cannot apply it (%v)", key, val, err))
+		return nil
+	}
+	cfg.mapped = append(cfg.mapped, kvPair{slinitKey, v})
+	return nil
+}
+
+// finishDeviceFilter gives a unit with a device or IP filter a cgroup
+// of its own.
 func finishDeviceFilter(cfg *SystemdConfig) []SystemdWarning {
-	_, policy := cfg.hasMapped("device-policy")
-	_, allow := cfg.hasMapped("device-allow")
-	if !policy && !allow {
+	any := false
+	for _, k := range []string{"device-allow", "ip-address-allow", "ip-address-deny"} {
+		if _, ok := cfg.hasMapped(k); ok {
+			any = true
+		}
+	}
+	if v, ok := cfg.hasMapped("device-policy"); ok && v != "auto" {
+		any = true
+	}
+	if !any {
 		return nil
 	}
 	if _, ok := cfg.hasMapped("slice"); ok {
@@ -60,6 +95,6 @@ func finishDeviceFilter(cfg *SystemdConfig) []SystemdWarning {
 		return nil
 	}
 	cfg.setMapped("slice", "system.slice")
-	return []SystemdWarning{{"NOTE", "slice = system.slice: the device filter goes on a cgroup of the " +
+	return []SystemdWarning{{"NOTE", "slice = system.slice: the device and IP filters go on a cgroup of the " +
 		"service's own, which systemd gives every service under system.slice"}}
 }

@@ -294,6 +294,13 @@ type ServiceRecord struct {
 	// each start (process.applyDeviceFilter).
 	devicePolicy string
 	deviceAllow  []string
+	// ipAddressAllow / ipAddressDeny: the cgroup IP filter, attached at
+	// each start (process.applyIPFilter).
+	ipAddressAllow []string
+	ipAddressDeny  []string
+	// hadDeviceFilter / hadIPFilter: a filter was configured at some
+	// start, so one may be attached to the cgroup still.
+	hadDeviceFilter, hadIPFilter bool
 	// onFailureStarts: when on-failure last started this service, for
 	// its start limit (onfailure.go).
 	onFailureStarts []time.Time
@@ -2211,6 +2218,11 @@ func (sr *ServiceRecord) SetNoNewPrivs(v bool)       { sr.noNewPrivs = v }
 func (sr *ServiceRecord) SetIOPrio(class, level int) { sr.ioPrioClass = class; sr.ioPrioLevel = level }
 func (sr *ServiceRecord) SetCgroupPath(p string)     { sr.cgroupPath = p }
 
+// SetIPFilter sets ip-address-allow and ip-address-deny.
+func (sr *ServiceRecord) SetIPFilter(allow, deny []string) {
+	sr.ipAddressAllow, sr.ipAddressDeny = allow, deny
+}
+
 // SetDeviceFilter sets device-policy and device-allow.
 func (sr *ServiceRecord) SetDeviceFilter(policy string, allow []string) {
 	sr.devicePolicy, sr.deviceAllow = policy, allow
@@ -2785,7 +2797,17 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	// Only on a cgroup of the service's own; without one (the loader
 	// refuses that) the start fails rather than run unfiltered.
 	params.DevicePolicy, params.DeviceAllow = sr.devicePolicy, sr.deviceAllow
+	params.IPAddressAllow, params.IPAddressDeny = sr.ipAddressAllow, sr.ipAddressDeny
 	params.DeviceFilterOwnCgroup = sr.OwnCgroupPath() != ""
+	// A filter a reload took away is detached at the next start, from
+	// a cgroup that outlived the stop (leftover processes, a delegated
+	// payload's cgroups); a service that never had one is not asked.
+	devOn := sr.devicePolicy != "" || len(sr.deviceAllow) > 0
+	ipOn := len(sr.ipAddressAllow) > 0 || len(sr.ipAddressDeny) > 0
+	sr.hadDeviceFilter = sr.hadDeviceFilter || devOn
+	sr.hadIPFilter = sr.hadIPFilter || ipOn
+	params.DetachDeviceFilter = !devOn && sr.hadDeviceFilter && params.DeviceFilterOwnCgroup
+	params.DetachIPFilter = !ipOn && sr.hadIPFilter && params.DeviceFilterOwnCgroup
 	params.CgroupSettings = sr.cgroupSettings
 	// Only a cgroup of the service's own may be handed over.
 	params.Delegate = sr.delegate && sr.OwnCgroupPath() != ""

@@ -175,6 +175,8 @@ var BuiltinDirectives = []string{
 	"io-pressure-watch",
 	"io-uring-filter",
 	"ioprio",
+	"ip-address-allow",
+	"ip-address-deny",
 	"job-timeout-sec",
 	"keyword",
 	"kill-mode",

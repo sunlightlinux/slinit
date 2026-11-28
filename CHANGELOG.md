@@ -99,7 +99,18 @@ verified with `git tag -v`.
   warning). It needs a cgroup of the service's own; the converter adds
   `slice = system.slice` to a unit without one. 85 units of this host's
   and systemd's corpus use DeviceAllow=, which used to be a confining
-  gap. Functional case 342.
+  gap. Functional case 342. A reload that takes the filter away has it
+  detached at the next start; a filter on the cgroup root or a slice is
+  refused, as it would confine every service below.
+- **`ip-address-allow` / `ip-address-deny`: a cgroup IP filter**,
+  systemd's IPAddressAllow= / IPAddressDeny=, with the programs of
+  systemd's bpf-firewall.c (new `pkg/bpfip`, longest-prefix-match maps
+  per family; allow beats deny; `any`, `localhost`, `link-local`,
+  `multicast`). Unlike a network namespace it leaves netlink alone. 49
+  units of the corpus use IPAddressDeny=, which was a confining gap.
+  Functional case 343. The bpf(2) calls of both filters are one new
+  package, `pkg/ebpf`, whose buffers live on the heap: their addresses
+  go into bpf_attr as numbers, which a stack move would leave behind.
 
 - **A service's `.timer` unit is read with it**: `foo.timer`'s
   `OnCalendar=` becomes `foo`'s `start-on-calendar`, with `manual = yes`

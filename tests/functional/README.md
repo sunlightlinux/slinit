@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (341 cases)
+# Run all tests (342 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -471,7 +471,8 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 339 | private-devices | a `private-devices` service has /dev/null and the pseudo devices, no /dev/kmsg, and CAP_MKNOD out of its bounding set (fails with the runner flag not passed) |
 | 340 | unit-env-at-run-time | a systemd unit's `ExecStart=` gets `$OPTS` from its `EnvironmentFile=` split into words, `${X}` from `Environment=` as one argument, and `Environment=`'s variables in its environment (fails before 4.1's run-time expansion: `[][inline]`) |
 | 341 | start-on-calendar | a oneshot job with `start-on-calendar` every second and `manual = yes`, only loaded, is run by the calendar more than once in 4s; a reload dropping the setting disarms it; a systemd oneshot unit with a `.timer` (`OnCalendar=` every second) is run by it likewise (fails with the loaded hook not arming it) |
-| 342 | device-filter | `device-policy = closed`: /dev/null opens, /dev/kmsg is denied to a root service; `strict` + `device-allow = /dev/kmsg r`: kmsg opens for reading only, /dev/null not at all; no filter: kmsg opens; a reload widening the list + restart replaces the program on a cgroup kept alive by a child (fails with the filter not attached, and with the old program not detached) |
+| 342 | device-filter | `device-policy = closed`: /dev/null opens, /dev/kmsg is denied to a root service; `strict` + `device-allow = /dev/kmsg r`: kmsg opens for reading only, /dev/null not at all; no filter: kmsg opens; a reload widening the list + restart replaces the program on a cgroup kept alive by a child, and one removing it detaches it (fails with the filter not attached, and with the old program not detached) |
+| 343 | ip-filter | `ip-address-deny = any` + `ip-address-allow = 127.0.0.1`: 127.0.0.1 answers ping, 127.0.0.2 (the loopback too) does not, netlink still works; `ip-address-deny = 127.0.0.2` alone blocks only it; no filter reaches both; a reload removing the filter + restart on a kept cgroup lifts it (fails with the filter not attached, and with the old one not detached) |
 
 ## How It Works
 

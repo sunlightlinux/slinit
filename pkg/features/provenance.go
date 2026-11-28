@@ -150,6 +150,8 @@ var provenanceTable = []Feature{
 	{Name: "syslog-level-prefix", Kind: KindDirective, Source: SourceSystemd, Category: CatLogging, Notes: "read a <N> kernel-style priority prefix off each line (SyslogLevelPrefix=)"},
 	{Name: "log-extra-fields", Kind: KindDirective, Source: SourceSystemd, Category: CatLogging, Notes: "extra FIELD=value pairs on each journal line (LogExtraFields=)"},
 	{Name: "environment", Kind: KindDirective, Source: SourceSystemd, Category: CatEnv, Notes: "inline KEY=VALUE words; the env-file overrides them (Environment=)"},
+	{Name: "ip-address-allow", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "cgroup eBPF IP filter: addresses that pass (IPAddressAllow=)"},
+	{Name: "ip-address-deny", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "cgroup eBPF IP filter: addresses dropped unless allowed (IPAddressDeny=)"},
 	{Name: "device-policy", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "cgroup eBPF device filter: auto, closed or strict (DevicePolicy=)"},
 	{Name: "device-allow", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "a device the filter lets through, with r/w/m access (DeviceAllow=)"},
 	{Name: "private-devices", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "a /dev of pseudo devices only, CAP_MKNOD and CAP_SYS_RAWIO dropped (PrivateDevices=)"},

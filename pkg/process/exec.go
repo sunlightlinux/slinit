@@ -648,8 +648,13 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// without the filter. It confines, so one that cannot be put in
 	// place fails the start, where systemd runs the service with every
 	// device and a warning.
-	if params.DevicePolicy != "" || len(params.DeviceAllow) > 0 {
+	if params.DevicePolicy != "" || len(params.DeviceAllow) > 0 || params.DetachDeviceFilter {
 		if err := applyDeviceFilter(params, cgroupFD); err != nil {
+			return 0, nil, &ExecError{Stage: StageEnterCgroup, Err: err}
+		}
+	}
+	if len(params.IPAddressAllow) > 0 || len(params.IPAddressDeny) > 0 || params.DetachIPFilter {
+		if err := applyIPFilter(params, cgroupFD); err != nil {
 			return 0, nil, &ExecError{Stage: StageEnterCgroup, Err: err}
 		}
 	}

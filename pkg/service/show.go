@@ -232,6 +232,12 @@ func RenderShow(s Service) string {
 	for _, a := range sr.deviceAllow {
 		p("DeviceAllow", a)
 	}
+	for _, a := range sr.ipAddressAllow {
+		p("IPAddressAllow", a)
+	}
+	for _, a := range sr.ipAddressDeny {
+		p("IPAddressDeny", a)
+	}
 	if sr.sandbox.PrivateTmp {
 		pb("PrivateTmp", true)
 	}

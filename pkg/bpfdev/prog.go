@@ -1,14 +1,12 @@
 package bpfdev
 
-import "golang.org/x/sys/unix"
+import (
+	"github.com/sunlightlinux/slinit/pkg/ebpf"
+	"golang.org/x/sys/unix"
+)
 
-// Insn is one eBPF instruction (struct bpf_insn).
-type Insn struct {
-	Code uint8
-	Regs uint8 // dst in the low nibble, src in the high
-	Off  int16
-	Imm  int32
-}
+// Insn is one eBPF instruction.
+type Insn = ebpf.Insn
 
 // The opcodes the program uses.
 const (
@@ -24,7 +22,7 @@ const (
 	passJumpOf = 4096 // a jump to "allow", fixed up at the end
 )
 
-func regs(dst, src uint8) uint8 { return dst | src<<4 }
+func regs(dst, src uint8) uint8 { return ebpf.Regs(dst, src) }
 
 // Program assembles the filter for rules (Resolve's), as systemd's
 // bpf_devices_cgroup_init + allow_list_* + apply_policy do: r2 the

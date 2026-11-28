@@ -56,11 +56,22 @@ func applyDeviceFilter(params ExecParams, cgroupFD *os.File) error {
 	for _, n := range notes {
 		fmt.Fprintf(os.Stderr, "slinit: %s\n", n)
 	}
-	if !filter {
-		return nil
-	}
-	if cgroupFD == nil || !params.DeviceFilterOwnCgroup {
+	if !params.DeviceFilterOwnCgroup {
+		if !filter {
+			return nil
+		}
 		return fmt.Errorf("device filter: the service has no cgroup of its own to attach it to (set slice or cgroup)")
+	}
+	if cgroupFD == nil {
+		return fmt.Errorf("device filter: the service's cgroup %s could not be made or opened", params.CgroupPath)
+	}
+	if !filter {
+		// None now (auto with nothing allowed, or a reload took it
+		// away): one an earlier start attached goes.
+		if err := bpfdev.Detach(int(cgroupFD.Fd())); err != nil {
+			return fmt.Errorf("device filter: %w", err)
+		}
+		return nil
 	}
 	if err := bpfdev.Attach(int(cgroupFD.Fd()), bpfdev.Program(rules)); err != nil {
 		return fmt.Errorf("device filter: %w", err)

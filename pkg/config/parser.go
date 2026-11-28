@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/bpfdev"
+	"github.com/sunlightlinux/slinit/pkg/bpfip"
 	"github.com/sunlightlinux/slinit/pkg/features"
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -642,6 +643,10 @@ type ServiceDescription struct {
 	// DevicePolicy / DeviceAllow: the cgroup device filter (pkg/bpfdev).
 	DevicePolicy string
 	DeviceAllow  []string
+	// IPAddressAllow / IPAddressDeny: the cgroup IP filter (pkg/bpfip),
+	// one value per line.
+	IPAddressAllow []string
+	IPAddressDeny  []string
 	ProtectSystem  string
 	ReadOnlyPaths  []string
 	ReadWritePaths []string
@@ -2785,6 +2790,21 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.DevicePolicy = strings.TrimSpace(value)
+	case "ip-address-allow", "ip-address-deny":
+		// Each line adds, as IPAddressAllow=; an empty value clears.
+		list := &desc.IPAddressAllow
+		if setting == "ip-address-deny" {
+			list = &desc.IPAddressDeny
+		}
+		v := strings.TrimSpace(value)
+		if v == "" {
+			*list = nil
+			break
+		}
+		if _, err := bpfip.ParseList(v); err != nil {
+			return fmt.Errorf("%s: %w", setting, err)
+		}
+		*list = append(*list, v)
 	case "device-allow":
 		// One entry per line, each adding to the list, as DeviceAllow=;
 		// an empty value clears it.

@@ -1652,13 +1652,41 @@ before exec'ing the service. The host filesystem is untouched.
     **device-allow** lists something, then as *closed*. The filter is
     built when the service starts, attached to its cgroup before its
     process is forked into it, and replaces the one a previous start
-    attached. It needs a cgroup of the service's own (**slice** or
-    **cgroup**): a description without one is refused, as on the
-    daemon's shared cgroup it would confine every service there. A
-    filter that cannot be attached (a kernel without
-    **CONFIG_CGROUP_BPF**, no cgroup v2) fails the start, where systemd
-    runs the service with every device and a warning. systemd's
+    attached; a reload that takes it away has it detached at the next
+    start. It needs a cgroup of the service's own and of no other
+    service's (**slice**, or **cgroup** naming neither the root nor a
+    slice): a description without one is refused, as a filter applies
+    to the cgroup and every one below it. A filter that cannot be
+    attached (a kernel without **CONFIG_CGROUP_BPF**, no cgroup v2, no
+    privilege, as for **slinit --user**) fails the start, where systemd
+    runs the service with every device and a warning. The hooks that
+    run outside the service's cgroup (**pre-start-command**,
+    **post-start-command**, **finish-command** and the like) are not
+    filtered, where systemd filters **ExecStartPre=** too. systemd's
     **DevicePolicy=**, with the same program.
+
+**ip-address-allow**=*addresses* (since 4.1.0)
+:   A cgroup IP filter: two eBPF programs on the service's cgroup,
+    judging each IP packet its processes' sockets receive by its source
+    address and each one they send by its destination. An address in
+    **ip-address-allow** passes; otherwise one in **ip-address-deny** is
+    dropped; otherwise it passes. *addresses* are addresses and prefixes
+    (*10.0.0.0/8*, *::1*) and the words *any*, *localhost* (127.0.0.0/8,
+    ::1), *link-local* and *multicast*; each line adds (**+=** too), an
+    empty value clears. `ip-address-deny = any` with `ip-address-allow =
+    localhost` is the usual pair. Unlike **namespace-net**, it leaves
+    netlink, uevents and Unix sockets alone, which a daemon such as
+    **udevd** needs. Sockets the service did not create, such as those
+    **socket-listen** hands it, belong to slinit's cgroup and are not
+    filtered. Attached, replaced and detached as **device-policy**'s
+    filter, with the same need for a cgroup of the service's own and the
+    same failure when it cannot be attached. systemd's
+    **IPAddressAllow=** and **IPAddressDeny=**, with the same programs
+    (no accounting).
+
+**ip-address-deny**=*addresses* (since 4.1.0)
+:   The addresses dropped unless **ip-address-allow** lists them; see
+    there. systemd's **IPAddressDeny=**.
 
 **device-allow**=*device* [*rwm*] (since 4.1.0)
 :   A device the filter lets through, with the access: **r** read,
