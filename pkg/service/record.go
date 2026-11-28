@@ -2816,7 +2816,11 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	// A filter a reload took away is detached at the next start, from
 	// a cgroup that outlived the stop (leftover processes, a delegated
 	// payload's cgroups); a service that never had one is not asked.
-	devOn := sr.devicePolicy != "" || len(sr.deviceAllow) > 0
+	// device-policy = auto with nothing allowed attaches nothing.
+	devOn := (sr.devicePolicy != "" && sr.devicePolicy != "auto") || len(sr.deviceAllow) > 0
+	if !devOn {
+		params.DevicePolicy, params.DeviceAllow = "", nil
+	}
 	ipOn := len(sr.ipAddressAllow) > 0 || len(sr.ipAddressDeny) > 0
 	sr.hadDeviceFilter = sr.hadDeviceFilter || devOn
 	sr.hadIPFilter = sr.hadIPFilter || ipOn

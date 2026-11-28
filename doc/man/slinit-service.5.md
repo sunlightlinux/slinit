@@ -1653,10 +1653,13 @@ before exec'ing the service. The host filesystem is untouched.
     built when the service starts, attached to its cgroup before its
     process is forked into it, and replaces the one a previous start
     attached; a reload that takes it away has it detached at the next
-    start. It needs a cgroup of the service's own and of no other
-    service's (**slice**, or **cgroup** naming neither the root nor a
-    slice): a description without one is refused, as a filter applies
-    to the cgroup and every one below it. A filter that cannot be
+    start, as far as bpf(2) allows (a filter left behind is only
+    stricter, so its removal failing does not fail the start). It needs
+    a cgroup of the service's own and of no other service's (**slice**,
+    or **cgroup** naming neither the root, a slice, the daemon's
+    default cgroup nor one holding a loaded service): a description
+    without one is refused, as a filter applies to the cgroup and every
+    one below it. A filter that cannot be
     attached (a kernel without **CONFIG_CGROUP_BPF**, no cgroup v2, no
     privilege, as for **slinit --user**) fails the start, where systemd
     runs the service with every device and a warning. The hooks that
@@ -1672,7 +1675,8 @@ before exec'ing the service. The host filesystem is untouched.
     **ip-address-allow** passes; otherwise one in **ip-address-deny** is
     dropped; otherwise it passes. *addresses* are addresses and prefixes
     (*10.0.0.0/8*, *::1*) and the words *any*, *localhost* (127.0.0.0/8,
-    ::1), *link-local* and *multicast*; each line adds (**+=** too), an
+    ::1; also *localhost.localdomain* and names under *.localhost*, as
+    systemd reads them), *link-local* and *multicast*; each line adds (**+=** too), an
     empty value clears. `ip-address-deny = any` with `ip-address-allow =
     localhost` is the usual pair. Unlike **namespace-net**, it leaves
     netlink, uevents and Unix sockets alone, which a daemon such as

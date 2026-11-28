@@ -1349,6 +1349,9 @@ func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
 	if msg := cgroupFilterProblem(desc); msg != "" {
 		return &ServiceLoadError{ServiceName: name, Message: msg}
 	}
+	if msg := dl.cgroupFilterShared(name, desc); msg != "" {
+		return &ServiceLoadError{ServiceName: name, Message: msg}
+	}
 	if desc.Chroot != "" {
 		if opts := chrootMountConflicts(desc); len(opts) > 0 {
 			return &ServiceLoadError{
@@ -3177,11 +3180,10 @@ func importCredentials(explicit []process.CredentialSource, globs []string) []pr
 // cgroup would replace each other's filter: the cgroup must be the
 // service's alone (documented).
 func cgroupFilterProblem(desc *ServiceDescription) string {
-	dev := (desc.DevicePolicy != "" && desc.DevicePolicy != "auto") || len(desc.DeviceAllow) > 0
-	ip := len(desc.IPAddressAllow) > 0 || len(desc.IPAddressDeny) > 0
-	if !dev && !ip {
+	if !hasCgroupFilter(desc) {
 		return ""
 	}
+	dev := (desc.DevicePolicy != "" && desc.DevicePolicy != "auto") || len(desc.DeviceAllow) > 0
 	what := "device-policy / device-allow"
 	if !dev {
 		what = "ip-address-allow / ip-address-deny"
@@ -3194,6 +3196,39 @@ func cgroupFilterProblem(desc *ServiceDescription) string {
 		if p == "/sys/fs/cgroup" || strings.HasSuffix(filepath.Base(p), ".slice") {
 			return fmt.Sprintf("%s on cgroup = %s would confine every service below it; give the service a cgroup of "+
 				"its own (slice = %s puts it in %s/<service>)", what, desc.CgroupPath, filepath.Base(p), p)
+		}
+	}
+	return ""
+}
+
+// hasCgroupFilter reports whether desc attaches a device or IP filter
+// (device-policy = auto with nothing allowed attaches none).
+func hasCgroupFilter(desc *ServiceDescription) bool {
+	return (desc.DevicePolicy != "" && desc.DevicePolicy != "auto") || len(desc.DeviceAllow) > 0 ||
+		len(desc.IPAddressAllow) > 0 || len(desc.IPAddressDeny) > 0
+}
+
+// cgroupFilterShared refuses a filter on an explicit cgroup that holds
+// other services: the daemon's shared default cgroup, or one a loaded
+// service's cgroup is (or is under), as a slice named freely (slice =
+// apps) is. A service loaded later under it is not seen here; the man
+// page says the cgroup must be the service's alone.
+func (dl *DirLoader) cgroupFilterShared(name string, desc *ServiceDescription) string {
+	if desc.CgroupPath == "" || !hasCgroupFilter(desc) {
+		return ""
+	}
+	p := filepath.Clean(desc.CgroupPath)
+	if d := dl.set.DefaultCgroupPath(); d != "" && filepath.Clean(d) == p {
+		return fmt.Sprintf("a device or IP filter on cgroup = %s, the daemon's shared default cgroup, would confine "+
+			"every service without a cgroup of its own", desc.CgroupPath)
+	}
+	for _, s := range dl.set.ListServices() {
+		if s.Name() == name {
+			continue
+		}
+		if ep := s.Record().EffectiveCgroupPath(); ep != "" && (filepath.Clean(ep) == p || strings.HasPrefix(ep, p+"/")) {
+			return fmt.Sprintf("a device or IP filter on cgroup = %s would confine service '%s', whose cgroup is %s; "+
+				"give this service a cgroup of its own", desc.CgroupPath, s.Name(), ep)
 		}
 	}
 	return ""

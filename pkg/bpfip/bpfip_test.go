@@ -227,6 +227,11 @@ func TestParseList(t *testing.T) {
 	if ps[0].String() != "10.0.0.0/8" || ps[1].String() != "::1/128" {
 		t.Errorf("%v", ps)
 	}
+	for _, w := range []string{"LOCALHOST", "localhost.", "localhost.localdomain", "foo.localhost"} {
+		if ps, err := ParseList(w); err != nil || len(ps) != 2 || ps[0].String() != "127.0.0.0/8" {
+			t.Errorf("%q: %v %v", w, ps, err)
+		}
+	}
 	if ps, _ := ParseList("any"); !isAny(ps) {
 		t.Error("any is not any")
 	}

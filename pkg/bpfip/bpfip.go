@@ -15,6 +15,7 @@
 package bpfip
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -29,6 +30,9 @@ import (
 func ParseList(s string) ([]netip.Prefix, error) {
 	var out []netip.Prefix
 	for _, w := range strings.Fields(s) {
+		if isLocalhost(w) {
+			w = "localhost"
+		}
 		switch w {
 		case "any":
 			out = append(out, netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0"))
@@ -61,6 +65,13 @@ func ParseList(s string) ([]netip.Prefix, error) {
 	return out, nil
 }
 
+// isLocalhost is systemd's is_localhost(): localhost, localhost.,
+// localhost.localdomain and any name under .localhost, in any case.
+func isLocalhost(w string) bool {
+	w = strings.TrimSuffix(strings.ToLower(w), ".")
+	return w == "localhost" || w == "localhost.localdomain" || strings.HasSuffix(w, ".localhost")
+}
+
 // Verdict bits a lookup sets in r8, as systemd's ACCESS_ALLOWED /
 // ACCESS_DENIED.
 const (
@@ -89,7 +100,13 @@ const (
 	fnSkbLoadBytes  = 26
 )
 
-func htons(v uint16) int32 { return int32(v>>8 | v<<8&0xff00) }
+// htons gives v in network order as the host reads it, as systemd's
+// htobe16: skb->protocol holds the big-endian ethertype.
+func htons(v uint16) int32 {
+	var b [2]byte
+	binary.BigEndian.PutUint16(b[:], v)
+	return int32(binary.NativeEndian.Uint16(b[:]))
+}
 
 // Program assembles one direction's program over l.
 func program(ingress bool, l lists) []ebpf.Insn {

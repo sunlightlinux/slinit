@@ -65,12 +65,27 @@ func mapIPAddressList(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		cfg.dropMapped(slinitKey)
 		return nil
 	}
-	if _, err := bpfip.ParseList(v); err != nil {
-		cfg.errs = append(cfg.errs, fmt.Sprintf("%s=%s confines the service, and slinit cannot apply it (%v)", key, val, err))
-		return nil
+	// systemd skips a word it cannot parse, with a warning. Skipping
+	// one of IPAddressAllow= only drops more, so it is skipped here
+	// too; one of IPAddressDeny= would let through what the unit
+	// meant to keep out, so it refuses the unit.
+	var kept []string
+	var warns []SystemdWarning
+	for _, w := range strings.Fields(v) {
+		if _, err := bpfip.ParseList(w); err != nil {
+			if key == "IPAddressDeny" {
+				cfg.errs = append(cfg.errs, fmt.Sprintf("%s=%s confines the service, and slinit cannot apply it (%v)", key, val, err))
+				return nil
+			}
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: %v; skipped, as systemd skips it", key, err)})
+			continue
+		}
+		kept = append(kept, w)
 	}
-	cfg.mapped = append(cfg.mapped, kvPair{slinitKey, v})
-	return nil
+	if len(kept) > 0 {
+		cfg.mapped = append(cfg.mapped, kvPair{slinitKey, strings.Join(kept, " ")})
+	}
+	return warns
 }
 
 // finishDeviceFilter gives a unit with a device or IP filter a cgroup

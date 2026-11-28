@@ -129,3 +129,33 @@ func TestDeviceFilterEdges(t *testing.T) {
 		}
 	}
 }
+
+// IP filter review fixes: systemd's localhost spellings, a bad word of
+// IPAddressAllow= skipped (one of IPAddressDeny= still refuses), and a
+// filter on a cgroup holding another service refused.
+func TestIPFilterEdges(t *testing.T) {
+	_, warns, desc := lcConvert(t, "IPAddressDeny=any\nIPAddressAllow=localhost.localdomain 10.0.0.300 ::1")
+	if strings.Join(desc.IPAddressAllow, "|") != "localhost.localdomain ::1" || !lcWarned(warns, "WARN", "skipped") {
+		t.Errorf("allow %q warns %v", desc.IPAddressAllow, warns)
+	}
+	if _, err := lcConvertErr(t, "IPAddressDeny=10.0.0.300"); err == nil {
+		t.Error("a bad IPAddressDeny= word converted")
+	}
+	dir := t.TempDir()
+	writeNSServiceFile(t, dir, "a", "type = process\ncommand = /bin/true\nslice = apps\n")
+	writeNSServiceFile(t, dir, "b", "type = process\ncommand = /bin/true\ncgroup = /sys/fs/cgroup/apps\nip-address-deny = any\n")
+	ss := service.NewServiceSet(&testServiceLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	if _, err := loader.LoadService("a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loader.LoadService("b"); err == nil || !strings.Contains(err.Error(), "would confine service 'a'") {
+		t.Errorf("b over a's slice: %v", err)
+	}
+	ss.SetDefaultCgroupPath("/sys/fs/cgroup/slinit")
+	writeNSServiceFile(t, dir, "c", "type = process\ncommand = /bin/true\ncgroup = /sys/fs/cgroup/slinit\ndevice-allow = /dev/null\n")
+	if _, err := loader.LoadService("c"); err == nil || !strings.Contains(err.Error(), "shared default") {
+		t.Errorf("c on the default cgroup: %v", err)
+	}
+}
