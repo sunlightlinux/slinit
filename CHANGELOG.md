@@ -26,6 +26,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`slinit-logind` left an empty cgroup behind at every logout**:
+  `ReleaseSession` comes from inside the session, so the scope's rmdir
+  failed with EBUSY and nothing tried again; every console, ssh or
+  display-manager logout, and every `TerminateSession`, leaked one
+  `/sys/fs/cgroup/c<N>`. A scope still in use is now watched through its
+  `cgroup.events` and removed once it has emptied, and at startup the
+  scopes of sessions that no longer exist are removed.
 - **`before:` ordered the other way round.** `a: before: x` was stored
   as an edge that made `a` wait for `x`; it now makes `x` wait for `a`,
   as in dinit, and a `before:` that closes a start-order cycle is
