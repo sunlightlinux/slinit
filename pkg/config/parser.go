@@ -378,6 +378,8 @@ type ServiceDescription struct {
 	StartOnCalendar string // start-on-calendar: a systemd OnCalendar= expression
 	// StartOnCalendarPersistent: catch up a time missed while down.
 	StartOnCalendarPersistent bool
+	// StartOnCalendarRandomizedDelay: each start up to this much later.
+	StartOnCalendarRandomizedDelay time.Duration
 
 	// Socket activation
 	SocketPath  string   // primary socket path (first socket-listen)
@@ -3283,6 +3285,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("socket-reuseport: %w", err)
 		}
 		desc.SocketReusePort = b
+	case "start-on-calendar-randomized-delay":
+		d, err := time.ParseDuration(strings.TrimSpace(value))
+		if err != nil || d < 0 {
+			return fmt.Errorf("start-on-calendar-randomized-delay: want a duration >= 0 (%q)", value)
+		}
+		desc.StartOnCalendarRandomizedDelay = d
 	case "start-on-calendar-persistent":
 		b, err := parseBool(value)
 		if err != nil {

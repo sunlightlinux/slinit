@@ -155,6 +155,7 @@ var provenanceTable = []Feature{
 	{Name: "device-policy", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "cgroup eBPF device filter: auto, closed or strict (DevicePolicy=)"},
 	{Name: "device-allow", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "a device the filter lets through, with r/w/m access (DeviceAllow=)"},
 	{Name: "private-devices", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "a /dev of pseudo devices only, CAP_MKNOD and CAP_SYS_RAWIO dropped (PrivateDevices=)"},
+	{Name: "start-on-calendar-randomized-delay", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "each calendar start up to this much later, at random (a timer's RandomizedDelaySec=)"},
 	{Name: "start-on-calendar-persistent", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "catch up a calendar time missed while down (a timer's Persistent=)"},
 	{Name: "start-on-calendar", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "start the service at the times a calendar expression names (a timer's OnCalendar=)"},
 	{Name: "reload-command", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "run by slinitctl reload-signal in the service's context, $MAINPID set (ExecReload=)"},

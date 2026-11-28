@@ -176,3 +176,45 @@ func TestCalendarRerunLeavesDependentsAlone(t *testing.T) {
 		t.Errorf("the rerun was counted as %d restarts", n)
 	}
 }
+
+// start-on-calendar-randomized-delay: each start is up to the delay
+// later than the time named.
+func TestCalendarRandomizedDelay(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		if j := calendarJitter(time.Second); j < 0 || j >= time.Second {
+			t.Fatalf("jitter %v out of [0, 1s)", j)
+		}
+	}
+	if calendarJitter(0) != 0 {
+		t.Fatal("jitter with no delay")
+	}
+	old := calendarJitter
+	defer func() { calendarJitter = old }()
+	calendarJitter = func(d time.Duration) time.Duration {
+		if d != 1500*time.Millisecond {
+			t.Errorf("jitter asked for %v, want the configured 1.5s", d)
+		}
+		return d
+	}
+	set, logger := newTestSet()
+	runs := t.TempDir() + "/runs"
+	s := NewScriptedService(set, "late")
+	s.SetStartCommand([]string{"/bin/sh", "-c", "echo x >> " + runs})
+	set.AddService(s)
+	if err := s.Record().SetStartOnCalendar("*-*-* *:*:*"); err != nil {
+		t.Fatal(err)
+	}
+	s.Record().SetStartOnCalendarRandomizedDelay(1500 * time.Millisecond)
+	cs := NewCalendarStarter(set, logger)
+	defer cs.Close()
+	defer set.StopService(s)
+	cs.Add(s)
+	time.Sleep(1200 * time.Millisecond)
+	if b, _ := os.ReadFile(runs); len(b) != 0 {
+		t.Fatalf("ran within 1.2s with every start 1.5s late: %q", b)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if b, _ := os.ReadFile(runs); len(b) == 0 {
+		t.Error("did not run by 2.7s: a time 1.5s late is at most 2.5s away")
+	}
+}

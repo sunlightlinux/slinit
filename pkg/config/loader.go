@@ -526,7 +526,8 @@ func activationChanged(svc service.Service, desc *ServiceDescription) bool {
 	return path != desc.StartOnPath || trigger != desc.StartOnPathTrigger ||
 		svc.Record().StartOnMount() != desc.StartOnMount ||
 		svc.Record().StartOnCalendarExpr() != desc.StartOnCalendar ||
-		svc.Record().StartOnCalendarPersistent() != desc.StartOnCalendarPersistent
+		svc.Record().StartOnCalendarPersistent() != desc.StartOnCalendarPersistent ||
+		svc.Record().StartOnCalendarRandomizedDelay() != desc.StartOnCalendarRandomizedDelay
 }
 
 // cronTarget is a service type that can carry a cron task.
@@ -2601,6 +2602,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetInlineEnv(desc.Environment)
 	_ = rec.SetStartOnCalendar(desc.StartOnCalendar) // checked by the parser
 	rec.SetStartOnCalendarPersistent(desc.StartOnCalendarPersistent)
+	rec.SetStartOnCalendarRandomizedDelay(desc.StartOnCalendarRandomizedDelay)
 	rec.SetGuessMainPID(desc.GuessMainPID)
 	rec.SetSELinuxContext(desc.SELinuxContext)
 	rec.SetSMACKProcessLabel(desc.SMACKProcessLabel)

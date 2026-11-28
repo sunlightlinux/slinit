@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
@@ -24,7 +25,7 @@ import (
 // the monotonic OnBootSec=/OnUnitActiveSec= family) is reported.
 
 var sdTimerNotCarried = map[string]bool{
-	"RandomizedDelaySec": true, "FixedRandomDelay": true, "AccuracySec": true,
+	"FixedRandomDelay": true, "AccuracySec": true,
 	"WakeSystem": true, "RemainAfterElapse": true, "OnClockChange": true, "OnTimezoneChange": true,
 	"RandomizedOffsetSec": true, "DeferReactivation": true,
 }
@@ -45,6 +46,7 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 	var conds [][2]string // the timer's [Unit] Condition*= / Assert*=
 	var warns []SystemdWarning
 	persistent := false
+	delay := ""
 	for _, f := range append([]string{path}, systemdDropins(unitDirs, name)...) {
 		b, err := os.ReadFile(f)
 		if err != nil {
@@ -78,6 +80,13 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 				}
 			case key == "Persistent":
 				persistent = truthy(val)
+			case key == "RandomizedDelaySec":
+				delay = ""
+				if us, ok := sdTimespanUsec(val); ok && us > 0 {
+					delay = (time.Duration(us) * time.Microsecond).String()
+				} else if !ok {
+					warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: RandomizedDelaySec=%s is no time span; ignored", name, val)})
+				}
 			case key == "Unit":
 				if strings.TrimSuffix(val, ".service") != cfg.svcName {
 					return []SystemdWarning{{"NOTE", fmt.Sprintf("%s starts %s, not this service: not read", name, val)}}
@@ -105,6 +114,9 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 	cfg.setMapped("start-on-calendar", cals[0])
 	if persistent {
 		cfg.setMapped("start-on-calendar-persistent", "yes")
+	}
+	if delay != "" {
+		cfg.setMapped("start-on-calendar-randomized-delay", delay)
 	}
 	if cfg.installed {
 		// Wanted by a target too: systemd starts it at boot as well as

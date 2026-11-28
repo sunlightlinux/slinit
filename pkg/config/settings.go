@@ -224,13 +224,14 @@ var KnownSettings = map[string]OperatorType{
 	"debug": OpEquals,
 
 	// path-based activation (the four are mutually exclusive per service)
-	"start-on-path-exists":         OpEquals,
-	"start-on-path-changed":        OpEquals,
-	"start-on-path-modified":       OpEquals,
-	"start-on-directory-not-empty": OpEquals,
-	"start-on-mount":               OpEquals,
-	"start-on-calendar":            OpEquals,
-	"start-on-calendar-persistent": OpEquals,
+	"start-on-path-exists":               OpEquals,
+	"start-on-path-changed":              OpEquals,
+	"start-on-path-modified":             OpEquals,
+	"start-on-directory-not-empty":       OpEquals,
+	"start-on-mount":                     OpEquals,
+	"start-on-calendar":                  OpEquals,
+	"start-on-calendar-persistent":       OpEquals,
+	"start-on-calendar-randomized-delay": OpEquals,
 
 	// cpu affinity
 	"cpu-affinity": OpEquals,

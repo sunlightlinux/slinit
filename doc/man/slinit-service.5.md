@@ -2647,6 +2647,14 @@ watch; the service remains startable via `slinitctl start`.
     restart, and not while a running service depends on it, as its
     stop would wait for that service or take it down.
 
+**start-on-calendar-randomized-delay**=*duration* (since 4.1.0)
+:   Start the service up to *duration* (a Go duration: *30m*, *1h30m*)
+    later than each time **start-on-calendar** names, a fresh random
+    amount each time, so a fleet does not run a job at the same
+    instant. The next time is the expression's next after the late
+    start, as systemd reckons from the last trigger. systemd's
+    **RandomizedDelaySec=**.
+
 **start-on-calendar-persistent**=*yes*|*no* (since 4.1.0)
 :   Record each calendar start (in */var/lib/slinit/cron/calendar/*\
     *service*) and, when the calendar is armed again — when the service

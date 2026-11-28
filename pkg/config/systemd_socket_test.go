@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
@@ -232,7 +233,7 @@ func TestSystemdTimerRead(t *testing.T) {
 		manual              bool
 		warn                string
 	}{
-		{name: "daily", timer: "[Timer]\nOnCalendar=daily\nRandomizedDelaySec=1h\n", cal: "daily", manual: true, warn: "RandomizedDelaySec=1h not carried"},
+		{name: "daily", timer: "[Timer]\nOnCalendar=daily\nAccuracySec=1h\n", cal: "daily", manual: true, warn: "AccuracySec=1h not carried"},
 		{name: "drop-in resets and sets", timer: "[Timer]\nOnCalendar=daily\n", dropin: "[Timer]\nOnCalendar=\nOnCalendar=Mon 04:00\n", cal: "Mon 04:00", manual: true},
 		{name: "two expressions", timer: "[Timer]\nOnCalendar=daily\nOnCalendar=weekly\n", cal: "daily", manual: true, warn: "takes one expression"},
 		{name: "monotonic only", timer: "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\n", warn: "calendar times only"},
@@ -316,4 +317,13 @@ func predParams(d *ServiceDescription) string {
 		s = append(s, p.Param)
 	}
 	return strings.Join(s, "|")
+}
+
+func TestSystemdTimerRandomizedDelay(t *testing.T) {
+	dir := t.TempDir()
+	writeUnit(t, dir, "foo.timer", "[Timer]\nOnCalendar=daily\nRandomizedDelaySec=100min\n")
+	desc, _ := sockConvert(t, dir, sockSvc)
+	if desc.StartOnCalendarRandomizedDelay != 100*time.Minute {
+		t.Errorf("delay %v", desc.StartOnCalendarRandomizedDelay)
+	}
 }

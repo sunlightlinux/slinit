@@ -120,8 +120,9 @@ verified with `git tag -v`.
   at once, the last start recorded beside cron-persistent's);
   the timer's Condition*= / Assert*= become the service's when only the
   calendar starts it (fstrim.timer: ConditionVirtualization=!container),
-  the same check twice kept once; RandomizedDelaySec= and the monotonic
-  OnBootSec= family are reported.
+  the same check twice kept once; RandomizedDelaySec= is
+  `start-on-calendar-randomized-delay` (each start up to that much
+  later, at random); the monotonic OnBootSec= family is reported.
 
 - **`condition-capability = CAP_X`**, systemd's `ConditionCapability=`:
   the capability is in slinit's own bounding set, as systemd checks the

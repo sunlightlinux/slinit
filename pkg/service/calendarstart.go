@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math/rand/v2"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -51,11 +52,12 @@ func (c *CalendarStarter) Add(svc Service) {
 	if spec == nil {
 		return
 	}
+	delay := svc.Record().startOnCalendarDelay
 	if svc.Record().startOnCalendarPersistent {
-		c.armCatchUpLocked(name, spec)
+		c.armCatchUpLocked(name, spec, delay)
 		return
 	}
-	c.armLocked(name, spec)
+	c.armLocked(name, spec, delay)
 }
 
 // armCatchUpLocked is start-on-calendar-persistent, systemd's
@@ -65,7 +67,7 @@ func (c *CalendarStarter) Add(svc Service) {
 // not at load, and the timer is the service's one, so a second Add
 // (a reload) replaces it rather than catch up twice. With no record
 // nothing is caught up, as in systemd.
-func (c *CalendarStarter) armCatchUpLocked(name string, spec *CalendarSpec) {
+func (c *CalendarStarter) armCatchUpLocked(name string, spec *CalendarSpec, delay time.Duration) {
 	var t *time.Timer
 	t = time.AfterFunc(0, func() {
 		c.mu.Lock()
@@ -78,7 +80,7 @@ func (c *CalendarStarter) armCatchUpLocked(name string, spec *CalendarSpec) {
 		if ok {
 			missed = spec.NextAfter(last)
 		}
-		c.armLocked(name, spec)
+		c.armLocked(name, spec, delay)
 		c.mu.Unlock()
 		if missed.IsZero() || !missed.Before(c.now()) {
 			return
@@ -130,29 +132,43 @@ func (c *CalendarStarter) Close() {
 	}
 }
 
-func (c *CalendarStarter) armLocked(name string, spec *CalendarSpec) {
-	c.armAfterLocked(name, spec, time.Time{})
+func (c *CalendarStarter) armLocked(name string, spec *CalendarSpec, delay time.Duration) {
+	c.armAfterLocked(name, spec, time.Time{}, delay)
+}
+
+// calendarJitter is the random part of start-on-calendar-randomized-delay, in
+// [0, delay): systemd's RandomizedDelaySec=, drawn at each time so a
+// fleet does not start the job at the same instant. A var for tests.
+var calendarJitter = func(delay time.Duration) time.Duration {
+	if delay <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int64N(int64(delay)))
 }
 
 // armAfterLocked arms the timer for the first time the expression names
 // after now, and after fired, the time just fired for: a wall clock
 // stepped back while the timer ran would otherwise name that same time
 // again, and the job run twice.
-func (c *CalendarStarter) armAfterLocked(name string, spec *CalendarSpec, fired time.Time) {
+func (c *CalendarStarter) armAfterLocked(name string, spec *CalendarSpec, fired time.Time, delay time.Duration) {
 	now := c.now()
 	next := nextCalendarFire(spec, now, fired)
 	if next.IsZero() {
 		c.logger.Error("Service '%s': start-on-calendar names no future time", name)
 		return
 	}
+	// Up to delay later. The time after it is the expression's next
+	// after the late start (nextCalendarFire takes the later of now and
+	// next), as systemd reckons from the last trigger: a delay longer
+	// than the interval skips a time, there as here.
 	var t *time.Timer
-	t = time.AfterFunc(next.Sub(now), func() {
+	t = time.AfterFunc(next.Add(calendarJitter(delay)).Sub(now), func() {
 		c.mu.Lock()
 		if c.timers[name] != t {
 			c.mu.Unlock() // replaced or removed since
 			return
 		}
-		c.armAfterLocked(name, spec, next)
+		c.armAfterLocked(name, spec, next, delay)
 		c.mu.Unlock()
 		// By name: a reload that changed the type replaced the record.
 		if s := c.set.FindService(name, false); s != nil && c.set.calendarFire(s) {

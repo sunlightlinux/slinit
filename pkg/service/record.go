@@ -285,6 +285,8 @@ type ServiceRecord struct {
 	// startOnCalendarPersistent: catch up a time missed while slinit
 	// was down (calendarstart.go).
 	startOnCalendarPersistent bool
+	// startOnCalendarDelay: start-on-calendar-randomized-delay.
+	startOnCalendarDelay time.Duration
 	// rerunJob marks the stop of a scripted job the calendar runs
 	// again: not a restart, so its dependents, the services part of it
 	// and its prepared-by dependencies are left alone, and it is not
@@ -1706,6 +1708,18 @@ func (sr *ServiceRecord) StartOnCalendar() *CalendarSpec { return sr.startOnCale
 
 // SetStartOnCalendarPersistent sets start-on-calendar-persistent.
 func (sr *ServiceRecord) SetStartOnCalendarPersistent(on bool) { sr.startOnCalendarPersistent = on }
+
+// SetStartOnCalendarRandomizedDelay sets
+// start-on-calendar-randomized-delay.
+func (sr *ServiceRecord) SetStartOnCalendarRandomizedDelay(d time.Duration) {
+	sr.startOnCalendarDelay = d
+}
+
+// StartOnCalendarRandomizedDelay reports
+// start-on-calendar-randomized-delay.
+func (sr *ServiceRecord) StartOnCalendarRandomizedDelay() time.Duration {
+	return sr.startOnCalendarDelay
+}
 
 // StartOnCalendarPersistent reports start-on-calendar-persistent.
 func (sr *ServiceRecord) StartOnCalendarPersistent() bool { return sr.startOnCalendarPersistent }

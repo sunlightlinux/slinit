@@ -352,6 +352,7 @@ var BuiltinDirectives = []string{
 	"start-limit-action",
 	"start-on-calendar",
 	"start-on-calendar-persistent",
+	"start-on-calendar-randomized-delay",
 	"start-on-directory-not-empty",
 	"start-on-mount",
 	"start-on-path-changed",
