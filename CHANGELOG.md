@@ -36,6 +36,8 @@ verified with `git tag -v`.
   after its exec, and one more spawn ran past restart-limit-count.
 - **`no-boot-marker = yes` was lost to a later `options =` line**, which
   cleared every flag; `options =` now replaces only what it sets.
+- **A scripted service ignored its `env-file`**, documented for every
+  type; it is read at each run, as for a process service.
 - Tests: `TestRestartDuringRestartDelayHolds` waited too little for the
   restart hold; `pkg/journal` failed with a Go 1.27 toolchain.
 
