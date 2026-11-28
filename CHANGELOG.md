@@ -58,6 +58,15 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`slinit-check` warns about a by-name reference that names nothing**:
+  a `part-of`, `conflicts`, `on-failure`, `upholds` or `chain-to` name
+  that resolves to no service file, init.d script or systemd unit loads
+  fine and then does nothing, the only sign of a typo.
+- **`slinitctl show`** prints `PartOf=`, `Conflicts=`, `OnFailure=`,
+  `Upholds=`, `SendSIGHUP=` and, with restart-steps, `RestartSteps=` and
+  `RestartMaxDelayUSec=`; a process service now prints `RestartUSec=`
+  as a bgprocess one did.
+
 - **`upholds: X`**, systemd's `Upholds=`: while a service is up, X is
   started whenever it is found stopped (when the service starts, and
   each time X stops), at most 5 times in 10 seconds. By name, like
@@ -249,6 +258,10 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A `coredump-filter` value the kernel refuses loaded fine and then
+  failed every start** in slinit-runner. It is read at load as the
+  kernel reads it (0x33 hex, 51 decimal) and refused there.
+
 - **`no-boot-marker = yes` was lost to a later `options =` line**, which
   cleared every flag, its own and that one; `options =` now replaces
   only what `options` sets. Present in 4.0.x.
@@ -353,9 +366,6 @@ verified with `git tag -v`.
   as dinit refuses it; stored the right way round, it would have left
   every service on the loop STARTING.
 
-- **A systemd unit naming one service in both `Wants=` and `After=`**,
-  as most do, gave that service two identical `waits-for:` edges. Each
-  name is now one dependency.
 
 ## [4.0.5] — 2026-11-27
 
