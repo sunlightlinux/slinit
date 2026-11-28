@@ -1,0 +1,3 @@
+[Service]
+ExecStart=/bin/sleep 1000
+ExecReload=/bin/touch /run/test-338-unit.reloaded
