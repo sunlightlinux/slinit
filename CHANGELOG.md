@@ -58,6 +58,14 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`start-on-calendar = EXPR`**: start the service at each time a
+  systemd calendar expression names, as a timer's `OnCalendar=` starts
+  its unit. An activation directive like `start-on-path-*`: the service
+  runs as itself, with its own sandbox, where `cron-command` runs a
+  command beside a running service. Pair it with `manual = yes` for a
+  job only the calendar starts. (Reading a `.timer` unit onto it is not
+  done yet.)
+
 - **`reload-command`**, systemd's `ExecReload=` with a command: what
   `slinitctl reload-signal` runs for a daemon that reloads by command
   (nft, avahi-daemon -r, apachectl graceful, multipathd reconfigure:

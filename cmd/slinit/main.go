@@ -1500,6 +1500,28 @@ func main() {
 		}
 	}
 
+	// start-on-calendar: one timer per service, armed when it loads.
+	calStarter := service.NewCalendarStarter(serviceSet, logger)
+	defer calStarter.Close()
+	{
+		prevLoaded := serviceSet.OnServiceLoaded
+		serviceSet.OnServiceLoaded = func(svc service.Service) {
+			if prevLoaded != nil {
+				prevLoaded(svc)
+			}
+			if svc.Record().StartOnCalendar() != nil {
+				calStarter.Add(svc)
+			}
+		}
+		prevUnloaded := serviceSet.OnServiceUnloaded
+		serviceSet.OnServiceUnloaded = func(svc service.Service) {
+			if prevUnloaded != nil {
+				prevUnloaded(svc)
+			}
+			calStarter.Remove(svc.Name())
+		}
+	}
+
 	// Services-dir auto-watch (opt-in via --watch-services-dir): drop a
 	// file in a watched dir → the service is loaded automatically (but
 	// NOT auto-started, matching dinit's explicit-start model); remove

@@ -227,6 +227,7 @@ var KnownSettings = map[string]OperatorType{
 	"start-on-path-modified":       OpEquals,
 	"start-on-directory-not-empty": OpEquals,
 	"start-on-mount":               OpEquals,
+	"start-on-calendar":            OpEquals,
 
 	// cpu affinity
 	"cpu-affinity": OpEquals,

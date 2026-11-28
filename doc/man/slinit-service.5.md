@@ -2545,6 +2545,19 @@ If the configured path (or its parent, for **start-on-path-exists**)
 does not exist at load time, slinit logs a warning and skips the
 watch; the service remains startable via `slinitctl start`.
 
+**start-on-calendar**=*expression* (since 4.1.0)
+:   Start the service at each time the systemd-style calendar
+    *expression* names (the forms of **cron-calendar**: *daily*,
+    *Mon..Fri 09:00*, *\*:0/15*, a trailing timezone), as a systemd
+    timer with **OnCalendar=** starts its unit. A service already
+    running is left alone. Unlike **cron-command**, which runs a command
+    beside a running service, this starts the service itself, with its
+    own sandbox and settings: the shape for a job written as a oneshot
+    (**type** = *scripted*) or a process that exits when done. Pair it
+    with **manual** = *yes* for a service only the calendar should start.
+    A malformed expression is a load error; a reload that changes it
+    re-arms the timer.
+
 **start-on-mount**=*yes*|*no*|*path* (since 3.1.6)
 :   Start the service when a filesystem is mounted. This is launchd's
     **StartOnMount**.

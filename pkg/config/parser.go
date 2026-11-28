@@ -372,6 +372,7 @@ type ServiceDescription struct {
 	// mount (launchd's boolean form); an absolute path fires when that
 	// path becomes a mount point.
 	StartOnMount string
+	StartOnCalendar string // start-on-calendar: a systemd OnCalendar= expression
 
 	// Socket activation
 	SocketPath  string   // primary socket path (first socket-listen)
@@ -3205,6 +3206,14 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("socket-reuseport: %w", err)
 		}
 		desc.SocketReusePort = b
+	case "start-on-calendar":
+		v := strings.TrimSpace(value)
+		if v != "" {
+			if _, err := service.ParseCalendar(v); err != nil {
+				return fmt.Errorf("start-on-calendar: %w", err)
+			}
+		}
+		desc.StartOnCalendar = v
 	case "start-on-mount":
 		// Two forms: the launchd boolean, and a path — which is the one
 		// anybody actually wants, since "every mount on the system"

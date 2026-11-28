@@ -344,6 +344,7 @@ var BuiltinDirectives = []string{
 	"standard-input-text",
 	"start-delay",
 	"start-limit-action",
+	"start-on-calendar",
 	"start-on-directory-not-empty",
 	"start-on-mount",
 	"start-on-path-changed",

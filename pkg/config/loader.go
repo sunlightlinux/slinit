@@ -519,11 +519,12 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 
 // activationChanged reports whether desc changes what the
 // OnServiceLoaded / OnServiceUnloaded hooks wire for svc: its
-// start-on-path-* and start-on-mount watches.
+// start-on-path-*, start-on-mount and start-on-calendar.
 func activationChanged(svc service.Service, desc *ServiceDescription) bool {
 	path, trigger := svc.Record().StartOnPath()
 	return path != desc.StartOnPath || trigger != desc.StartOnPathTrigger ||
-		svc.Record().StartOnMount() != desc.StartOnMount
+		svc.Record().StartOnMount() != desc.StartOnMount ||
+		svc.Record().StartOnCalendarExpr() != desc.StartOnCalendar
 }
 
 // cronTarget is a service type that can carry a cron task.
@@ -2576,6 +2577,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetSocketMulticastGroup(desc.SocketMulticastGroup)
 	rec.SetSocketAccept(desc.SocketAccept)
 	rec.SetStartOnMount(desc.StartOnMount)
+	_ = rec.SetStartOnCalendar(desc.StartOnCalendar) // checked by the parser
 	rec.SetGuessMainPID(desc.GuessMainPID)
 	rec.SetSELinuxContext(desc.SELinuxContext)
 	rec.SetSMACKProcessLabel(desc.SMACKProcessLabel)

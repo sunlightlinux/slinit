@@ -274,6 +274,10 @@ type ServiceRecord struct {
 	conflicts []string
 	onFailure []string
 	upholds   []string // upholds.go
+	// startOnCalendar: when CalendarStarter starts the service
+	// (calendarstart.go); nil for none.
+	startOnCalendar     *CalendarSpec
+	startOnCalendarExpr string
 	// onFailureStarts: when on-failure last started this service, for
 	// its start limit (onfailure.go).
 	onFailureStarts []time.Time
@@ -1629,6 +1633,27 @@ func (sr *ServiceRecord) SetConflicts(names []string) {
 	}
 }
 func (sr *ServiceRecord) SetOnFailure(names []string) { sr.onFailure = names }
+
+// SetStartOnCalendar sets the start-on-calendar expression (see
+// calendarstart.go); "" clears it.
+func (sr *ServiceRecord) SetStartOnCalendar(expr string) error {
+	if expr == "" {
+		sr.startOnCalendar, sr.startOnCalendarExpr = nil, ""
+		return nil
+	}
+	c, err := ParseCalendar(expr)
+	if err != nil {
+		return err
+	}
+	sr.startOnCalendar, sr.startOnCalendarExpr = c, expr
+	return nil
+}
+
+// StartOnCalendar returns the parsed expression, nil for none.
+func (sr *ServiceRecord) StartOnCalendar() *CalendarSpec { return sr.startOnCalendar }
+
+// StartOnCalendarExpr returns the expression as written.
+func (sr *ServiceRecord) StartOnCalendarExpr() string { return sr.startOnCalendarExpr }
 func (sr *ServiceRecord) SetUpholds(names []string) {
 	sr.upholds = names
 	if len(names) > 0 {

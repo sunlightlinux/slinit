@@ -483,6 +483,9 @@ func RenderShow(s Service) string {
 	if len(sr.upholds) > 0 {
 		p("Upholds", strings.Join(sr.upholds, " "))
 	}
+	if sr.startOnCalendarExpr != "" {
+		p("OnCalendar", sr.startOnCalendarExpr)
+	}
 	if sr.socketPath != "" {
 		p("SocketPath", sr.socketPath)
 	}

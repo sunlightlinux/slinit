@@ -239,3 +239,13 @@ func TestOptionsKeepsNoBootMarker(t *testing.T) {
 		t.Errorf("options = still replaces the earlier options: %+v", d.Flags)
 	}
 }
+
+func TestStartOnCalendarParsed(t *testing.T) {
+	d, err := Parse(strings.NewReader("type = scripted\ncommand = /bin/true\nstart-on-calendar = Mon..Fri 09:00\n"), "c", "c")
+	if err != nil || d.StartOnCalendar != "Mon..Fri 09:00" {
+		t.Fatalf("%q %v", d.StartOnCalendar, err)
+	}
+	if _, err := Parse(strings.NewReader("type = scripted\ncommand = /bin/true\nstart-on-calendar = Funday 25:00\n"), "c", "c"); err == nil {
+		t.Error("a malformed expression loaded")
+	}
+}
