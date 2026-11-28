@@ -87,7 +87,10 @@ func TestRuntimeMaxEndsTheRunAsAFailure(t *testing.T) {
 		set.AddService(svc)
 		set.StartService(svc)
 		defer func() {
+			// Under queueMu: a restart may be reading it right now.
+			set.queueMu.Lock()
 			svc.Record().SetRuntimeMax(0)
+			set.queueMu.Unlock()
 			set.StopService(svc)
 			waitForState(t, svc, StateStopped, 5*time.Second)
 		}()
