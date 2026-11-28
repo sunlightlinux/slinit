@@ -554,3 +554,20 @@ func TestSystemdExecStartPreFolded(t *testing.T) {
 		t.Errorf("mixed +: %v", warns)
 	}
 }
+
+// A oneshot's ExecStart= lines run in turn; a long-running service
+// keeps the last, with a warning, whatever the order of Type=.
+func TestSystemdOneshotExecStartsFolded(t *testing.T) {
+	p := writeUnit(t, t.TempDir(), "o.service", "[Service]\nExecStart=/bin/a\nExecStart=-/bin/b\nType=oneshot\n")
+	desc, err := SystemdUnitToServiceDescription(p, "o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/bin/sh|-c|'/bin/a' && { '/bin/b' || :; }"; strings.Join(desc.Command, "|") != want {
+		t.Errorf("oneshot command %q, want %q", desc.Command, want)
+	}
+	_, warns, desc2 := lcConvert(t, "ExecStart=/bin/second")
+	if strings.Join(desc2.Command, " ") != "/bin/second" || !lcWarned(warns, "WARN", "multiple ExecStart") {
+		t.Errorf("simple: %q %v", desc2.Command, warns)
+	}
+}

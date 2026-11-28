@@ -26,11 +26,13 @@ verified with `git tag -v`.
 
 ### Changed
 
-- **Several `ExecStartPre=` (or `ExecStartPost=`) lines run in turn**
+- **Several `ExecStartPre=` (or `ExecStartPost=`, or a oneshot's
+  `ExecStart=`) lines run in turn**
   from one pre-start-command (post-start-command), a shell running each
   step after the last succeeded, `-` steps allowed to fail, as systemd
   runs them; slinit kept the first and dropped the rest with a warning
-  (sshd's config test, postfix's five steps, mariadb's preparation).
+  (sshd's config test, postfix's five steps, mariadb's preparation;
+  man-db's and shadow's two ExecStart=).
   Lines that differ in `+` keep the first, as before. *Compat:* such a
   unit now runs every step.
 

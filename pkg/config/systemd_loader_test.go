@@ -426,7 +426,8 @@ ExecStart=/bin/true
 //     was restarted; slinit has had on-success since 3.x. (On a simple
 //     service: systemd refuses it on a oneshot, and so does slinit.)
 //   - A oneshot runs every ExecStart= in turn; slinit runs one command,
-//     and the others were dropped without a word.
+//     and the others were dropped without a word. Since 4.1 they run in
+//     turn from one shell, with a note.
 func TestSystemdUserGroupRestartExecStart(t *testing.T) {
 	root := t.TempDir()
 	units := filepath.Join(root, "systemd")
@@ -455,12 +456,15 @@ ExecStart=/usr/bin/second
 	if sd, _, err := dl.findAndParse("s"); err != nil || sd.AutoRestart != service.RestartOnSuccess {
 		t.Errorf("Restart=on-success: restart = %v (err %v), want on-success", sd.AutoRestart, err)
 	}
+	if want := []string{"/bin/sh", "-c", "'/usr/bin/first' && '/usr/bin/second'"}; strings.Join(desc.Command, "|") != strings.Join(want, "|") {
+		t.Errorf("command %q, want %q", desc.Command, want)
+	}
 	found := false
 	for _, g := range got {
-		found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, "ExecStart") && strings.Contains(g, "/usr/bin/first"))
+		found = found || (strings.HasPrefix(g, "NOTE") && strings.Contains(g, "2 ExecStart= lines run in turn"))
 	}
 	if !found {
-		t.Errorf("no WARN that an ExecStart= was dropped: %v", got)
+		t.Errorf("no NOTE that the ExecStart= lines run in turn: %v", got)
 	}
 }
 

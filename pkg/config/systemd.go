@@ -87,8 +87,9 @@ type SystemdConfig struct {
 	// The hook had "+" (or "!" on a start hook): it is written with
 	// slinit's "+", which runs it as root rather than as run-as.
 	preStartPriv, postStartPriv, stopPriv bool
-	// Every ExecStartPre= / ExecStartPost= line, for foldStartHooks.
-	preStartAll, postStartAll []foldCmd
+	// Every ExecStartPre= / ExecStartPost= line, for foldStartHooks, and
+	// every ExecStart=, for a oneshot's (finishOneshotExecStart).
+	preStartAll, postStartAll, commandAll []foldCmd
 
 	// TimeoutStartSec= / TimeoutSec=; startTimeoutSet records that the
 	// unit gave one, which a oneshot's default depends on.
@@ -536,6 +537,25 @@ func finishSystemdUnit(cfg *SystemdConfig) []SystemdWarning {
 		// Group= without User= runs as root with that group, as in
 		// systemd; ":group" is a run-as slinit rejects.
 		cfg.runAs = "root" + cfg.runAs
+	}
+	if cfg.svcType == "scripted" && len(cfg.commandAll) > 1 {
+		// A oneshot runs each ExecStart= in turn, as its ExecStartPre=
+		// lines: one shell, the "-" handled per step.
+		var priv bool
+		if w := foldStartHooks("ExecStart", "command", cfg.commandAll, &cfg.command, &priv); len(w) > 0 && w[0].Level == "NOTE" {
+			cfg.commandIgnoreFailure, cfg.commandArgv = false, nil
+			warns = append(warns, w...)
+		} else {
+			warns = append(warns, w...)
+		}
+	} else if len(cfg.commandAll) > 1 {
+		var dropped []string
+		for _, c := range cfg.commandAll[:len(cfg.commandAll)-1] {
+			dropped = append(dropped, c.value)
+		}
+		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+			"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
+				"run the steps from one script if they all matter", strings.Join(dropped, "; "))})
 	}
 	warns = append(warns, cfg.finishExecStart()...)
 	if cfg.svcType == "scripted" && !cfg.startTimeoutSet {
@@ -1120,6 +1140,7 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 		switch key {
 		case "ExecStart":
 			cfg.command, cfg.argv0, cfg.commandIgnoreFailure, cfg.commandArgv = "", "", false, nil
+			cfg.commandAll = nil
 		case "ExecStop":
 			cfg.stopCommand, cfg.stopPriv, cfg.stopSignal, cfg.stopLine = "", false, "", ""
 		case "ExecStartPre":
@@ -1165,13 +1186,11 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 		switch key {
 		case "ExecStart":
 			// A oneshot may list several, run in turn; slinit runs one
-			// command. The last is kept, so that an empty ExecStart=
-			// followed by a new one replaces it as in systemd.
-			if cfg.command != "" {
-				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
-					"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
-						"run the steps from one script if they all matter", cfg.command)})
-			}
+			// command: finishOneshotExecStart folds them for a oneshot,
+			// and for anything else the last is kept, so that an empty
+			// ExecStart= followed by a new one replaces it as in systemd.
+			// ExecStart= takes no "+" in slinit (priv is for the hooks).
+			cfg.commandAll = append(cfg.commandAll, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, value: value})
 			cfg.command, cfg.argv0 = value, ""
 			if c.cmd.hasArgv0 {
 				if v, why, ok := slinitArgv0Value(c.cmd.argv0); ok {
