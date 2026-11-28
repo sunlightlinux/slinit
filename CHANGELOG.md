@@ -24,6 +24,33 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [4.1.0] — 2026-11-28
+
+**The first feature release after the 4.0 long-term-support line.** Most
+of it is more of systemd's service-manager surface: sd_notify readiness
+and `slinit-notify`, `part-of:`, `conflicts:`, `on-failure:`,
+`upholds:`, calendar timers (`start-on-calendar`, a service's `.timer`
+unit, `slinitctl list-timers`), `reload-command`, `environment =`,
+`private-devices`, cgroup device and IP filters, `keyring-mode`,
+`restart-steps`, `slinitctl cat`, `show` and `clean`, and systemd
+drop-ins. A systemd `.service` unit now loads with an answer for every
+directive.
+
+**Six changes can alter a setup that relied on the old behaviour**, each
+with a *Compat* note below. Five are about systemd units, which now run
+as systemd runs them: `After=` only orders and no longer starts the
+other unit, several `ExecStartPre=` lines all run, `Exec*=` variables
+are expanded when the command runs, `StandardInput=tty` gives the tty
+as the controlling terminal, and a oneshot unit with `Restart=always`
+is refused. The sixth: `runtime-max-sec` now ends a run as a failure.
+Native slinit service files that use none of these load and run as on
+4.0.
+
+The control protocol stays at version 7; `slinitctl clean` adds one
+command, which a 4.0 slinit refuses as a bad request. 4.0.x stays the
+long-term-support line and keeps taking fixes; 4.1 is supported until
+the next minor.
+
 ### Changed
 
 - **A unit's `StandardInput=tty` makes the tty its controlling
