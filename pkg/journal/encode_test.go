@@ -37,17 +37,27 @@ func encodeCases() []*Event {
 	}
 }
 
+// sameJSON compares an encoding with json.Marshal's byte for byte, but
+// for the one thing Go's encoder changed between releases: invalid
+// UTF-8 becomes U+FFFD, which Go 1.26 escapes as \ufffd and 1.27 writes
+// raw. Both are the same JSON string.
+func sameJSON(got, want []byte) bool {
+	fffd := []byte(`\ufffd`)
+	raw := []byte("\ufffd")
+	return bytes.Equal(bytes.ReplaceAll(got, fffd, raw), bytes.ReplaceAll(want, fffd, raw))
+}
+
 func TestAppendJSONMatchesMarshal(t *testing.T) {
 	for i, e := range encodeCases() {
 		want, err := json.Marshal(e)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := e.appendJSON(nil); !bytes.Equal(got, want) {
+		if got := e.appendJSON(nil); !sameJSON(got, want) {
 			t.Errorf("case %d:\n got %q\nwant %q", i, got, want)
 		}
 		got, err := e.MarshalJSONL()
-		if err != nil || !bytes.Equal(got, want) {
+		if err != nil || !sameJSON(got, want) {
 			t.Errorf("case %d: MarshalJSONL = %q, %v; want %q", i, got, err, want)
 		}
 	}
@@ -95,7 +105,7 @@ func FuzzAppendJSONMatchesMarshal(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := e.appendJSON(nil); !bytes.Equal(got, want) {
+		if got := e.appendJSON(nil); !sameJSON(got, want) {
 			t.Fatalf("\n got %q\nwant %q", got, want)
 		}
 	})
