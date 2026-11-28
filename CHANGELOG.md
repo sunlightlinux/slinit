@@ -89,6 +89,11 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`ExecStart=-` on a long-running service** maps onto
+  `failure-conditions = none`: systemd takes any end of such a process
+  for a success, so it is not failed and `Restart=on-failure` does not
+  restart it (console-getty, emergency). It was reported and dropped.
+
 - **`reload-command` for a scripted service**, run while it is started
   (no $MAINPID, as systemd for a oneshot): a converted oneshot's
   ExecReload= (nftables, apparmor, 12 units of the corpus) was dropped.

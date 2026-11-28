@@ -677,3 +677,11 @@ func TestSystemdFoldArgv0AndShellVars(t *testing.T) {
 		t.Errorf("fold with $PWD: %q %v", desc.PreStartCommand, warns)
 	}
 }
+
+// ExecStart=- on a long-running process: no end of it is a failure.
+func TestSystemdExecStartIgnoreFailureProcess(t *testing.T) {
+	_, warns, desc := lcConvert(t, "ExecStart=\nExecStart=-/sbin/agetty tty1\nRestart=on-failure")
+	if !lcWarned(warns, "NOTE", "failure-conditions = none") || desc.FailureConditions.Primary != service.FailNever {
+		t.Errorf("failure-conditions %+v warns %v", desc.FailureConditions, warns)
+	}
+}

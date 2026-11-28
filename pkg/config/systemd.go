@@ -1510,8 +1510,13 @@ func (cfg *SystemdConfig) finishExecStart() []SystemdWarning {
 		}
 		return nil
 	}
-	return []SystemdWarning{{"WARN", fmt.Sprintf(`ExecStart= "-" (exit failure counts as success) not carried: `+
-		`slinit counts a failing %s service as failed, and restart = on-failure restarts it`, cfg.svcType)}}
+	// A long-running process: systemd takes any end of it for a
+	// success (EXEC_COMMAND_IGNORE_FAILURE turns the result into
+	// SERVICE_SUCCESS), so restart = on-failure does not restart it and
+	// it is not failed; failure-conditions = none says the same.
+	cfg.setMapped("failure-conditions", "none")
+	return []SystemdWarning{{"NOTE", `ExecStart= "-" → failure-conditions = none: no end of the process is a failure, ` +
+		`as systemd ignores its result`}}
 }
 
 // execPrefixNotes reports what becomes of an Exec prefix in slinit.

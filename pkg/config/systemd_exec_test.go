@@ -309,7 +309,6 @@ ExecStop=:/bin/echo $HOME ${X} $$
 
 	// What slinit cannot carry is a WARN, which prints without --verbose.
 	for _, c := range []struct{ unit, want string }{
-		{"[Service]\nExecStart=-/usr/bin/daemon\n", `"-" (exit failure counts as success) not carried`},
 		{"[Service]\nExecStart=+/usr/bin/daemon\nUser=x\n", `"+" (full privileges, no sandbox) not carried`},
 		{"[Service]\nExecStart=!/usr/bin/daemon\nUser=x\n", `"!" (sandbox, but no User=/Group=) not carried`},
 	} {
