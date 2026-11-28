@@ -299,6 +299,10 @@ type ExecParams struct {
 	// default in place. Applied by slinit-runner. Empty = no change.
 	MemoryTHP string
 
+	// KeyringMode is keyring-mode (private | shared), applied by
+	// slinit-runner; empty inherits slinit's session keyring.
+	KeyringMode string
+
 	// RunnerPath is the absolute path to slinit-runner. Empty disables
 	// the wrapper even if Mlockall/NUMA fields are set (in which case
 	// the syscalls are silently ignored — the operator gets a startup

@@ -181,6 +181,9 @@ func RenderShow(s Service) string {
 	if sr.personality != "" {
 		p("Personality", sr.personality)
 	}
+	if sr.keyringMode != "" {
+		p("KeyringMode", sr.keyringMode)
+	}
 	if sr.memoryTHP != "" {
 		p("MemoryTHP", sr.memoryTHP)
 	}

@@ -2471,6 +2471,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 
 	// Memory locking + NUMA (applied via slinit-runner)
 	rec.SetMemoryTHP(desc.MemoryTHP)
+	rec.SetKeyringMode(desc.KeyringMode)
 	rec.SetMlockallFlags(desc.MlockallFlags)
 	if desc.NumaMempolicySet {
 		rec.SetNumaMempolicy(desc.NumaMempolicy, true)

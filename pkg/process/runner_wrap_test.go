@@ -251,3 +251,14 @@ func TestStartProcessChrootGoesToRunner(t *testing.T) {
 		t.Errorf("runner args tail = %q, want %q", tail, want)
 	}
 }
+
+// keyring-mode needs the runner and, as isolation, fails closed without it.
+func TestKeyringModeWrapsAndFailsClosed(t *testing.T) {
+	p := ExecParams{Command: []string{"/bin/true"}, KeyringMode: "private"}
+	if !needsRunnerWrap(p) {
+		t.Error("keyring-mode does not wrap with the runner")
+	}
+	if m := runnerSecurityFeatures(p); len(m) != 1 || m[0] != "keyring-mode" {
+		t.Errorf("runnerSecurityFeatures = %v", m)
+	}
+}

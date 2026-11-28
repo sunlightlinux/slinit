@@ -1127,6 +1127,10 @@ func runnerSecurityFeatures(p ExecParams) []string {
 	if p.Securebits != 0 {
 		missing = append(missing, "securebits")
 	}
+	// Isolation of the service's keys from every other service's.
+	if p.KeyringMode != "" {
+		missing = append(missing, "keyring-mode")
+	}
 	return missing
 }
 
@@ -1159,7 +1163,7 @@ func needsRunnerWrap(p ExecParams) bool {
 	return passesListenFDs(p) || p.MlockallFlags != 0 || p.NumaMempolicySet ||
 		p.AppArmorProfile != "" || p.SELinuxContext != "" ||
 		p.SMACKProcessLabel != "" ||
-		p.DebugStop || p.MemoryTHP != "" ||
+		p.DebugStop || p.MemoryTHP != "" || p.KeyringMode != "" ||
 		sandboxActive(p) || seccompActive(p) || hardeningActive(p) ||
 		len(p.BoundingCaps) > 0 || p.NoNewPrivs || p.Securebits != 0 ||
 		bucketBActive(p)
@@ -1245,6 +1249,9 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	if p.DebugStop {
 		args = append(args, "--debug")
+	}
+	if p.KeyringMode != "" {
+		args = append(args, "--keyring-mode="+p.KeyringMode)
 	}
 	if p.MemoryTHP != "" {
 		args = append(args, "--memory-thp="+p.MemoryTHP)

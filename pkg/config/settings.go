@@ -504,6 +504,8 @@ var KnownSettings = map[string]OperatorType{
 	// systemd MemoryTHP= — Transparent Huge Pages policy per service.
 	// Applied child-side by slinit-runner via PR_SET_THP_DISABLE.
 	"memory-thp": OpEquals,
+	// systemd KeyringMode= — the service's session keyring.
+	"keyring-mode": OpEquals,
 
 	// systemd FileDescriptorStorePreserve= — whether the fd-store
 	// (introduced with file-descriptor-store-max) is retained across

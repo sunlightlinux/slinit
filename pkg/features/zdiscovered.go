@@ -178,6 +178,7 @@ var BuiltinDirectives = []string{
 	"ip-address-allow",
 	"ip-address-deny",
 	"job-timeout-sec",
+	"keyring-mode",
 	"keyword",
 	"kill-mode",
 	"load-credential",

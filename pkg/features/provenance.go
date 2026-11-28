@@ -152,6 +152,7 @@ var provenanceTable = []Feature{
 	{Name: "environment", Kind: KindDirective, Source: SourceSystemd, Category: CatEnv, Notes: "inline KEY=VALUE words; the env-file overrides them (Environment=)"},
 	{Name: "ip-address-allow", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "cgroup eBPF IP filter: addresses that pass (IPAddressAllow=)"},
 	{Name: "ip-address-deny", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "cgroup eBPF IP filter: addresses dropped unless allowed (IPAddressDeny=)"},
+	{Name: "keyring-mode", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "a session keyring of the service's own (KeyringMode=)"},
 	{Name: "device-policy", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "cgroup eBPF device filter: auto, closed or strict (DevicePolicy=)"},
 	{Name: "device-allow", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "a device the filter lets through, with r/w/m access (DeviceAllow=)"},
 	{Name: "private-devices", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "a /dev of pseudo devices only, CAP_MKNOD and CAP_SYS_RAWIO dropped (PrivateDevices=)"},

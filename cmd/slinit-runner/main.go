@@ -109,6 +109,8 @@ func run() error {
 		"SMACK label to apply to the calling task (inherited across exec)")
 	debug := fs.Bool("debug", false,
 		"raise SIGSTOP before exec so a debugger can attach (resume with SIGCONT)")
+	keyringMode := fs.String("keyring-mode", "",
+		"session keyring for the service: private (a new one) | shared (a new one linked to the user's) (systemd KeyringMode=)")
 	memoryTHP := fs.String("memory-thp", "",
 		"Transparent Huge Page policy for this task: never | madvise | always (systemd MemoryTHP=). "+
 			"Only 'never' has per-process effect (PR_SET_THP_DISABLE); madvise/always fall back to the system default.")
@@ -416,6 +418,15 @@ func run() error {
 	if *runAsUID >= 0 || *runAsGID >= 0 {
 		if err := dropCredentials(*runAsUID, *runAsGID, ambientCaps, suppGIDs); err != nil {
 			return err
+		}
+	}
+
+	// keyring-mode, after the drop, so the new session keyring is the
+	// service user's and "shared" links that user's keyring; before the
+	// seccomp filter, which may not allow keyctl.
+	if *keyringMode != "" {
+		if err := applyKeyringMode(*keyringMode); err != nil {
+			return fmt.Errorf("keyring-mode: %w", err)
 		}
 	}
 

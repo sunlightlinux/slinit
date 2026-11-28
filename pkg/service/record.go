@@ -447,6 +447,8 @@ type ServiceRecord struct {
 	// PR_SET_THP_DISABLE at the runner; "madvise"/"always" are
 	// accepted for parity but rely on the system default.
 	memoryTHP string
+	// keyringMode is keyring-mode: "", private or shared.
+	keyringMode string
 
 	cloneflags  uintptr                // namespace clone flags (CLONE_NEWPID, CLONE_NEWNS, etc.)
 	uidMappings []syscall.SysProcIDMap // user namespace UID mappings
@@ -2734,6 +2736,9 @@ func (sr *ServiceRecord) SetMlockallFlags(flags int) { sr.mlockallFlags = flags 
 // SetMemoryTHP records the per-service THP policy (never|madvise|always).
 // Empty leaves the system default. Passed through to slinit-runner.
 func (sr *ServiceRecord) SetMemoryTHP(mode string) { sr.memoryTHP = mode }
+
+// SetKeyringMode records keyring-mode (inherit is "").
+func (sr *ServiceRecord) SetKeyringMode(mode string) { sr.keyringMode = mode }
 func (sr *ServiceRecord) SetNumaMempolicy(mode uint32, set bool) {
 	sr.numaMempolicy = mode
 	sr.numaMempolicySet = set
@@ -2883,6 +2888,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.NumaMempolicySet = sr.numaMempolicySet
 	params.NumaNodes = sr.numaNodes
 	params.MemoryTHP = sr.memoryTHP
+	params.KeyringMode = sr.keyringMode
 	params.RunnerPath = sr.services.RunnerPath()
 	params.InetdPath = sr.services.InetdPath()
 	params.SocketAccept = sr.socketAccept

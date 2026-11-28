@@ -370,6 +370,8 @@ type ServiceDescription struct {
 	// "madvise" and "always" are accepted for parity but leave the
 	// system default in place. Empty = no change.
 	MemoryTHP string
+	// KeyringMode is keyring-mode: "" (inherit), private or shared.
+	KeyringMode string
 
 	// StartOnMount is launchd's StartOnMount. "*" fires on every new
 	// mount (launchd's boolean form); an absolute path fires when that
@@ -2613,6 +2615,15 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			desc.FileDescriptorStorePreserve = v
 		default:
 			return fmt.Errorf("file-descriptor-store-preserve: expected yes|no|on-success, got %q", value)
+		}
+	case "keyring-mode":
+		switch v := strings.TrimSpace(value); v {
+		case "inherit":
+			desc.KeyringMode = ""
+		case "private", "shared":
+			desc.KeyringMode = v
+		default:
+			return fmt.Errorf("keyring-mode: expected inherit|private|shared, got %q", value)
 		}
 	case "memory-thp":
 		v := strings.ToLower(strings.TrimSpace(value))

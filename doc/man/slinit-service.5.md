@@ -2996,7 +2996,7 @@ slinit itself, because they act on the calling process and so must be set
 after the fork and before the exec: the seccomp filter, the
 **protect-\***/**restrict-\*** set, the sandbox directives, an LSM label
 (**apparmor-switch**, **selinux-context**, **smack-process-label**),
-**capability-bounding-set**, **securebits** and **options**=*no-new-privs*, plus
+**capability-bounding-set**, **securebits**, **keyring-mode** and **options**=*no-new-privs*, plus
 **mlockall**, **numa-mempolicy**, **memory-thp**, **debug**,
 **coredump-filter**, **timer-slack-nsec**, **memory-ksm**,
 **personality** and **ignore-sigpipe**.
@@ -3551,6 +3551,15 @@ mounted at `/run/credentials/<name>/`).
 :   Opt this process's anonymous pages into KSM merging via
     **prctl**(2) *PR_SET_MEMORY_MERGE*. Kernel 6.4+ required;
     older kernels fail-close.
+
+**keyring-mode**=*inherit*|*private*|*shared* (since 4.1.0)
+:   The service's session keyring (keyrings(7)). *inherit* (the
+    default) leaves it the one slinit runs with, shared with every
+    other service; *private* gives it a new anonymous one, so keys it
+    adds stay its own; *shared* also links its user's keyring into it.
+    Made by **slinit-runner** as the service's user, before any
+    syscall filter. systemd's **KeyringMode=**, whose default for a
+    system service is *private*.
 
 **memory-thp**=*madvise*|*never*|*always*
 :   Only *never* has an effect (**prctl**(2) *PR_SET_THP_DISABLE*);

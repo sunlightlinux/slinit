@@ -771,10 +771,11 @@ var secPersonalities = map[string][]string{
 func secKeyringMode(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	switch v := secValue(val); v {
 	case "", "inherit":
+		cfg.dropMapped("keyring-mode") // a drop-in's inherit undoes an earlier private
 		return nil
 	case "private", "shared":
-		return []SystemdWarning{{"WARN", fmt.Sprintf("[Service] %s=%s has no slinit equivalent: slinit allocates no "+
-			"session keyring, so the service shares the one it inherits with every service of the same user", key, val)}}
+		cfg.setMapped("keyring-mode", v)
+		return nil
 	default:
 		return []SystemdWarning{{"WARN", fmt.Sprintf("[Service] %s=%s ignored: expected inherit, private or shared", key, val)}}
 	}
