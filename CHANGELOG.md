@@ -30,7 +30,7 @@ verified with `git tag -v`.
   terminal**, as in systemd: the conversion sets `options = unmask-intr`
   with `tty-path`, where it told the operator to add it (a getty or a
   shell otherwise had no job control). With `NoNewPrivileges=` both
-  share one `options` line, which a second line would have replaced.
+  are written on one `options` line.
 
 - **A unit's `Exec*=` variables are expanded when the command runs**,
   from the service's environment (its Environment= and EnvironmentFile=),
