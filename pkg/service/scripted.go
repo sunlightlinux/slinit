@@ -19,6 +19,7 @@ type ScriptedService struct {
 	startCommand []string
 	stopCommand  []string
 	workingDir   string
+	envFile      string // read at each run, as for a process service
 
 	// Credentials
 	runAsUID          uint32
@@ -140,6 +141,9 @@ func (s *ScriptedService) SetStartCommand(cmd []string) { s.startCommand = cmd }
 func (s *ScriptedService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
 
 // SetWorkingDir sets the working directory.
+// SetEnvFile sets the env-file the commands' environment is read from.
+func (s *ScriptedService) SetEnvFile(path string) { s.envFile = path }
+
 func (s *ScriptedService) SetWorkingDir(dir string) { s.workingDir = dir }
 
 // SetRunAs sets the UID and GID to run commands as.
@@ -369,7 +373,7 @@ func (s *ScriptedService) BringUp() bool {
 	params := process.ExecParams{
 		Command:           s.startCommand,
 		WorkingDir:        s.workingDir,
-		Env:               s.Record().BuildFullEnv(),
+		Env:               s.Record().BuildEnvWithFile(s.envFile),
 		RunAsUID:          s.effectiveRunAsUID(),
 		RunAsGID:          s.effectiveRunAsGID(),
 		SupplementaryGIDs: s.supplementaryGIDs,
@@ -439,7 +443,7 @@ func (s *ScriptedService) BringDown() {
 	params := process.ExecParams{
 		Command:           s.stopCommand,
 		WorkingDir:        s.workingDir,
-		Env:               s.Record().BuildFullEnv(),
+		Env:               s.Record().BuildEnvWithFile(s.envFile),
 		RunAsUID:          s.effectiveRunAsUID(),
 		RunAsGID:          s.effectiveRunAsGID(),
 		SupplementaryGIDs: s.supplementaryGIDs,

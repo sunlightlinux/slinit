@@ -208,7 +208,7 @@ ExecStart=/usr/bin/main
 `
 	cfg := &SystemdConfig{svcType: "process", restart: "no"}
 	warns := parseSystemdUnit(cfg, unit)
-	if want := `/bin/sh -c "'/usr/bin/prepare-first' && '/usr/bin/prepare-second'"`; cfg.preStart != want {
+	if want := `/bin/sh -c "set -f; '/usr/bin/prepare-first' && '/usr/bin/prepare-second'"`; cfg.preStart != want {
 		t.Errorf("preStart = %q, want %q", cfg.preStart, want)
 	}
 	var noted bool

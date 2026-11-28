@@ -671,6 +671,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetStartCommand(desc.Command)
 		s.SetStopCommand(desc.StopCommand)
 		s.SetWorkingDir(desc.WorkingDir)
+		s.SetEnvFile(desc.EnvFile)
 		s.SetStartTimeout(desc.StartTimeout)
 		s.SetStopTimeout(desc.StopTimeout)
 		applyLogSettings(s, desc)

@@ -72,8 +72,16 @@ func (c *CalendarStarter) Close() {
 }
 
 func (c *CalendarStarter) armLocked(name string, spec *CalendarSpec) {
+	c.armAfterLocked(name, spec, time.Time{})
+}
+
+// armAfterLocked arms the timer for the first time the expression names
+// after now, and after fired, the time just fired for: a wall clock
+// stepped back while the timer ran would otherwise name that same time
+// again, and the job run twice.
+func (c *CalendarStarter) armAfterLocked(name string, spec *CalendarSpec, fired time.Time) {
 	now := c.now()
-	next := spec.NextAfter(now)
+	next := nextCalendarFire(spec, now, fired)
 	if next.IsZero() {
 		c.logger.Error("Service '%s': start-on-calendar names no future time", name)
 		return
@@ -85,20 +93,51 @@ func (c *CalendarStarter) armLocked(name string, spec *CalendarSpec) {
 			c.mu.Unlock() // replaced or removed since
 			return
 		}
-		c.armLocked(name, spec)
+		c.armAfterLocked(name, spec, next)
 		c.mu.Unlock()
 		// By name: a reload that changed the type replaced the record.
 		s := c.set.FindService(name, false)
-		if s == nil {
+		if s == nil || c.set.IsShuttingDown() {
 			return
 		}
-		// Under the graph lock: a reload rewrites the expression there.
-		var armed bool
-		c.set.WithGraphLock(func() { armed = s.Record().StartOnCalendar() != nil })
-		if armed && s.State() == StateStopped && !c.set.IsShuttingDown() {
-			c.logger.Info("Service '%s': start-on-calendar fired", name)
-			c.set.StartService(s)
-		}
+		c.set.calendarFire(s)
 	})
 	c.timers[name] = t
+}
+
+// nextCalendarFire is the first time spec names after now and after
+// fired (see armAfterLocked).
+func nextCalendarFire(spec *CalendarSpec, now, fired time.Time) time.Time {
+	from := now
+	if fired.After(from) {
+		from = fired
+	}
+	return spec.NextAfter(from)
+}
+
+// calendarFire starts s for its start-on-calendar: a stopped service is
+// started; a scripted one that is STARTED has run its command and stays
+// STARTED, as a oneshot with RemainAfterExit= would, so it is restarted
+// to run the job again, as systemd runs a finished oneshot again; any
+// other running service is left alone, as a timer that elapses for an
+// active unit does nothing.
+func (ss *ServiceSet) calendarFire(s Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	r := s.Record()
+	if r.startOnCalendar == nil { // cleared by a reload meanwhile
+		return
+	}
+	_, scripted := s.(*ScriptedService)
+	switch st := r.state.Load(); {
+	case st == StateStopped:
+		ss.logger.Info("Service '%s': start-on-calendar fired", s.Name())
+		s.Start()
+	case st == StateStarted && scripted:
+		ss.logger.Info("Service '%s': start-on-calendar fired; running the job again", s.Name())
+		r.Restart()
+	default:
+		return
+	}
+	ss.processQueuesLocked()
 }

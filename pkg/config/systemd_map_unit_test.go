@@ -127,6 +127,15 @@ func TestSystemdConditionPrefixesAndReset(t *testing.T) {
 		// it, "one of them" would be /a alone, stricter than systemd.
 		{name: "triggering, one unexpandable", lines: "ConditionHost=|%H\nConditionPathExists=|/a",
 			want: []string{}, warn: "WARN:cannot be checked"},
+		// A trigger slinit cannot express takes the list with it, rather
+		// than leave "one of" the rest, stricter than systemd's.
+		{name: "triggering, one refused by its converter", lines: "ConditionPathExists=|/nonexistent\nConditionKernelVersion=|5.*",
+			want: []string{}, warn: "WARN:another triggering"},
+		{name: "triggering, one mapping onto several checks", lines: "ConditionPathExists=|/nonexistent\nConditionKernelVersion=|>=1.0 <100.0",
+			want: []string{}, warn: "WARN:another triggering"},
+		// One that always holds satisfies the list.
+		{name: "triggering, one always holds", lines: "ConditionPathExists=|/nonexistent\nConditionControlGroupController=|v2",
+			want: []string{}, warn: "NOTE:always holds"},
 		// One condition and one assertion are each alone in their list.
 		{name: "triggering in each list", lines: "ConditionPathExists=|/a\nAssertPathExists=|/b",
 			want: []string{"condition-path-exists = /a", "assert-path-exists = /b"}},

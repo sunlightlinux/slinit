@@ -318,25 +318,59 @@ func sdFinishTriggers(cfg *SystemdConfig) []SystemdWarning {
 				list = append(list, t)
 			}
 		}
+		// Convert every trigger before emitting any: one slinit cannot
+		// express (a gap, an unexpandable value, a value its converter
+		// refuses, or several checks that must all hold) leaves the list
+		// out whole, since without it "one of them" would be stricter
+		// than systemd's; one that always holds (a converter with
+		// nothing to check) makes the list always satisfied, so none of
+		// it is needed.
 		var bad *sdTrigger
+		var badWhy string
+		always := false
 		for i := range list {
-			if list[i].unchecked != "" || list[i].k.gap != "" {
-				bad = &list[i]
+			tr := &list[i]
+			if tr.unchecked != "" || tr.k.gap != "" || tr.v == "" {
+				bad = tr
+				break
+			}
+			if tr.k.conv == nil {
+				continue
+			}
+			preds, _, err := tr.k.conv(tr.v, tr.negate)
+			switch {
+			case err != nil:
+				bad, badWhy = tr, err.Error()
+			case len(preds) > 1:
+				bad, badWhy = tr, "it maps onto several slinit checks"
+			case len(preds) == 0:
+				always = true
+			}
+			if bad != nil {
 				break
 			}
 		}
-		for _, t := range list {
+		for _, tr := range list {
 			switch {
-			case t.unchecked != "":
-				warns = append(warns, cfg.conditionUnchecked(t.key, t.val, assert, t.unchecked)...)
-			case t.k.gap != "":
-				warns = append(warns, cfg.conditionUnchecked(t.key, t.val, assert, t.k.gap)...)
-			case bad != nil:
-				warns = append(warns, cfg.conditionUnchecked(t.key, t.val, assert, fmt.Sprintf(
+			case tr.unchecked != "":
+				warns = append(warns, cfg.conditionUnchecked(tr.key, tr.val, assert, tr.unchecked)...)
+			case tr.k.gap != "":
+				warns = append(warns, cfg.conditionUnchecked(tr.key, tr.val, assert, tr.k.gap)...)
+			case bad != nil && &tr != bad && (tr.key != bad.key || tr.val != bad.val):
+				warns = append(warns, cfg.conditionUnchecked(tr.key, tr.val, assert, fmt.Sprintf(
 					"another triggering (|) check of the unit, %s=%s, cannot be checked, and without it "+
 						"\"at least one of them\" would be stricter than systemd's", bad.key, bad.val))...)
+			case bad != nil:
+				why := badWhy
+				if why == "" {
+					why = "it cannot be checked"
+				}
+				warns = append(warns, cfg.conditionUnchecked(tr.key, tr.val, assert, why+"; as a triggering (|) check it takes the others with it")...)
+			case always:
+				warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+					"[Unit] %s=%s left out: another triggering (|) check of the unit always holds, so the list always does", tr.key, tr.val)})
 			default:
-				warns = append(warns, cfg.emitCondition(t.key, t.val, t.k, assert, t.v, t.negate, len(list) > 1)...)
+				warns = append(warns, cfg.emitCondition(tr.key, tr.val, tr.k, assert, tr.v, tr.negate, len(list) > 1)...)
 			}
 		}
 	}

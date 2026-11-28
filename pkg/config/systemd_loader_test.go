@@ -456,7 +456,7 @@ ExecStart=/usr/bin/second
 	if sd, _, err := dl.findAndParse("s"); err != nil || sd.AutoRestart != service.RestartOnSuccess {
 		t.Errorf("Restart=on-success: restart = %v (err %v), want on-success", sd.AutoRestart, err)
 	}
-	if want := []string{"/bin/sh", "-c", "'/usr/bin/first' && '/usr/bin/second'"}; strings.Join(desc.Command, "|") != strings.Join(want, "|") {
+	if want := []string{"/bin/sh", "-c", "set -f; '/usr/bin/first' && '/usr/bin/second'"}; strings.Join(desc.Command, "|") != strings.Join(want, "|") {
 		t.Errorf("command %q, want %q", desc.Command, want)
 	}
 	found := false

@@ -163,10 +163,10 @@ ExecStop=|echo $SDV_A "$$" 'a $HOME'
 // one per NUL. Any other command is returned as it is.
 func runtimeArgv(t *testing.T, cmd []string, env ...string) []string {
 	t.Helper()
-	if len(cmd) != 3 || cmd[0] != "/bin/sh" || cmd[1] != "-c" || !strings.HasPrefix(cmd[2], "exec ") {
+	if len(cmd) != 3 || cmd[0] != "/bin/sh" || cmd[1] != "-c" || !strings.HasPrefix(cmd[2], "set -f; exec ") {
 		return cmd
 	}
-	script := "set -- " + strings.TrimPrefix(cmd[2], "exec ") + `; printf '%s\0' "$@"`
+	script := "set -f; set -- " + strings.TrimPrefix(cmd[2], "set -f; exec ") + `; printf '%s\0' "$@"`
 	c := exec.Command("/bin/sh", "-c", script)
 	c.Env = env
 	out, err := c.Output()

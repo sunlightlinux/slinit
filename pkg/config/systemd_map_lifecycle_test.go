@@ -563,7 +563,7 @@ func TestSystemdOneshotExecStartsFolded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "/bin/sh|-c|'/bin/a' && { '/bin/b' || :; }"; strings.Join(desc.Command, "|") != want {
+	if want := "/bin/sh|-c|set -f; '/bin/a' && { '/bin/b' || :; }"; strings.Join(desc.Command, "|") != want {
 		t.Errorf("oneshot command %q, want %q", desc.Command, want)
 	}
 	_, warns, desc2 := lcConvert(t, "ExecStart=/bin/second")
@@ -578,7 +578,7 @@ func TestSystemdOneshotExecStartsFolded(t *testing.T) {
 func TestSystemdExecVarsAtRunTime(t *testing.T) {
 	_, warns, desc := lcConvert(t, `ExecStart=/bin/sh -c 'printf "[%s]" "$@" > "$0"' $OUT $OPTS ${ONE} lit$$x "q\"b"`)
 	argv := desc.Command
-	if len(argv) != 3 || argv[0] != "/bin/sh" || !strings.HasPrefix(argv[2], "exec ") {
+	if len(argv) != 3 || argv[0] != "/bin/sh" || !strings.HasPrefix(argv[2], "set -f; exec ") {
 		t.Fatalf("command %q", argv)
 	}
 	if !lcWarned(warns, "NOTE", "expanded from the service's environment") {
@@ -618,5 +618,41 @@ func TestSystemdOptionsMembersTogether(t *testing.T) {
 	_, _, desc := lcConvert(t, "NoNewPrivileges=yes\nStandardInput=tty\nTTYPath=/dev/tty2")
 	if !desc.Flags.UnmaskIntr || !desc.NoNewPrivs {
 		t.Errorf("unmask-intr %v, no-new-privs %v", desc.Flags.UnmaskIntr, desc.NoNewPrivs)
+	}
+}
+
+// What the run-time path does not do: glob a value (systemd never
+// does), read a variable the shell sets itself, or lose an "@" argv[0].
+func TestSystemdExecRunTimeLimits(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "afile"), nil, 0o644)
+	_, _, desc := lcConvert(t, `ExecStart=/bin/sh -c 'printf "[%s]" "$@" > "$0"' $OUT $OPTS`)
+	out := filepath.Join(dir, "out")
+	cmd := exec.Command(desc.Command[0], desc.Command[1:]...)
+	cmd.Dir = dir
+	cmd.Env = []string{"OUT=" + out, "OPTS=*"}
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(out); string(b) != "[*]" {
+		t.Errorf("OPTS=* became %s: globbed", b)
+	}
+	_, warns, desc := lcConvert(t, "ExecStart=/usr/bin/x $PPID")
+	if strings.HasPrefix(strings.Join(desc.Command, " "), "/bin/sh") || !lcWarned(warns, "WARN", "$PPID") {
+		t.Errorf("$PPID went the run-time way: %q %v", desc.Command, warns)
+	}
+	_, _, desc = lcConvert(t, "ExecStart=@/usr/bin/x myname $OPTS")
+	if desc.Argv0 != "myname" || desc.Command[0] != "/usr/bin/x" {
+		t.Errorf("@ argv[0] lost: argv0 %q command %q", desc.Argv0, desc.Command)
+	}
+}
+
+// PrivateDevices= with RootDirectory= loads: the private /dev is
+// dropped with a warning, where the pair used to make a file the loader
+// refuses.
+func TestSystemdPrivateDevicesWithRootDirectory(t *testing.T) {
+	_, warns, desc := lcConvert(t, "RootDirectory=/srv/jail\nPrivateDevices=yes")
+	if desc.PrivateDevices || desc.Chroot != "/srv/jail" || !lcWarned(warns, "WARN", "PrivateDevices= with RootDirectory") {
+		t.Errorf("private-devices %v chroot %q warns %v", desc.PrivateDevices, desc.Chroot, warns)
 	}
 }

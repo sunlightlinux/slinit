@@ -623,6 +623,15 @@ func secFinish(cfg *SystemdConfig) []SystemdWarning {
 				"make bind mounts for a chrooted service (they would land on the host, not in the jail), so %s is "+
 				"not bound; make the bind mounts inside the jail on the host instead", cfg.chroot, v)})
 		}
+		if _, ok := cfg.hasMapped("private-devices"); ok {
+			// The same: slinit-runner builds the private /dev on the
+			// host's before the chroot, and the loader refuses the pair.
+			// The service sees the jail's /dev, which the jail decides.
+			cfg.dropMapped("private-devices")
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("PrivateDevices= with RootDirectory=%s: slinit "+
+				"cannot build a private /dev inside a chroot, so the service sees the jail's own /dev; keep only "+
+				"the pseudo devices there", cfg.chroot)})
+		}
 	}
 	return warns
 }

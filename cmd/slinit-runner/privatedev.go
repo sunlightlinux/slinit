@@ -110,6 +110,14 @@ func mountPrivateDev() error {
 	if err := os.MkdirAll("/dev", 0o755); err != nil {
 		return fmt.Errorf("private-devices: /dev: %w", err)
 	}
+	// Take the host's /dev away underneath first, as systemd unmounts
+	// the old tree: stacked on top of it, the private one could be
+	// unmounted by a root service, the host's coming back with every
+	// device. The binds above are mounts of their own and stay. It fails
+	// where /dev is no mount of its own (a container's rootfs), and in a
+	// user namespace, where the kernel locks the inherited mount; the
+	// private /dev is then stacked on it.
+	_ = unix.Unmount("/dev", unix.MNT_DETACH)
 	if err := unix.Mount(staging, "/dev", "", unix.MS_MOVE, ""); err != nil {
 		return fmt.Errorf("private-devices: move onto /dev: %w", err)
 	}

@@ -37,7 +37,11 @@ verified with `git tag -v`.
   as systemd does: such a command goes through `/bin/sh -c "exec ..."`
   with systemd's rules ($VAR split into words and gone when empty,
   ${VAR} one argument), `exec` keeping the program the service's
-  process. slinit expanded them when it loaded the file, from its own
+  process, and `set -f` keeping a value from being globbed (a value's
+  own quotes are not removed when it is split, unlike systemd's; a
+  variable the shell sets itself, such as $PPID, and a line with an "@"
+  argv[0] keep load-time expansion). slinit expanded them when it loaded
+  the file, from its own
   environment, so a variable the env-file set came out empty (sshd's
   $SSHD_OPTS, mdadm's, smartd's...). An ExecReload= command may use
   $MAINPID, which slinit sets for a reload-command. *Compat:* such a
@@ -336,6 +340,12 @@ verified with `git tag -v`.
   installed now fails the load, as it fails the unit in systemd.
 
 ### Fixed
+
+- **A scripted service ignored its `env-file`**: its commands got the
+  global environment and setenv only, though the setting is documented
+  for every type (a converted oneshot's EnvironmentFile= was lost with
+  it). It is read at each run, as for a process service. Present in
+  4.0.x.
 
 - **A `coredump-filter` value the kernel refuses loaded fine and then
   failed every start** in slinit-runner. It is read at load as the

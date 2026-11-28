@@ -1,6 +1,8 @@
 package service
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,5 +50,41 @@ func TestCalendarStarterHonoursACleared(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	if st := s.State(); st != StateStopped {
 		t.Errorf("%v, want left STOPPED", st)
+	}
+}
+
+// A scripted job stays STARTED after its command: the calendar runs it
+// again at each time, rather than once.
+func TestCalendarStarterRerunsAScriptedJob(t *testing.T) {
+	set, logger := newTestSet()
+	runs := t.TempDir() + "/runs"
+	s := NewScriptedService(set, "job")
+	s.SetStartCommand([]string{"/bin/sh", "-c", "echo x >> " + runs})
+	set.AddService(s)
+	if err := s.Record().SetStartOnCalendar("*-*-* *:*:*"); err != nil {
+		t.Fatal(err)
+	}
+	cs := NewCalendarStarter(set, logger)
+	defer cs.Close()
+	defer set.StopService(s)
+	cs.Add(s)
+	time.Sleep(3500 * time.Millisecond)
+	b, _ := os.ReadFile(runs)
+	if n := strings.Count(string(b), "\n"); n < 2 {
+		t.Errorf("the job ran %d times in 3.5s of a calendar firing every second", n)
+	}
+}
+
+// A wall clock behind the time just fired for (stepped back while the
+// timer ran) does not name that time again.
+func TestNextCalendarFireAfterClockStep(t *testing.T) {
+	spec, err := ParseCalendar("*-*-* 03:00:00 UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fired := time.Date(2026, 11, 28, 3, 0, 0, 0, time.UTC)
+	now := fired.Add(-5 * time.Millisecond)
+	if got := nextCalendarFire(spec, now, fired); !got.Equal(fired.Add(24 * time.Hour)) {
+		t.Errorf("next %v, want the next day's", got)
 	}
 }

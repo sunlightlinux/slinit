@@ -1168,7 +1168,8 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 	}
 	for _, c := range cmds {
 		argv := c.cmd.argv
-		rt := runtimeVars(c.refs)
+		// Not with "@": exec would give the program its path as argv[0].
+		rt := runtimeVars(c.refs) && !c.cmd.hasArgv0
 		if rt {
 			argv = runtimeShellArgv(argv)
 		}
@@ -1203,7 +1204,7 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 			// and for anything else the last is kept, so that an empty
 			// ExecStart= followed by a new one replaces it as in systemd.
 			// ExecStart= takes no "+" in slinit (priv is for the hooks).
-			cfg.commandAll = append(cfg.commandAll, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, value: value})
+			cfg.commandAll = append(cfg.commandAll, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, value: value, argv0: c.cmd.hasArgv0})
 			cfg.command, cfg.argv0 = value, ""
 			if c.cmd.hasArgv0 {
 				if v, why, ok := slinitArgv0Value(c.cmd.argv0); ok {
@@ -1244,7 +1245,7 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 			if key == "ExecStartPost" {
 				all = &cfg.postStartAll
 			}
-			*all = append(*all, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, priv: priv, value: value})
+			*all = append(*all, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, priv: priv, value: value, argv0: c.cmd.hasArgv0})
 			*n++
 			if *n > 1 {
 				// Folded into one shell command once the unit is read
@@ -1355,8 +1356,23 @@ func shellScript(argv []string) string {
 // runs, the environment setting and the env-file included, as systemd
 // expands them from the unit's. exec keeps the process the program: a
 // main process stays the one slinit supervises.
+//
+// "set -f" first: systemd never globs a value it splits, and the shell
+// would ("*" became the directory's files). One difference stays: the
+// shell splits a value on blanks without removing quotes in it, where
+// systemd unquotes ("-o 'a b'" is two words there, three here).
 func runtimeShellArgv(argv []string) []string {
-	return []string{"/bin/sh", "-c", strings.ReplaceAll("exec "+shellScript(argv), "$", "$$")}
+	return []string{"/bin/sh", "-c", strings.ReplaceAll("set -f; exec "+shellScript(argv), "$", "$$")}
+}
+
+// shSetVars are variables the shell sets itself, whose value there is
+// not the environment's: $PPID would be slinit's pid, $PWD the
+// directory, $_ the last argument. A command naming one keeps load-time
+// expansion, with its warning.
+var shSetVars = map[string]bool{
+	"PPID": true, "PWD": true, "OLDPWD": true, "_": true, "IFS": true, "LINENO": true,
+	"OPTIND": true, "OPTARG": true, "PS1": true, "PS2": true, "PS4": true, "RANDOM": true,
+	"SECONDS": true, "SHLVL": true, "HOSTNAME": true, "BASH": true, "UID": true, "EUID": true,
 }
 
 // runtimeVars reports whether a command's variables are to be expanded
@@ -1365,6 +1381,9 @@ func runtimeShellArgv(argv []string) []string {
 func runtimeVars(refs []string) bool {
 	for _, r := range refs {
 		if r == "$MAINPID" || r == "${MAINPID}" {
+			return false
+		}
+		if shSetVars[strings.Trim(r, "${}")] {
 			return false
 		}
 	}
@@ -1379,6 +1398,7 @@ type foldCmd struct {
 	argv   []string // in slinit's $ syntax, as parseExecLine gives it
 	ignore bool     // the "-" prefix
 	priv   bool     // slinit's "+"
+	argv0  bool     // the "@" prefix: argv[0] other than the path
 	value  string   // the line as one slinit command, for a warning
 }
 
@@ -1392,6 +1412,13 @@ type foldCmd struct {
 func foldStartHooks(key, setting string, all []foldCmd, cur *string, priv *bool) []SystemdWarning {
 	if len(all) < 2 {
 		return nil
+	}
+	for _, c := range all {
+		if c.argv0 {
+			return []SystemdWarning{{"WARN", fmt.Sprintf(
+				"multiple %s= — one sets argv[0] with \"@\", which a shell running them in turn cannot; "+
+					"slinit takes one %s (dropped: %q)", key, setting, c.value)}}
+		}
 	}
 	for _, c := range all[1:] {
 		if c.priv != all[0].priv {
@@ -1419,7 +1446,7 @@ func foldStartHooks(key, setting string, all []foldCmd, cur *string, priv *bool)
 		}
 		script = append(script, step)
 	}
-	v, ok := slinitCommandValue([]string{"/bin/sh", "-c", strings.ReplaceAll(strings.Join(script, " && "), "$", "$$")})
+	v, ok := slinitCommandValue([]string{"/bin/sh", "-c", strings.ReplaceAll("set -f; "+strings.Join(script, " && "), "$", "$$")})
 	if !ok {
 		return []SystemdWarning{{"WARN", fmt.Sprintf("multiple %s= — an argument holds a newline; keeping the first", key)}}
 	}

@@ -174,7 +174,7 @@ ExecStop=/usr/bin/stop it ; /usr/bin/stop2 ""
 		argvIs(t, name+": command", d.Command, []string{"/usr/bin/foo", "", "a\tb", "x y", "A", `q"uote`, `back\slash`,
 			";", "end 1", "probe.service", "probe.service"})
 		// Two commands on one line run in turn, from one shell.
-		argvIs(t, name+": pre-start-command", d.PreStartCommand, []string{"/bin/sh", "-c", "'/usr/bin/a' '1' && '/usr/bin/b' '2'"})
+		argvIs(t, name+": pre-start-command", d.PreStartCommand, []string{"/bin/sh", "-c", "set -f; '/usr/bin/a' '1' && '/usr/bin/b' '2'"})
 		// A newline cannot be written in a slinit value: dropped, warned.
 		argvIs(t, name+": post-start-command", d.PostStartCommand, nil)
 		// One stop-command: the last, as for ExecStart.

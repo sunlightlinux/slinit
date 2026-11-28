@@ -547,7 +547,8 @@ service's **run-as** user.
 
 **pass-environment**=*NAME*...
 :   Allow-list filter applied to the inherited environment, the
-    **env-file** variables and **slinitctl setenv** variables (not to
+    **environment** and **env-file** variables and **slinitctl setenv**
+    variables, unlike systemd's, which leaves *Environment=* alone (not to
     **env-dir** / **env-generator** output, which is merged
     afterwards). When set, only listed names are forwarded to the
     child. Empty value = drop
