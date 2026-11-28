@@ -98,8 +98,11 @@ func TestSystemdTTYCluster(t *testing.T) {
 		{name: "getty", body: "StandardInput=tty\nTTYPath=/dev/tty3\nTTYReset=yes\nTTYVHangup=on\nTTYVTDisallocate=1\nTTYRows=30\nTTYColumns=100\n",
 			lines: map[string][]string{"tty-path": {"/dev/tty3"}, "tty-reset": {"yes"}, "tty-vhangup": {"yes"},
 				"tty-vt-disallocate": {"yes"}, "tty-rows": {"30"}, "tty-columns": {"100"}},
-			warn: []string{"WARN", "StandardInput=tty", "unmask-intr"},
+			warn: []string{"NOTE", "StandardInput=tty", "unmask-intr"},
 			desc: func(t *testing.T, d *ServiceDescription) {
+				if !d.Flags.UnmaskIntr {
+					t.Error("StandardInput=tty: the tty is not made the controlling terminal (unmask-intr)")
+				}
 				if d.TTYPath != "/dev/tty3" || !d.TTYReset || !d.TTYVHangup || !d.TTYVTDisallocate || d.TTYRows != 30 || d.TTYColumns != 100 {
 					t.Errorf("tty fields: %q %v %v %v %d %d", d.TTYPath, d.TTYReset, d.TTYVHangup, d.TTYVTDisallocate, d.TTYRows, d.TTYColumns)
 				}

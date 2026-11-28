@@ -791,8 +791,11 @@ func exFinishStdio(cfg *SystemdConfig, st *exState) []SystemdWarning {
 			cfg.setMapped("standard-input-data", base64.StdEncoding.EncodeToString(st.data))
 		}
 	case in.isTTY():
-		warns = append(warns, exWarn("StandardInput", in.raw, "→ tty-path; systemd makes the tty the service's controlling terminal, "+
-			"slinit only with options = unmask-intr — add it for a getty or a shell"))
+		// systemd makes the tty the controlling terminal; slinit does
+		// so with options = unmask-intr, which is therefore set.
+		cfg.unmaskIntr = true
+		warns = append(warns, exNote("StandardInput", in.raw, "→ tty-path with options = unmask-intr, so the tty is the "+
+			"service's controlling terminal, as in systemd"))
 		if in.kind == "tty-graceful" {
 			warns = append(warns, exNote("StandardInput", in.raw, "slinit has no fallback to /dev/null when there is no console"))
 		}

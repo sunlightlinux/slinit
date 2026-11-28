@@ -611,3 +611,12 @@ func TestSystemdExecReloadMainPIDAtRunTime(t *testing.T) {
 		t.Errorf("reload-command runs as %q (%v)", got, warns)
 	}
 }
+
+// NoNewPrivileges= and StandardInput=tty both set options members: one
+// options line holds both, since options = replaces.
+func TestSystemdOptionsMembersTogether(t *testing.T) {
+	_, _, desc := lcConvert(t, "NoNewPrivileges=yes\nStandardInput=tty\nTTYPath=/dev/tty2")
+	if !desc.Flags.UnmaskIntr || !desc.NoNewPrivs {
+		t.Errorf("unmask-intr %v, no-new-privs %v", desc.Flags.UnmaskIntr, desc.NoNewPrivs)
+	}
+}

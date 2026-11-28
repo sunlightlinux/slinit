@@ -74,6 +74,7 @@ type SystemdConfig struct {
 	termSignal   string
 	umask        string
 	noNewPrivs   bool
+	unmaskIntr   bool // options = unmask-intr: the tty is the controlling terminal
 	restart      string
 	restartDelay string
 	stopTimeout  string
@@ -2219,12 +2220,18 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	if c.umask != "" {
 		fmt.Fprintf(w, "umask = %s\n", c.umask)
 	}
+	// Options members, not settings of their own (emitting
+	// `no-new-privs = yes` produced a file the parser rejects with
+	// "unknown setting"), on one line: options = replaces.
+	var opts []string
 	if c.noNewPrivs {
-		// An options member, not a setting of its own. Emitting
-		// `no-new-privs = yes` produced a file the parser rejects with
-		// "unknown setting", so every converted unit that set
-		// NoNewPrivileges was unloadable.
-		fmt.Fprintln(w, "options = no-new-privs")
+		opts = append(opts, "no-new-privs")
+	}
+	if c.unmaskIntr {
+		opts = append(opts, "unmask-intr")
+	}
+	if len(opts) > 0 {
+		fmt.Fprintf(w, "options = %s\n", strings.Join(opts, " "))
 	}
 	if c.closeStdin {
 		fmt.Fprintln(w, "close-stdin = yes")

@@ -26,6 +26,12 @@ verified with `git tag -v`.
 
 ### Changed
 
+- **A unit's `StandardInput=tty` makes the tty its controlling
+  terminal**, as in systemd: the conversion sets `options = unmask-intr`
+  with `tty-path`, where it told the operator to add it (a getty or a
+  shell otherwise had no job control). With `NoNewPrivileges=` both
+  share one `options` line, which a second line would have replaced.
+
 - **A unit's `Exec*=` variables are expanded when the command runs**,
   from the service's environment (its Environment= and EnvironmentFile=),
   as systemd does: such a command goes through `/bin/sh -c "exec ..."`
