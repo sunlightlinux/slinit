@@ -204,7 +204,7 @@ either mapped onto its slinit counterpart, with its value translated
 **Condition\*** and **Assert\*** keys become slinit's **condition-\***
 and **assert-\***, **ExecStopPost=** a **finish-command**, and so on);
 or reported with what to use instead, when slinit does without it
-(**DeviceAllow=**, **IPAddressDeny=**, **PAMName=**, the disk-image
+(**IPAddressDeny=**, **PAMName=**, the disk-image
 directives, among others); or skipped as meaningless outside systemd
 (job modes, accounting switches that only feed systemd's own
 reporting). A mapped value slinit cannot take is dropped with a

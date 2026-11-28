@@ -290,6 +290,10 @@ type ServiceRecord struct {
 	// and its prepared-by dependencies are left alone, and it is not
 	// counted as one (calendarFire).
 	rerunJob bool
+	// devicePolicy / deviceAllow: the cgroup device filter, attached at
+	// each start (process.applyDeviceFilter).
+	devicePolicy string
+	deviceAllow  []string
 	// onFailureStarts: when on-failure last started this service, for
 	// its start limit (onfailure.go).
 	onFailureStarts []time.Time
@@ -2206,8 +2210,13 @@ func (sr *ServiceRecord) SetOOMScoreAdj(n *int)      { sr.oomScoreAdj = n }
 func (sr *ServiceRecord) SetNoNewPrivs(v bool)       { sr.noNewPrivs = v }
 func (sr *ServiceRecord) SetIOPrio(class, level int) { sr.ioPrioClass = class; sr.ioPrioLevel = level }
 func (sr *ServiceRecord) SetCgroupPath(p string)     { sr.cgroupPath = p }
-func (sr *ServiceRecord) SetSlice(s string)          { sr.slice = s }
-func (sr *ServiceRecord) Slice() string              { return sr.slice }
+
+// SetDeviceFilter sets device-policy and device-allow.
+func (sr *ServiceRecord) SetDeviceFilter(policy string, allow []string) {
+	sr.devicePolicy, sr.deviceAllow = policy, allow
+}
+func (sr *ServiceRecord) SetSlice(s string) { sr.slice = s }
+func (sr *ServiceRecord) Slice() string     { return sr.slice }
 
 func (sr *ServiceRecord) SetDelegate(on bool, controllers []string) {
 	sr.delegate = on
@@ -2773,6 +2782,10 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.IOPrioClass = sr.ioPrioClass
 	params.IOPrioLevel = sr.ioPrioLevel
 	params.CgroupPath = sr.EffectiveCgroupPath()
+	// Only on a cgroup of the service's own; without one (the loader
+	// refuses that) the start fails rather than run unfiltered.
+	params.DevicePolicy, params.DeviceAllow = sr.devicePolicy, sr.deviceAllow
+	params.DeviceFilterOwnCgroup = sr.OwnCgroupPath() != ""
 	params.CgroupSettings = sr.cgroupSettings
 	// Only a cgroup of the service's own may be handed over.
 	params.Delegate = sr.delegate && sr.OwnCgroupPath() != ""

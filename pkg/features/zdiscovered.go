@@ -140,6 +140,8 @@ var BuiltinDirectives = []string{
 	"depends-ms",
 	"depends-on",
 	"description",
+	"device-allow",
+	"device-policy",
 	"dynamic-user",
 	"env-dir",
 	"env-file",

@@ -89,6 +89,18 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`device-policy` / `device-allow`: a cgroup device filter**,
+  systemd's DevicePolicy= / DeviceAllow=, with the program systemd's
+  bpf-devices.c builds (new `pkg/bpfdev`, an eBPF assembler and loader
+  with no dependency). It decides every open and mknod of a device node
+  in the service's cgroup, root's included; it is attached before the
+  fork, replaces the previous start's, and a filter that cannot be put
+  in place fails the start (systemd runs the service unfiltered with a
+  warning). It needs a cgroup of the service's own; the converter adds
+  `slice = system.slice` to a unit without one. 85 units of this host's
+  and systemd's corpus use DeviceAllow=, which used to be a confining
+  gap. Functional case 342.
+
 - **A service's `.timer` unit is read with it**: `foo.timer`'s
   `OnCalendar=` becomes `foo`'s `start-on-calendar`, with `manual = yes`
   so the calendar alone runs it, as the timer alone runs a

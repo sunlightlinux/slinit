@@ -643,6 +643,17 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 	}()
 
+	// The device filter, on the cgroup before the fork: the child is
+	// born in it (CLONE_INTO_CGROUP), so nothing of the service runs
+	// without the filter. It confines, so one that cannot be put in
+	// place fails the start, where systemd runs the service with every
+	// device and a warning.
+	if params.DevicePolicy != "" || len(params.DeviceAllow) > 0 {
+		if err := applyDeviceFilter(params, cgroupFD); err != nil {
+			return 0, nil, &ExecError{Stage: StageEnterCgroup, Err: err}
+		}
+	}
+
 	// Delegation, once the directory exists and before the payload can
 	// look at it. Deliberately after the settings above: slinit's own
 	// limits are written while it still owns the files, so a delegated

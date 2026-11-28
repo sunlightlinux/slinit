@@ -1343,6 +1343,15 @@ func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
 	// the host's /tmp private and its /etc read-only and leave the jail's
 	// untouched. Refused until they resolve under the jail, as systemd's
 	// RootDirectory= does.
+	// A device filter is attached to the service's cgroup: on the
+	// daemon's shared one it would confine every other service there.
+	if (desc.DevicePolicy != "" || len(desc.DeviceAllow) > 0) && desc.CgroupPath == "" && desc.Slice == "" {
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message: "device-policy and device-allow need a cgroup of the service's own " +
+				"(slice or cgroup): the filter is attached to it",
+		}
+	}
 	if desc.Chroot != "" {
 		if opts := chrootMountConflicts(desc); len(opts) > 0 {
 			return &ServiceLoadError{
@@ -2357,6 +2366,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	// no diagnostic. EffectiveCgroupPath still prefers cgroupPath when
 	// both are set, so the precedence is unchanged.
 	rec.SetSlice(desc.Slice)
+	rec.SetDeviceFilter(desc.DevicePolicy, desc.DeviceAllow)
 	rec.SetDelegate(desc.Delegate, desc.DelegateControllers)
 	if desc.Delegate && desc.CgroupPath == "" && desc.Slice == "" {
 		// Only a cgroup of the service's own can be handed over; the

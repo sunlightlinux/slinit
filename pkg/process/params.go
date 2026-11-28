@@ -194,6 +194,15 @@ type ExecParams struct {
 	// CgroupPath is the cgroupv2 path to join (e.g., "/sys/fs/cgroup/myservice").
 	CgroupPath string
 
+	// DevicePolicy and DeviceAllow are device-policy / device-allow:
+	// the device filter attached to CgroupPath before the fork
+	// (devicefilter.go). Both empty: no filter.
+	DevicePolicy string
+	DeviceAllow  []string
+	// DeviceFilterOwnCgroup: CgroupPath is the service's own, not the
+	// daemon's shared default, so the filter may go on it.
+	DeviceFilterOwnCgroup bool
+
 	// CgroupSettings are key-value pairs written to the cgroup directory
 	// before moving the child process into it. Each entry is {file, value},
 	// e.g., {"memory.max", "536870912"} or {"pids.max", "100"}.

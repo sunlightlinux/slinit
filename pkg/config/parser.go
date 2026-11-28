@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/bpfdev"
 	"github.com/sunlightlinux/slinit/pkg/features"
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -638,6 +639,9 @@ type ServiceDescription struct {
 	//   ProtectSystem ro; ReadOnlyPaths add further ro on top.
 	PrivateTmp     bool
 	PrivateDevices bool // private-devices: a /dev without physical devices
+	// DevicePolicy / DeviceAllow: the cgroup device filter (pkg/bpfdev).
+	DevicePolicy string
+	DeviceAllow  []string
 	ProtectSystem  string
 	ReadOnlyPaths  []string
 	ReadWritePaths []string
@@ -2776,6 +2780,23 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		} else {
 			desc.Environment = list
 		}
+	case "device-policy":
+		if _, err := bpfdev.ParsePolicy(value); err != nil {
+			return err
+		}
+		desc.DevicePolicy = strings.TrimSpace(value)
+	case "device-allow":
+		// One entry per line, each adding to the list, as DeviceAllow=;
+		// an empty value clears it.
+		v := strings.TrimSpace(value)
+		if v == "" {
+			desc.DeviceAllow = nil
+			break
+		}
+		if _, err := bpfdev.ParseAllow(v); err != nil {
+			return err
+		}
+		desc.DeviceAllow = append(desc.DeviceAllow, v)
 	case "private-devices":
 		b, err := parseBool(value)
 		if err != nil {

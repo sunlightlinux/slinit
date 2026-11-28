@@ -52,9 +52,9 @@ var KnownSettings = map[string]OperatorType{
 	"log-select": OpEquals | OpColon,
 
 	// Commands
-	"command":       OpEquals | OpPlusEqual,
-	"command-argv0": OpEquals, // runit chpst -b: override argv[0] presented to the exec'd target
-	"stop-command":  OpEquals | OpPlusEqual,
+	"command":        OpEquals | OpPlusEqual,
+	"command-argv0":  OpEquals, // runit chpst -b: override argv[0] presented to the exec'd target
+	"stop-command":   OpEquals | OpPlusEqual,
 	"reload-command": OpEquals | OpPlusEqual,
 
 	// Working directory
@@ -397,6 +397,8 @@ var KnownSettings = map[string]OperatorType{
 	// fresh mount namespace; CLONE_NEWNS is auto-implied)
 	"private-tmp":          OpEquals,
 	"private-devices":      OpEquals,
+	"device-policy":        OpEquals,
+	"device-allow":         OpEquals | OpPlusEqual,
 	"protect-system":       OpEquals,
 	"read-only-paths":      OpEquals | OpPlusEqual,
 	"read-write-paths":     OpEquals | OpPlusEqual,

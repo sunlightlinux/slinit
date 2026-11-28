@@ -226,6 +226,12 @@ func RenderShow(s Service) string {
 	if sr.sandbox.PrivateDevices {
 		p("PrivateDevices", "yes")
 	}
+	if sr.devicePolicy != "" {
+		p("DevicePolicy", sr.devicePolicy)
+	}
+	for _, a := range sr.deviceAllow {
+		p("DeviceAllow", a)
+	}
 	if sr.sandbox.PrivateTmp {
 		pb("PrivateTmp", true)
 	}

@@ -123,9 +123,6 @@ func init() {
 		"IOPressureWatch", "IOPressureThresholdSec")
 
 	// eBPF and netfilter based confinement.
-	gap(true, "slinit has no device cgroup filter (systemd attaches an eBPF device program); "+
-		"use private-devices or a mount namespace to hide device nodes",
-		"DeviceAllow", "DevicePolicy")
 	gap(true, "slinit has no per-service IP filter (systemd attaches an eBPF program to the cgroup); "+
 		"use namespace-net or a host firewall rule matching the service's cgroup",
 		"IPAddressAllow", "IPAddressDeny", "IPIngressFilterPath", "IPEgressFilterPath")

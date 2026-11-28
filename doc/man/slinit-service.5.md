@@ -1638,9 +1638,38 @@ before exec'ing the service. The host filesystem is untouched.
     */dev/kmsg*. **CAP_MKNOD** and **CAP_SYS_RAWIO** leave the bounding
     set, so no device node can be made and no raw I/O done around it.
     systemd's **PrivateDevices=**, built as systemd builds it, except
-    for systemd's cgroup device filter, which slinit has not. Applied by
-    **slinit-runner** in the service's mount namespace; not with
-    **chroot**.
+    for the cgroup device filter systemd adds with it: set
+    **device-policy** = *closed* for that. Applied by **slinit-runner**
+    in the service's mount namespace; not with **chroot**.
+
+**device-policy**=*auto*|*closed*|*strict* (since 4.1.0)
+:   A cgroup device filter, an eBPF program on the service's cgroup that
+    decides every open and **mknod**(2) of a device node by its
+    processes, root's included. *strict*: only what **device-allow**
+    lists. *closed*: that, and the pseudo devices *null*, *zero*,
+    *full*, *random*, *urandom*, *tty*, *ptmx* and the pseudo-TTYs
+    (read and write, not made). *auto* (the default): no filter unless
+    **device-allow** lists something, then as *closed*. The filter is
+    built when the service starts, attached to its cgroup before its
+    process is forked into it, and replaces the one a previous start
+    attached. It needs a cgroup of the service's own (**slice** or
+    **cgroup**): a description without one is refused, as on the
+    daemon's shared cgroup it would confine every service there. A
+    filter that cannot be attached (a kernel without
+    **CONFIG_CGROUP_BPF**, no cgroup v2) fails the start, where systemd
+    runs the service with every device and a warning. systemd's
+    **DevicePolicy=**, with the same program.
+
+**device-allow**=*device* [*rwm*] (since 4.1.0)
+:   A device the filter lets through, with the access: **r** read,
+    **w** write, **m** mknod; all three when left out. *device* is a node
+    (*/dev/fuse*, its numbers read when the service starts; one that
+    does not exist is skipped with a note), */dev/char/*M*:*N or
+    */dev/block/*M*:*N, or **char-***name* / **block-***name* for every
+    device of a driver in */proc/devices* (*name* a glob such as
+    *tty\**, a major number, or **\*** for the whole class). Each line
+    adds one (**+=** too); an empty value clears the list. systemd's
+    **DeviceAllow=**.
 
 **private-tmp**=*yes*|*no*
 :   Replace */tmp* and */var/tmp* with a fresh per-service *tmpfs*. The
@@ -1877,8 +1906,9 @@ these hide or make read-only that do not exist are skipped.
 :   Deny **clock_settime**(2), **clock_adjtime**(2),
     **settimeofday**(2), **adjtimex**(2), and drop *CAP_SYS_TIME* and
     *CAP_WAKE_ALARM* from the bounding set (since 4.0.3). systemd's
-    **ProtectClock=** also makes the RTC devices read-only through the
-    device cgroup controller, which slinit does not do.
+    **ProtectClock=** also makes the RTC devices read-only through its
+    device filter, which slinit does not add with it (**device-policy**
+    can, given the devices to allow).
 
 **protect-control-groups**=*yes*|*no*
 :   Read-only remount */sys/fs/cgroup*. Equivalent to systemd's
