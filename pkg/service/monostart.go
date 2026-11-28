@@ -160,9 +160,10 @@ func (m *MonoStarter) Remove(name string) {
 }
 
 // ServiceEvent re-arms on a start, which moves
-// start-on-unit-active-sec on.
+// start-on-unit-active-sec on, and on a stop, after which a service
+// that ran is due again.
 func (m *MonoStarter) ServiceEvent(svc Service, event ServiceEvent) {
-	if event == EventStarted {
+	if event == EventStarted || event == EventStopped {
 		m.do(func() {
 			if m.heard[svc] {
 				m.arm(svc.Name())
@@ -177,6 +178,10 @@ func (m *MonoStarter) Close() { close(m.done) }
 type monoConf struct {
 	boot, active, delay time.Duration
 	started             time.Time
+	// running: started and not a scripted job, which a timer cannot
+	// start again; its start-on-unit-active-sec waits for the stop, as
+	// systemd's timer waits while the unit it started is active.
+	running bool
 }
 
 // read is svc's settings and last start, under queueMu.
@@ -189,7 +194,9 @@ func (m *MonoStarter) conf(svc Service) monoConf {
 	m.set.queueMu.Lock()
 	defer m.set.queueMu.Unlock()
 	r := svc.Record()
-	return monoConf{r.startOnBootSec, r.startOnUnitActiveSec, r.startOnCalendarDelay, r.startedTime}
+	_, scripted := svc.(*ScriptedService)
+	running := r.state.Load() == StateStarted && !scripted
+	return monoConf{r.startOnBootSec, r.startOnUnitActiveSec, r.startOnCalendarDelay, r.startedTime, running}
 }
 
 // target is the next time name's timers name, or zero.
@@ -203,7 +210,7 @@ func (m *MonoStarter) target(name string) (time.Time, monoConf) {
 	if c.boot > 0 && !m.bootDone[name] {
 		target = m.bootTime.Add(c.boot)
 	}
-	if c.active > 0 {
+	if c.active > 0 && !c.running {
 		base := c.started
 		if f := m.lastFire[name]; f.After(base) {
 			base = f

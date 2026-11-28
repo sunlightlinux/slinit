@@ -66,3 +66,20 @@ func TestKeyringMode(t *testing.T) {
 		t.Error("bogus mode accepted")
 	}
 }
+
+// Refused or over quota, as systemd: the service starts with the keyring
+// it has; another error fails it.
+func TestKeyringModeBestEffort(t *testing.T) {
+	old := joinSessionKeyring
+	defer func() { joinSessionKeyring = old }()
+	for _, e := range []error{unix.EPERM, unix.EACCES, unix.ENOSYS, unix.EDQUOT} {
+		joinSessionKeyring = func() error { return e }
+		if err := applyKeyringMode("private"); err != nil {
+			t.Errorf("%v: %v, want the start to go on", e, err)
+		}
+	}
+	joinSessionKeyring = func() error { return unix.EINVAL }
+	if err := applyKeyringMode("private"); err == nil {
+		t.Error("EINVAL did not fail it")
+	}
+}

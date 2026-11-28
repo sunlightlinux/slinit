@@ -108,9 +108,14 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 					d = &activeSec
 				}
 				// Several: the earliest elapses first; slinit keeps one.
-				// 0 elapses at once (at boot, or right after a start):
-				// a millisecond, as 0 means unset in slinit.
+				// 0 elapses at once: a millisecond for the boot time, as 0
+				// means unset in slinit. An interval after each start
+				// below a second would rerun a job without pause: a
+				// second at least.
 				v := max(time.Duration(us)*time.Microsecond, time.Millisecond)
+				if key == "OnUnitActiveSec" {
+					v = max(v, time.Second)
+				}
 				if *d == 0 || v < *d {
 					*d = v
 				}

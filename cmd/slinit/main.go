@@ -1506,7 +1506,9 @@ func main() {
 	// start-on-boot-sec / start-on-unit-active-sec: the monotonic timers.
 	monoStarter := service.NewMonoStarter(serviceSet, logger)
 	defer monoStarter.Close()
-	if containerMode || userMode {
+	if containerMode {
+		// The kernel booted long before the container: OnBootSec=
+		// counts from the manager's start there, as in systemd.
 		monoStarter.CountFromStart()
 	}
 	{

@@ -152,3 +152,31 @@ func TestMonoReplaceMovesListener(t *testing.T) {
 		t.Error("still listening to the replaced record")
 	}
 }
+
+// A running process service is not fired at by start-on-unit-active-sec
+// (no spinning, however short the interval); its stop makes it due.
+func TestMonoUnitActiveWaitsForStop(t *testing.T) {
+	set, logger := newTestSet()
+	s := sleeper(set, "daemon")
+	s.Record().SetStartOnMonotonic(0, 50*time.Millisecond)
+	m := NewMonoStarter(set, logger)
+	defer m.Close()
+	defer set.StopService(s)
+	set.StartService(s)
+	waitState(t, s, StateStarted, 3*time.Second)
+	m.Add(s)
+	time.Sleep(500 * time.Millisecond)
+	fires := func() int {
+		got := make(chan int)
+		m.do(func() { got <- m.fires })
+		return <-got
+	}
+	if n := fires(); n != 0 {
+		t.Fatalf("%d elapses while the service ran", n)
+	}
+	set.StopService(s)
+	waitState(t, s, StateStopped, 3*time.Second)
+	if got := waitState(t, s, StateStarted, 3*time.Second); got != StateStarted {
+		t.Errorf("not started again after its stop: %v", got)
+	}
+}

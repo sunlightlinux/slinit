@@ -1127,10 +1127,6 @@ func runnerSecurityFeatures(p ExecParams) []string {
 	if p.Securebits != 0 {
 		missing = append(missing, "securebits")
 	}
-	// Isolation of the service's keys from every other service's.
-	if p.KeyringMode != "" {
-		missing = append(missing, "keyring-mode")
-	}
 	return missing
 }
 

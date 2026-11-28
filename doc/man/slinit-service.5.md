@@ -236,8 +236,10 @@ what tells you the oldest slinit your configuration will run on. See
     command that succeeded. **type** = *process* and *bgprocess* (the
     daemon's pid is *MAINPID*), and *scripted* while it is started, with
     no *MAINPID*, as systemd leaves it unset for a oneshot (*nftables*,
-    *apparmor*: the reload applies the rules again); on another type it
-    is a load error.
+    *apparmor*: the reload applies the rules again), bounded by its
+    **start-timeout**, *0* (a converted oneshot's) meaning no bound, as
+    systemd's; not when a condition skipped it. On another type it is
+    a load error.
     systemd's **ExecReload=** with a command; its *kill -HUP $MAINPID*
     form is **reload-signal**.
 
@@ -2659,8 +2661,8 @@ watch; the service remains startable via `slinitctl start`.
     kernel booted, counted on the monotonic clock, which pauses while
     the machine is suspended, as systemd's; at once if that is already
     past when the service loads, and not again on a reload. In a
-    container (**slinit -o**) and for a user instance it counts from
-    slinit's start, as systemd counts **OnBootSec=** there. A finished
+    container (**slinit -o**) it counts from slinit's start, as systemd
+    counts **OnBootSec=** there. A finished
     **scripted** job is run again, as for **start-on-calendar**.
     systemd's **OnBootSec=** (and **OnStartupSec=**, which for PID 1 is
     the same).
@@ -2669,7 +2671,8 @@ watch; the service remains startable via `slinitctl start`.
 :   Start the service *duration* after it last started, again and
     again: an operator's start counts, and so does the last start this
     timer made, so a slow job still coming up does not make it fire
-    again. With no start yet to count from it waits for the first
+    again. A service other than a **scripted** job is not started while
+    it runs: the time is reckoned again when it stops. With no start yet to count from it waits for the first
     (with **start-on-boot-sec**, the boot one). systemd's
     **OnUnitActiveSec=**. **start-on-calendar-randomized-delay** applies
     to both.
@@ -2996,8 +2999,8 @@ slinit itself, because they act on the calling process and so must be set
 after the fork and before the exec: the seccomp filter, the
 **protect-\***/**restrict-\*** set, the sandbox directives, an LSM label
 (**apparmor-switch**, **selinux-context**, **smack-process-label**),
-**capability-bounding-set**, **securebits**, **keyring-mode** and **options**=*no-new-privs*, plus
-**mlockall**, **numa-mempolicy**, **memory-thp**, **debug**,
+**capability-bounding-set**, **securebits** and **options**=*no-new-privs*, plus
+**keyring-mode**, **mlockall**, **numa-mempolicy**, **memory-thp**, **debug**,
 **coredump-filter**, **timer-slack-nsec**, **memory-ksm**,
 **personality** and **ignore-sigpipe**.
 
@@ -3558,7 +3561,10 @@ mounted at `/run/credentials/<name>/`).
     other service; *private* gives it a new anonymous one, so keys it
     adds stay its own; *shared* also links its user's keyring into it.
     Made by **slinit-runner** as the service's user, before any
-    syscall filter. systemd's **KeyringMode=**, whose default for a
+    syscall filter. Best effort, as in systemd: where the kernel has no
+    keyrings, a container's syscall filter refuses **keyctl**(2) or the
+    user is over its key quota, the service starts with the keyring it
+    inherited, and the runner says so. systemd's **KeyringMode=**, whose default for a
     system service is *private*.
 
 **memory-thp**=*madvise*|*never*|*always*

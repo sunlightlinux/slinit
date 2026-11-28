@@ -91,7 +91,9 @@ verified with `git tag -v`.
 
 - **`keyring-mode = inherit | private | shared`**: systemd's
   KeyringMode=; a service gets a session keyring of its own instead of
-  the one every service inherits from slinit. Functional case 345.
+  the one every service inherits from slinit. Best effort, as systemd's:
+  refused (a container's seccomp profile) or over the key quota, the
+  service starts with the inherited keyring. Functional case 345.
 
 - **`ExecStart=-` on a long-running service** maps onto
   `failure-conditions = none`: systemd takes any end of such a process

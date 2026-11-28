@@ -163,6 +163,7 @@ func (c *CalendarStarter) Remove(name string) {
 		delete(c.timers, name)
 	}
 	delete(c.nominal, name)
+	delete(c.delays, name)
 }
 
 // armMissedLocked starts the service at once for missed, a time the

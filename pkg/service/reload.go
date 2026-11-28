@@ -81,7 +81,9 @@ func (s *ScriptedService) reloadSpec() (reloadSpec, bool) {
 	if len(s.reloadCommand) == 0 {
 		return reloadSpec{}, false
 	}
-	if s.state.Load() != StateStarted {
+	// Skipped by a condition, it is started without having run: not
+	// running, as systemd reports such a oneshot inactive.
+	if s.state.Load() != StateStarted || s.startSkipped {
 		return reloadSpec{}, true
 	}
 	params := process.ExecParams{
@@ -92,7 +94,9 @@ func (s *ScriptedService) reloadSpec() (reloadSpec, bool) {
 		RunAsGID:          s.effectiveRunAsGID(),
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
-	return reloadSpec{params: params, running: true, timeout: reloadBound(s.startTimeout, defaultFinishTimeout)}, true
+	// start-timeout bounds it, and 0 (a converted oneshot's) means no
+	// bound, as systemd gives a oneshot's ExecReload= none.
+	return reloadSpec{params: params, running: true, timeout: s.startTimeout}, true
 }
 
 // reloadBound is the reload's time limit: start-timeout, as systemd
@@ -136,8 +140,12 @@ func (ss *ServiceSet) RunReloadCommand(svc Service) (hasPID bool, err error) {
 	}
 	ss.logger.Info("Service '%s': reload-command started (pid %d)", svc.Name(), pid)
 	defer process.KillProcessGroup(pid)
-	t := time.NewTimer(spec.timeout)
-	defer t.Stop()
+	var timeout <-chan time.Time // nil, for no bound, never fires
+	if spec.timeout > 0 {
+		t := time.NewTimer(spec.timeout)
+		defer t.Stop()
+		timeout = t.C
+	}
 	select {
 	case exit := <-exitCh:
 		if exit.ExecErr != nil {
@@ -150,7 +158,7 @@ func (ss *ServiceSet) RunReloadCommand(svc Service) (hasPID bool, err error) {
 			return true, fmt.Errorf("reload-command exited %d", exit.Status.ExitStatus())
 		}
 		return true, nil
-	case <-t.C:
+	case <-timeout:
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 		<-exitCh
 		return true, fmt.Errorf("reload-command did not finish within %v; killed", spec.timeout)

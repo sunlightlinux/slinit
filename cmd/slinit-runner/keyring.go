@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"golang.org/x/sys/unix"
 )
@@ -18,7 +19,16 @@ func applyKeyringMode(mode string) error {
 		return fmt.Errorf("unknown mode %q (want private or shared)", mode)
 	}
 	// KEYCTL_JOIN_SESSION_KEYRING with a NULL name: a new anonymous one.
-	if _, err := unix.KeyctlInt(unix.KEYCTL_JOIN_SESSION_KEYRING, 0, 0, 0, 0); err != nil {
+	// Not there (no CONFIG_KEYS), refused (a container's seccomp
+	// profile) or over the user's key quota: the service starts with
+	// the keyring it has, as systemd's setup_keyring goes on for
+	// ENOSYS, EPERM, EACCES and EDQUOT. Anything else fails it.
+	if err := joinSessionKeyring(); err != nil {
+		switch err {
+		case unix.ENOSYS, unix.EPERM, unix.EACCES, unix.EDQUOT:
+			fmt.Fprintf(os.Stderr, "slinit-runner: keyring-mode=%s: no session keyring of its own (%v); keeping the inherited one\n", mode, err)
+			return nil
+		}
 		return fmt.Errorf("new session keyring: %w", err)
 	}
 	if mode == "shared" {
@@ -27,4 +37,11 @@ func applyKeyringMode(mode string) error {
 		}
 	}
 	return nil
+}
+
+// joinSessionKeyring is KEYCTL_JOIN_SESSION_KEYRING with a NULL name; a
+// var so a test can have it fail as a container's filter makes it.
+var joinSessionKeyring = func() error {
+	_, err := unix.KeyctlInt(unix.KEYCTL_JOIN_SESSION_KEYRING, 0, 0, 0, 0)
+	return err
 }
