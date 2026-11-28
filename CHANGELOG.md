@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`before:` ordered the other way round.** `a: before: x` was stored
+  as an edge that made `a` wait for `x`; it now makes `x` wait for `a`,
+  as in dinit, and a `before:` that closes a start-order cycle is
+  refused at load, as dinit refuses it.
+- **A prepared-by dependency was restarted twice for one crash.** When
+  the dependency crashed and restarted itself, the dependent its crash
+  stopped then restarted it again: the fresh run was SIGTERMed a moment
+  after its exec, and one more spawn ran past restart-limit-count.
+- **`no-boot-marker = yes` was lost to a later `options =` line**, which
+  cleared every flag; `options =` now replaces only what it sets.
+- Tests: `TestRestartDuringRestartDelayHolds` waited too little for the
+  restart hold; `pkg/journal` failed with a Go 1.27 toolchain.
+
 ## [4.0.5] — 2026-11-27
 
 **A fix release on the 4.0 long-term-support line, led by a 4.0.4
