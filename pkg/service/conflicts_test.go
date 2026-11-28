@@ -257,3 +257,19 @@ func TestUpholdsLeavesARestartDelayAlone(t *testing.T) {
 		t.Errorf("h ran %d times within its restart-delay, want 1", n)
 	}
 }
+
+// A service the operator marked down is not started by upholds: only an
+// explicit start lifts the marker.
+func TestUpholdsLeavesAMarkedDownServiceAlone(t *testing.T) {
+	set, _ := newTestSet()
+	h := sleeper(set, "h")
+	h.Record().SetMarkedDown(true)
+	u := sleeper(set, "u")
+	u.SetUpholds([]string{"h"})
+	defer set.StopService(u)
+	set.StartService(u)
+	time.Sleep(300 * time.Millisecond)
+	if st := h.State(); st != StateStopped || !h.Record().IsMarkedDown() {
+		t.Errorf("h %v, marked down %v: upholds overrode the down marker", st, h.Record().IsMarkedDown())
+	}
+}

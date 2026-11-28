@@ -67,6 +67,12 @@ func (ss *ServiceSet) startQueuedOnFailure() bool {
 			continue
 		}
 		r := h.Record()
+		if r.markedDown {
+			// The operator's down marker: only an explicit start lifts
+			// it, and this one is automatic.
+			ss.logger.Info("Service '%s': '%s' is marked down; not started", st.from, st.name)
+			continue
+		}
 		r.onFailureStarts = slices.DeleteFunc(r.onFailureStarts, func(t time.Time) bool {
 			return now.Sub(t) >= onFailureInterval
 		})
