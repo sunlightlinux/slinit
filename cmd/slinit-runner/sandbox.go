@@ -15,6 +15,7 @@ import (
 // see slinit-service(5) for user-facing semantics.
 type sandboxSpec struct {
 	privateTmp          bool
+	privateDevices      bool   // privatedev.go
 	protectSystem       string // "" | "yes" | "full" | "strict"
 	readOnlyPaths       []string
 	readWritePaths      []string
@@ -31,7 +32,7 @@ type sandboxSpec struct {
 // skip the (privileged, ns-clobbering) setup path entirely when nothing
 // was requested.
 func (s sandboxSpec) active() bool {
-	return s.privateTmp ||
+	return s.privateTmp || s.privateDevices ||
 		s.protectSystem != "" || len(s.readOnlyPaths) > 0 || len(s.readWritePaths) > 0 ||
 		s.protectHome != "" || len(s.inaccessiblePaths) > 0 ||
 		s.protectProc != "" || s.procSubset != "" ||
@@ -65,6 +66,16 @@ func applySandbox(s sandboxSpec) error {
 	// virtual filesystems and broad protections first, then layer
 	// specific overrides on top. The earlier MS_PRIVATE makes every
 	// subsequent mount(2) confined to this namespace.
+
+	// /dev first, as systemd mounts it before the rest.
+	if s.privateDevices {
+		if err := mountPrivateDev(); err != nil {
+			return err
+		}
+		if err := dropPrivateDevCaps(); err != nil {
+			return err
+		}
+	}
 
 	if s.privateTmp {
 		if err := mountPrivateTmpfs("/tmp"); err != nil {

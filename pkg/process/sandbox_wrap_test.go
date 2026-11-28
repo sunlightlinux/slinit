@@ -18,6 +18,7 @@ func TestNeedsRunnerWrapSandbox(t *testing.T) {
 		{"no sandbox", ExecParams{}, false},
 		// #3a MVP
 		{"private-tmp", ExecParams{PrivateTmp: true}, true},
+		{"private-devices", ExecParams{PrivateDevices: true}, true},
 		{"protect-system=yes", ExecParams{ProtectSystem: "yes"}, true},
 		{"read-only-paths", ExecParams{ReadOnlyPaths: []string{"/usr"}}, true},
 		{"read-write-paths", ExecParams{ReadWritePaths: []string{"/var/lib/svc"}}, true},

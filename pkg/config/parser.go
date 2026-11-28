@@ -634,6 +634,7 @@ type ServiceDescription struct {
 	//   after ProtectSystem. Order matters: ReadWritePaths override
 	//   ProtectSystem ro; ReadOnlyPaths add further ro on top.
 	PrivateTmp     bool
+	PrivateDevices bool // private-devices: a /dev without physical devices
 	ProtectSystem  string
 	ReadOnlyPaths  []string
 	ReadWritePaths []string
@@ -2746,6 +2747,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.AppArmorSwitch = value
 
+	case "private-devices":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("private-devices: %w", err)
+		}
+		desc.PrivateDevices = b
 	case "private-tmp":
 		b, err := parseBool(value)
 		if err != nil {

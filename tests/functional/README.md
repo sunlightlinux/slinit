@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (337 cases)
+# Run all tests (338 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -468,6 +468,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 336 | send-sighup-and-clean | `send-sighup`: a service ignoring SIGTERM stops at once on the hangup, not at its 30s stop-timeout; `slinitctl clean` then removes the cache directory by default and the state directory only with `--what=state`, and refuses a running service (fails with the hangup dropped and with clean removing nothing) |
 | 337 | conflicts-on-failure | starting either side of a `conflicts:` pair stops the other; a service that exits 1 with no restart starts its `on-failure:` service, one that exits 0 does not; an `upholds:` service is started with its upholder and again after it is stopped, and left stopped once the upholder is down (fails with each removed) |
 | 338 | reload-command | `slinitctl reload-signal` runs a `reload-command` with `$MAINPID` the service's main pid, fails when it fails, and runs a systemd unit's `ExecReload=` command (fails with the command not run) |
+| 339 | private-devices | a `private-devices` service has /dev/null and the pseudo devices, no /dev/kmsg, and CAP_MKNOD out of its bounding set (fails with the runner flag not passed) |
 
 ## How It Works
 

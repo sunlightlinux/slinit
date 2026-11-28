@@ -39,6 +39,7 @@ func chrootMountConflicts(desc *ServiceDescription) []string {
 		}
 	}
 	add(desc.PrivateTmp, "private-tmp")
+	add(desc.PrivateDevices, "private-devices")
 	add(desc.ProtectSystem != "" && desc.ProtectSystem != "no", "protect-system")
 	add(desc.ProtectHome != "" && desc.ProtectHome != "no", "protect-home")
 	add(len(desc.ReadOnlyPaths) > 0, "read-only-paths")
@@ -2486,6 +2487,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	// runner sets up the requested isolation inside that ns.
 	sandbox := service.SandboxConfig{
 		PrivateTmp:          desc.PrivateTmp,
+		PrivateDevices:      desc.PrivateDevices,
 		ProtectSystem:       desc.ProtectSystem,
 		ReadOnlyPaths:       desc.ReadOnlyPaths,
 		ReadWritePaths:      desc.ReadWritePaths,

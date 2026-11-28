@@ -393,6 +393,7 @@ var KnownSettings = map[string]OperatorType{
 	// systemd-style filesystem sandbox (applied via slinit-runner in a
 	// fresh mount namespace; CLONE_NEWNS is auto-implied)
 	"private-tmp":          OpEquals,
+	"private-devices":      OpEquals,
 	"protect-system":       OpEquals,
 	"read-only-paths":      OpEquals | OpPlusEqual,
 	"read-write-paths":     OpEquals | OpPlusEqual,

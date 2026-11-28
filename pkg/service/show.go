@@ -223,6 +223,9 @@ func RenderShow(s Service) string {
 	}
 
 	// --- Filesystem sandbox ---
+	if sr.sandbox.PrivateDevices {
+		p("PrivateDevices", "yes")
+	}
 	if sr.sandbox.PrivateTmp {
 		pb("PrivateTmp", true)
 	}

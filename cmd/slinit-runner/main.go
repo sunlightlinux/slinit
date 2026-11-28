@@ -112,6 +112,8 @@ func run() error {
 	memoryTHP := fs.String("memory-thp", "",
 		"Transparent Huge Page policy for this task: never | madvise | always (systemd MemoryTHP=). "+
 			"Only 'never' has per-process effect (PR_SET_THP_DISABLE); madvise/always fall back to the system default.")
+	privateDevices := fs.Bool("private-devices", false,
+		"a /dev of pseudo devices only, no physical device (systemd PrivateDevices=)")
 	privateTmp := fs.Bool("private-tmp", false,
 		"mount a fresh tmpfs at /tmp and /var/tmp (systemd PrivateTmp=)")
 	protectSystem := fs.String("protect-system", "",
@@ -289,6 +291,7 @@ func run() error {
 	// CLONE_NEWNS, so the mount(2) calls below are confined to it.
 	spec := sandboxSpec{
 		privateTmp:          *privateTmp,
+		privateDevices:      *privateDevices,
 		protectSystem:       *protectSystem,
 		readOnlyPaths:       readOnlyPaths,
 		readWritePaths:      readWritePaths,

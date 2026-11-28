@@ -2188,6 +2188,7 @@ func (sr *ServiceRecord) AppArmor() (load, profile string) {
 // for the user-facing description.
 type SandboxConfig struct {
 	PrivateTmp          bool
+	PrivateDevices      bool
 	ProtectSystem       string // "" | "yes" | "full" | "strict"
 	ReadOnlyPaths       []string
 	ReadWritePaths      []string
@@ -2204,7 +2205,7 @@ type SandboxConfig struct {
 // decide whether to OR CLONE_NEWNS into the clone flags and by the
 // process layer to gate the runner wrap.
 func (c SandboxConfig) Active() bool {
-	return c.PrivateTmp ||
+	return c.PrivateTmp || c.PrivateDevices ||
 		c.ProtectSystem != "" || len(c.ReadOnlyPaths) > 0 || len(c.ReadWritePaths) > 0 ||
 		c.ProtectHome != "" || len(c.InaccessiblePaths) > 0 ||
 		c.ProtectProc != "" || c.ProcSubset != "" ||
@@ -2762,6 +2763,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.UidMappings = sr.uidMappings
 	params.GidMappings = sr.gidMappings
 	params.PrivateTmp = sr.sandbox.PrivateTmp
+	params.PrivateDevices = sr.sandbox.PrivateDevices
 	params.ProtectSystem = sr.sandbox.ProtectSystem
 	params.ReadOnlyPaths = sr.sandbox.ReadOnlyPaths
 	params.ReadWritePaths = sr.sandbox.ReadWritePaths

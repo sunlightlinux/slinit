@@ -14,7 +14,7 @@ var fullyPrivilegedDrops = map[string]bool{
 	"NoNewPrivs": true, "AmbientCaps": true, "BoundingCaps": true, "Securebits": true,
 	"AppArmorProfile": true, "SELinuxContext": true, "SMACKProcessLabel": true,
 	"Cloneflags": true, "UidMappings": true, "GidMappings": true,
-	"PrivateTmp": true, "ProtectSystem": true, "ProtectHome": true,
+	"PrivateTmp": true, "PrivateDevices": true, "ProtectSystem": true, "ProtectHome": true,
 	"ReadOnlyPaths": true, "ReadWritePaths": true, "InaccessiblePaths": true,
 	"ProtectProc": true, "ProcSubset": true,
 	"BindPaths": true, "BindReadOnlyPaths": true, "TemporaryFileSystem": true,

@@ -132,10 +132,10 @@ the notes. The common ones:
   the forms of the sandbox directives slinit cannot express (a `+` path,
   a `%` specifier other than `%%`, `%n`, `%N`, `%p`, `%i`, `%t`, `%S`,
   `%C`, `%L` and `%E`, which are expanded).
-- **`PrivateDevices=yes` and an empty `CapabilityBoundingSet=`** cannot
-  be expressed either, and refuse the unit: it would run with every
-  device, or every capability. Remove the line, or write a native
-  description, if that is acceptable.
+- **An empty `CapabilityBoundingSet=`** cannot be expressed either, and
+  refuses the unit: it would run with every capability. Remove the
+  line, or write a native description, if that is acceptable.
+  (`PrivateDevices=yes` is slinit's `private-devices` since 4.1.)
 
 How the relations between units carry over:
 

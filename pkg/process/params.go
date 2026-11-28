@@ -445,6 +445,7 @@ type ExecParams struct {
 	// ReadOnlyPaths/ReadWritePaths: explicit per-path overrides, applied
 	//   after ProtectSystem (rw first, then ro).
 	PrivateTmp     bool
+	PrivateDevices bool // a /dev of pseudo devices only (slinit-runner)
 	ProtectSystem  string
 	ReadOnlyPaths  []string
 	ReadWritePaths []string
@@ -536,6 +537,7 @@ func (p *ExecParams) FullyPrivileged() {
 	p.AppArmorProfile, p.SELinuxContext, p.SMACKProcessLabel = "", "", ""
 	p.Cloneflags, p.UidMappings, p.GidMappings = 0, nil, nil
 	p.PrivateTmp, p.ProtectSystem, p.ProtectHome = false, "", ""
+	p.PrivateDevices = false
 	p.ReadOnlyPaths, p.ReadWritePaths, p.InaccessiblePaths = nil, nil, nil
 	p.ProtectProc, p.ProcSubset = "", ""
 	p.BindPaths, p.BindReadOnlyPaths, p.TemporaryFileSystem = nil, nil, nil

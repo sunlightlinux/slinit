@@ -248,6 +248,7 @@ var BuiltinDirectives = []string{
 	"pre-start-command",
 	"pre-stop-hook",
 	"prepared-by",
+	"private-devices",
 	"private-tmp",
 	"proc-subset",
 	"profile",

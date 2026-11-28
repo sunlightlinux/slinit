@@ -373,3 +373,63 @@ func TestProtectKernelMatchesSystemd(t *testing.T) {
 		}
 	}
 }
+
+// private-devices: /dev holds the pseudo devices, which work, the pts
+// tree and the /dev/fd links, and no physical device; it is noexec and
+// nosuid; CAP_MKNOD and CAP_SYS_RAWIO are out of the bounding set.
+func TestPrivateDevices(t *testing.T) {
+	if !inMountNS(t, `true`, false) {
+		return
+	}
+	// A device node of the host that is not a pseudo device, to see it
+	// gone: whichever of these the machine has.
+	var physical string
+	for _, p := range []string{"/dev/kmsg", "/dev/loop-control", "/dev/mem", "/dev/vda", "/dev/sda", "/dev/nvme0"} {
+		if _, err := os.Stat(p); err == nil {
+			physical = p
+			break
+		}
+	}
+	if err := mountPrivateDev(); err != nil {
+		t.Fatal(err)
+	}
+	if err := dropPrivateDevCaps(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("/dev/null: %v", err)
+	}
+	if _, err := f.Write([]byte("x")); err != nil {
+		t.Errorf("write /dev/null: %v", err)
+	}
+	f.Close()
+	b := make([]byte, 8)
+	if r, err := os.Open("/dev/urandom"); err != nil {
+		t.Errorf("/dev/urandom: %v", err)
+	} else {
+		if _, err := r.Read(b); err != nil {
+			t.Errorf("read /dev/urandom: %v", err)
+		}
+		r.Close()
+	}
+	if st, err := os.Stat("/dev/pts"); err != nil || !st.IsDir() {
+		t.Errorf("/dev/pts: %v", err)
+	}
+	if target, err := os.Readlink("/dev/fd"); err != nil || target != "/proc/self/fd" {
+		t.Errorf("/dev/fd -> %q, %v", target, err)
+	}
+	if physical != "" {
+		if _, err := os.Stat(physical); err == nil {
+			t.Errorf("%s still in the private /dev", physical)
+		}
+	}
+	if fl := mountFlags(t, "/dev"); fl&unix.MS_NOEXEC == 0 || fl&unix.MS_NOSUID == 0 {
+		t.Errorf("/dev flags %#x, want noexec and nosuid", fl)
+	}
+	for _, c := range []int{unix.CAP_MKNOD, unix.CAP_SYS_RAWIO} {
+		if r, _ := unix.PrctlRetInt(unix.PR_CAPBSET_READ, uintptr(c), 0, 0, 0); r != 0 {
+			t.Errorf("capability %d still in the bounding set", c)
+		}
+	}
+}

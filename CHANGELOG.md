@@ -68,6 +68,15 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`private-devices = yes`**, systemd's `PrivateDevices=`: the service
+  gets a /dev holding only the pseudo devices (null, zero, full,
+  random, urandom, tty), the pts tree, shm, mqueue, the log socket and
+  the /dev/fd links, nosuid and noexec, with CAP_MKNOD and CAP_SYS_RAWIO
+  out of the bounding set. A unit's `PrivateDevices=yes` (50 units here
+  and in systemd's tree) maps onto it; it was a warning, the service
+  seeing every device of the host. *Compat:* such a unit now runs
+  without the host's devices, as under systemd.
+
 - **`start-on-calendar = EXPR`**: start the service at each time a
   systemd calendar expression names, as a timer's `OnCalendar=` starts
   its unit. An activation directive like `start-on-path-*`: the service

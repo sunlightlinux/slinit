@@ -282,7 +282,7 @@ func TestSystemdAddressFamiliesFold(t *testing.T) {
 
 // Confinement slinit cannot express refuses the unit instead of running
 // it less confined than written: an empty CapabilityBoundingSet= kept
-// every capability. PrivateDevices=yes is a WARN for now (see systemd.go).
+// every capability. PrivateDevices=yes is private-devices (since 4.1).
 func TestSystemdUnexpressibleConfinementRefused(t *testing.T) {
 	for _, line := range []string{"CapabilityBoundingSet=", "CapabilityBoundingSet=~CAP_CHOWN\nCapabilityBoundingSet="} {
 		path := filepath.Join(t.TempDir(), "u.service")
@@ -295,13 +295,13 @@ func TestSystemdUnexpressibleConfinementRefused(t *testing.T) {
 		}
 	}
 	if desc, warns := convertWarns(t, "[Service]\nExecStart=/bin/true\nPrivateDevices=yes\n"); desc == nil {
-		t.Error("PrivateDevices=yes refused; it is a warning for now")
-	} else if !strings.Contains(fmt.Sprint(warns), "PrivateDevices") {
-		t.Errorf("PrivateDevices=yes loaded without a warning: %v", warns)
+		t.Error("PrivateDevices=yes refused")
+	} else if !desc.PrivateDevices || strings.Contains(fmt.Sprint(warns), "PrivateDevices") {
+		t.Errorf("PrivateDevices=yes: private-devices %v, warnings %v", desc.PrivateDevices, warns)
 	}
 	// PrivateDevices=no asks for nothing.
-	if desc, _ := convertWarns(t, "[Service]\nExecStart=/bin/true\nPrivateDevices=no\n"); desc == nil {
-		t.Error("PrivateDevices=no refused")
+	if desc, _ := convertWarns(t, "[Service]\nExecStart=/bin/true\nPrivateDevices=yes\nPrivateDevices=no\n"); desc == nil || desc.PrivateDevices {
+		t.Error("PrivateDevices=no after yes: not reset")
 	}
 }
 

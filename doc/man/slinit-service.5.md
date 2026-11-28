@@ -409,7 +409,7 @@ what tells you the oldest slinit your configuration will run on. See
 **chroot**=*path*
 :   `chroot()` into *path* before exec. **type**=*process* only; any
     other type refuses to load with it rather than run outside the jail.
-    It cannot be combined with the filesystem sandbox (**private-tmp**,
+    It cannot be combined with the filesystem sandbox (**private-tmp**, **private-devices**,
     **protect-system**, **protect-home**, the **\*-paths** options,
     **protect-proc**, **proc-subset**, **temporary-filesystem**) or with
     **protect-kernel-tunables**, **-modules**, **-logs**,
@@ -1618,6 +1618,19 @@ systemd-style declarative filesystem isolation. Any stanza below implies
 a private mount namespace — slinit auto-OR's *CLONE_NEWNS* into the
 clone flags and **slinit-runner** sets up the requested mounts there
 before exec'ing the service. The host filesystem is untouched.
+
+**private-devices**=*yes*|*no* (since 4.1.0)
+:   Give the service a */dev* of its own: a tmpfs (*nosuid*, *noexec*)
+    with only the pseudo devices *null*, *zero*, *full*, *random*,
+    *urandom* and *tty*, the pseudo-TTY subsystem (*pts*, *ptmx*),
+    */dev/shm*, */dev/mqueue*, */dev/hugepages*, */dev/log* and the
+    */dev/fd* and */dev/std\** links; no disk, no */dev/mem*, no
+    */dev/kmsg*. **CAP_MKNOD** and **CAP_SYS_RAWIO** leave the bounding
+    set, so no device node can be made and no raw I/O done around it.
+    systemd's **PrivateDevices=**, built as systemd builds it, except
+    for systemd's cgroup device filter, which slinit has not. Applied by
+    **slinit-runner** in the service's mount namespace; not with
+    **chroot**.
 
 **private-tmp**=*yes*|*no*
 :   Replace */tmp* and */var/tmp* with a fresh per-service *tmpfs*. The

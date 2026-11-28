@@ -1184,7 +1184,7 @@ func seccompActive(p ExecParams) bool {
 // mount(2) and tmpfs setup happen inside the child's mount namespace
 // before exec.
 func sandboxActive(p ExecParams) bool {
-	return p.PrivateTmp ||
+	return p.PrivateTmp || p.PrivateDevices ||
 		p.ProtectSystem != "" || len(p.ReadOnlyPaths) > 0 || len(p.ReadWritePaths) > 0 ||
 		p.ProtectHome != "" || len(p.InaccessiblePaths) > 0 ||
 		p.ProtectProc != "" || p.ProcSubset != "" ||
@@ -1238,6 +1238,9 @@ func wrapWithRunner(p ExecParams) []string {
 	// slinit-runner before exec'ing the real service.
 	if p.PrivateTmp {
 		args = append(args, "--private-tmp")
+	}
+	if p.PrivateDevices {
+		args = append(args, "--private-devices")
 	}
 	if p.ProtectSystem != "" {
 		args = append(args, "--protect-system="+p.ProtectSystem)
