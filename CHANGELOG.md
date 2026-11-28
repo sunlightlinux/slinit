@@ -239,7 +239,10 @@ verified with `git tag -v`.
   `WATCHDOG=1` and the rest with it (`--ready`, `--status=`,
   `--reloading`, `--stopping`, `--pid`, `--booted`, `VAR=VALUE`; a path
   or an abstract `@` socket). *Packaging:* a new binary for the
-  `go_package` list of the slinit template.
+  `go_package` list of the slinit template. It waits on a barrier after the message (BARRIER=1, as
+  systemd-notify does, `--no-block` to skip it): exiting at once, it was
+  often gone by the time slinit read its READY=1, which the sender check
+  then refused.
 
 - **`syslog-identifier`, `syslog-level`, `syslog-level-prefix` and
   `log-extra-fields`**: the journal metadata of a service's output

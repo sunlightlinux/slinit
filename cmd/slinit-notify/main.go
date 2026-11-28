@@ -26,6 +26,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 var version = "dev"
@@ -38,6 +40,7 @@ func main() {
 // the exit status.
 func run(args []string, socket string, stdout, stderr io.Writer) int {
 	var lines []string
+	block := true
 	for _, a := range args {
 		switch {
 		case a == "--version":
@@ -56,7 +59,8 @@ func run(args []string, socket string, stdout, stderr io.Writer) int {
 		case a == "--stopping":
 			lines = append(lines, "STOPPING=1")
 		case a == "--no-block":
-			// Datagrams are sent without waiting for an answer anyway.
+			// Return once the message is sent, without the barrier.
+			block = false
 		case strings.HasPrefix(a, "--status="):
 			lines = append(lines, "STATUS="+strings.TrimPrefix(a, "--status="))
 		case a == "--pid":
@@ -92,7 +96,7 @@ func run(args []string, socket string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 1
 	}
-	if err := send(socket, strings.Join(lines, "\n")); err != nil {
+	if err := send(socket, strings.Join(lines, "\n"), block); err != nil {
 		fmt.Fprintf(stderr, "slinit-notify: %v\n", err)
 		return 1
 	}
@@ -100,8 +104,14 @@ func run(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 // send writes msg as one datagram to the notify socket: a path, or an
-// abstract socket written "@name" as in systemd.
-func send(socket, msg string) error {
+// abstract socket written "@name" as in systemd. With block it then
+// waits on a barrier, as systemd-notify does (sd_notify_barrier): a
+// BARRIER=1 datagram carrying the write end of a pipe, which the
+// service manager closes once it has handled every message before it.
+// Until then this process is alive, so the manager can still tell it
+// belongs to the service: exiting at once, it was often gone when slinit
+// read the message, and READY=1 was refused as a stranger's.
+func send(socket, msg string, block bool) error {
 	if socket == "" {
 		return errors.New("$NOTIFY_SOCKET is not set: the service does not use sd-notify readiness")
 	}
@@ -116,8 +126,53 @@ func send(socket, msg string) error {
 		return err
 	}
 	defer conn.Close()
-	_, err = conn.Write([]byte(msg))
-	return err
+	if _, err := conn.Write([]byte(msg)); err != nil {
+		return err
+	}
+	if !block {
+		return nil
+	}
+	return barrier(conn)
+}
+
+// barrierTimeout bounds the wait, as systemd's 5 seconds do: a manager
+// that never closes the descriptor does not hang the script.
+var barrierTimeout = 5 * time.Second
+
+func barrier(conn *net.UnixConn) error {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	// sendmsg on the connected socket itself: net's WriteMsgUnix
+	// refuses a connected unixgram socket.
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		w.Close()
+		return err
+	}
+	var serr error
+	err = raw.Write(func(fd uintptr) bool {
+		serr = syscall.Sendmsg(int(fd), []byte("BARRIER=1"), syscall.UnixRights(int(w.Fd())), nil, 0)
+		return serr != syscall.EAGAIN
+	})
+	w.Close()
+	if err == nil {
+		err = serr
+	}
+	if err != nil {
+		return fmt.Errorf("barrier: %w", err)
+	}
+	_ = r.SetReadDeadline(time.Now().Add(barrierTimeout))
+	var b [1]byte
+	if _, err := r.Read(b[:]); err != nil && !errors.Is(err, io.EOF) {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return errors.New("the service manager did not answer the barrier within 5s; the message was sent")
+		}
+		return fmt.Errorf("barrier: %w", err)
+	}
+	return nil
 }
 
 func usage(w io.Writer) {
@@ -131,7 +186,7 @@ Send an sd_notify message to the service manager ($NOTIFY_SOCKET).
   --status=TEXT      a status line (STATUS=TEXT)
   --pid[=PID]        the service's main pid (MAINPID=); parent by default
   --booted           exit 0 if the system runs systemd (never, under slinit)
-  --no-block         accepted; the message is sent without waiting
+  --no-block         return once sent, without waiting for the manager
   --version          print the version
 
 Any VARIABLE=VALUE is sent as it is, e.g. WATCHDOG=1.

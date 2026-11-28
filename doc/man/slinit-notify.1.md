@@ -50,8 +50,14 @@ while serve_one; do slinit-notify WATCHDOG=1; done
     exit 1. Scripts use it to choose a code path.
 
 **--no-block**
-:   Accepted for compatibility; the message is a datagram, sent without
-    waiting.
+:   Return as soon as the message is sent. By default slinit-notify
+    then waits on a barrier, as systemd-notify does: it sends
+    *BARRIER=1* with a descriptor that slinit closes once it has handled
+    the message, for at most 5 seconds (an unanswered barrier is an
+    error, exit 1). While it waits the process is alive, which is what
+    lets slinit tell it belongs to the service: one that exits at once
+    may be gone when its message is read, and the message is then
+    refused as a stranger's.
 
 **--version**, **--help**
 
