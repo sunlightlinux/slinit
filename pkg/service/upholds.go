@@ -15,6 +15,9 @@ import "slices"
 // upholdOnStarted queues the start of what svc upholds. Caller holds
 // queueMu.
 func (ss *ServiceSet) upholdOnStarted(svc Service) {
+	if ss.IsShuttingDown() {
+		return
+	}
 	for _, name := range svc.Record().upholds {
 		if name == svc.Name() {
 			continue
@@ -24,6 +27,19 @@ func (ss *ServiceSet) upholdOnStarted(svc Service) {
 		}
 		ss.onFailureQueue = append(ss.onFailureQueue, onFailureStart{from: svc.Name(), name: name, why: "upholds"})
 	}
+}
+
+// upheldByActive reports whether a STARTED service upholds name. Caller
+// holds queueMu; takes mu for the records.
+func (ss *ServiceSet) upheldByActive(name string) bool {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	for _, s := range ss.records {
+		if s.Name() != name && s.State() == StateStarted && slices.Contains(s.Record().upholds, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // upholdOnStopped queues svc's start again if a STARTED service upholds

@@ -3,6 +3,7 @@ package service
 import (
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -208,5 +209,51 @@ func TestUpholdsLimited(t *testing.T) {
 	b, _ := os.ReadFile(runs)
 	if n := strings.Count(string(b), "\n"); n != 5 {
 		t.Errorf("h ran %d times, want 5 (the limit)", n)
+	}
+}
+
+// An upholder that comes up during a shutdown starts nothing: the
+// started service would not be in the shutdown's set, and the shutdown
+// would wait it out.
+func TestUpholdsNotDuringShutdown(t *testing.T) {
+	set, _ := newTestSet()
+	h := sleeper(set, "h")
+	u := NewScriptedService(set, "u")
+	u.SetStartCommand([]string{"/bin/sleep", "0.5"})
+	u.SetUpholds([]string{"h"})
+	set.AddService(u)
+	defer set.StopService(h)
+	go set.StartService(u)
+	time.Sleep(100 * time.Millisecond) // u is starting
+	set.StopAllServices(ShutdownPoweroff)
+	time.Sleep(1500 * time.Millisecond)
+	if st := h.State(); st != StateStopped {
+		t.Errorf("h is %v: upholds started it during the shutdown", st)
+	}
+}
+
+// One waiting out its restart-delay is coming back by itself: upholds
+// leaves it alone rather than cut the delay short.
+func TestUpholdsLeavesARestartDelayAlone(t *testing.T) {
+	set, _ := newTestSet()
+	runs := t.TempDir() + "/runs"
+	h := NewProcessService(set, "h")
+	h.SetCommand([]string{"/bin/sh", "-c", "echo x >> " + runs + "; exec sleep 60"})
+	h.autoRestart = RestartAlways
+	h.SetRestartDelay(2 * time.Second)
+	set.AddService(h)
+	u := sleeper(set, "u")
+	u.SetUpholds([]string{"h"})
+	defer func() { set.StopService(u); set.StopService(h) }()
+	set.StartService(h)
+	waitState(t, h, StateStarted, 3*time.Second)
+	time.Sleep(200 * time.Millisecond)
+	syscall.Kill(h.PID(), syscall.SIGKILL)
+	time.Sleep(200 * time.Millisecond) // h waits out its delay
+	set.StartService(u)
+	time.Sleep(700 * time.Millisecond)
+	b, _ := os.ReadFile(runs)
+	if n := strings.Count(string(b), "\n"); n != 1 {
+		t.Errorf("h ran %d times within its restart-delay, want 1", n)
 	}
 }

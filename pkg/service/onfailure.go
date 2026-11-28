@@ -54,6 +54,11 @@ func (ss *ServiceSet) startQueuedOnFailure() bool {
 	}
 	q := ss.onFailureQueue
 	ss.onFailureQueue = nil
+	if ss.IsShuttingDown() {
+		// A start now would not be in the shutdown's set, and the
+		// shutdown would wait it out.
+		return false
+	}
 	now := time.Now()
 	for _, st := range q {
 		h, err := ss.LoadService(st.name)
@@ -69,8 +74,12 @@ func (ss *ServiceSet) startQueuedOnFailure() bool {
 		if st.why != "" {
 			what = st.why
 		}
-		if st.why != "" && (h.State() != StateStopped || h.Record().pinnedStopped) {
-			continue // upholds: up again by now, or pinned down
+		if st.why != "" && (h.State() != StateStopped || h.Record().pinnedStopped ||
+			h.Record().restartPending || !ss.upheldByActive(st.name)) {
+			// upholds: up again by now, pinned down, coming back by its
+			// own restart-delay, or no upholder up any more (systemd's
+			// unit_is_upheld_by_active, checked at dispatch).
+			continue
 		}
 		if len(r.onFailureStarts) >= onFailureBurst {
 			ss.logger.Error("Service '%s': %s: '%s' started %d times in %v already; not again",

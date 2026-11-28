@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 func sockConvert(t *testing.T, dir, svcUnit string) (*ServiceDescription, []SystemdWarning) {
@@ -152,5 +154,73 @@ func TestSystemdAcceptWithoutListenerIsNotLoaded(t *testing.T) {
 	_, dl, _ := cycleLoader(t, root)
 	if _, _, err := dl.findAndParse("cd"); err == nil || !strings.Contains(err.Error(), "no listener") {
 		t.Errorf("err %v, want refused for having no listener", err)
+	}
+}
+
+// The pair loads by either spelling of the name, honours a mask in a
+// higher directory (a symlink to /dev/null, systemctl mask's form) on
+// either unit, and an Accept=yes set in a drop-in.
+func TestSystemdAcceptPairEdges(t *testing.T) {
+	setup := func(t *testing.T) (string, string, string) {
+		root := t.TempDir()
+		etc, lib := filepath.Join(root, "etc"), filepath.Join(root, "lib")
+		writeUnit(t, lib, "lpd.socket", "[Socket]\nListenStream=515\nAccept=yes\n")
+		writeUnit(t, lib, "lpd@.service", "[Service]\nExecStart=/bin/lpd\n")
+		os.MkdirAll(etc, 0o755)
+		return root, etc, lib
+	}
+	loader := func(etc, lib string) *DirLoader {
+		ss := service.NewServiceSet(&testConsumerLogger{})
+		dl := NewDirLoader(ss, []string{t.TempDir()})
+		dl.SetSystemdDirs([]string{etc, lib})
+		return dl
+	}
+	_, etc, lib := setup(t)
+	if d, _, err := loader(etc, lib).findAndParse("lpd.service"); err != nil || !d.SocketAccept {
+		t.Errorf("lpd.service: %v", err)
+	}
+	for _, masked := range []string{"lpd@.service", "lpd.socket"} {
+		_, etc, lib := setup(t)
+		os.Symlink("/dev/null", filepath.Join(etc, masked))
+		dl := loader(etc, lib)
+		if _, _, err := dl.findAndParse("lpd"); err == nil {
+			t.Errorf("%s masked, yet lpd loaded", masked)
+		}
+		if dl.descriptionExists("lpd") {
+			t.Errorf("%s masked, yet descriptionExists", masked)
+		}
+	}
+	root := t.TempDir()
+	units := filepath.Join(root, "u")
+	writeUnit(t, units, "lpd.socket", "[Socket]\nListenStream=515\n")
+	writeUnit(t, units, "lpd@.service", "[Service]\nExecStart=/bin/lpd\n")
+	os.MkdirAll(filepath.Join(units, "lpd.socket.d"), 0o755)
+	os.WriteFile(filepath.Join(units, "lpd.socket.d", "a.conf"), []byte("[Socket]\nAccept=yes\n"), 0o644)
+	if d, _, err := loader(units, units).findAndParse("lpd"); err != nil || !d.SocketAccept {
+		t.Errorf("Accept=yes from a drop-in: %v", err)
+	}
+}
+
+// reload-command needs a process to reload.
+func TestReloadCommandTypes(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "slinit.d")
+	os.MkdirAll(dir, 0o755)
+	writeServiceFile(t, dir, "s", "type = scripted\ncommand = /bin/true\nreload-command = /bin/true\n")
+	writeServiceFile(t, dir, "b", "type = bgprocess\ncommand = /bin/true\npid-file = /run/b.pid\nreload-command = /bin/true\n")
+	_, dl, _ := cycleLoader(t, root)
+	if _, err := dl.LoadService("s"); err == nil || !strings.Contains(err.Error(), "reload-command") {
+		t.Errorf("scripted with reload-command: %v, want refused", err)
+	}
+	if _, err := dl.LoadService("b"); err != nil {
+		t.Errorf("bgprocess with reload-command: %v", err)
+	}
+	p := writeUnit(t, t.TempDir(), "o.service", "[Service]\nType=oneshot\nExecStart=/bin/true\nExecReload=/bin/r\n")
+	cfg, warns, err := ConvertSystemdUnit(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.hasMapped("reload-command"); ok || !sockWarned(warns, "reload-command for a process or bgprocess") {
+		t.Errorf("oneshot ExecReload=: %v", warns)
 	}
 }

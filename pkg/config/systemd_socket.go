@@ -114,28 +114,46 @@ func applySystemdSockets(cfg *SystemdConfig, unitDirs []string) []SystemdWarning
 // connection on that socket, and what loading the name foo means when
 // there is no foo.service.
 func SystemdAcceptTemplate(dirs []string, name string) (string, bool) {
-	sock := findUnitFile(name+".socket", dirs)
-	tmpl := findUnitFile(name+"@.service", dirs)
-	if sock == "" || tmpl == "" {
+	// The first entry of each in priority order, as systemd takes it: a
+	// mask (a symlink to /dev/null, an empty file) in /etc hides the
+	// copy in /usr/lib rather than being stepped over.
+	sock := firstUnitEntry(name+".socket", dirs)
+	tmpl := firstUnitEntry(name+"@.service", dirs)
+	if sock == "" || tmpl == "" || systemdUnitMasked(sock) || systemdUnitMasked(tmpl) {
 		return "", false
 	}
-	b, err := os.ReadFile(sock)
-	if err != nil {
-		return "", false
-	}
-	section := ""
+	// Accept= as the socket unit and its drop-ins leave it.
 	accept := false
-	for _, raw := range joinSystemdLines(string(b)) {
-		line := strings.TrimSpace(raw)
-		if m := sectionRe.FindStringSubmatch(line); m != nil {
-			section = m[1]
-			continue
+	for _, f := range append([]string{sock}, systemdDropins(dirs, name+".socket")...) {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return "", false
 		}
-		if m := kvRe.FindStringSubmatch(line); m != nil && section == "Socket" && m[1] == "Accept" {
-			accept = truthy(strings.TrimSpace(m[2]))
+		section := ""
+		for _, raw := range joinSystemdLines(string(b)) {
+			line := strings.TrimSpace(raw)
+			if m := sectionRe.FindStringSubmatch(line); m != nil {
+				section = m[1]
+				continue
+			}
+			if m := kvRe.FindStringSubmatch(line); m != nil && section == "Socket" && m[1] == "Accept" {
+				accept = truthy(strings.TrimSpace(m[2]))
+			}
 		}
 	}
 	return tmpl, accept
+}
+
+// firstUnitEntry returns the first name in dirs that exists at all, a
+// symlink to /dev/null included, or "".
+func firstUnitEntry(name string, dirs []string) string {
+	for _, d := range dirs {
+		p := filepath.Join(d, name)
+		if _, err := os.Lstat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // sdSocketOpts are the [Socket] settings that apply to every listener.

@@ -33,11 +33,12 @@ type BGProcessService struct {
 	ServiceRecord
 
 	// Command configuration
-	command     []string
-	argv0       string // override argv[0] presented to the exec'd binary (runit chpst -b)
-	stopCommand []string
-	workingDir  string
-	envFile     string
+	command       []string
+	argv0         string // override argv[0] presented to the exec'd binary (runit chpst -b)
+	stopCommand   []string
+	reloadCommand []string // reload.go
+	workingDir    string
+	envFile       string
 
 	// PID file path (required)
 	pidFile string
@@ -224,12 +225,15 @@ func NewBGProcessService(set *ServiceSet, name string) *BGProcessService {
 func (s *BGProcessService) SetCommand(cmd []string)     { s.command = cmd }
 func (s *BGProcessService) SetArgv0(a string)           { s.argv0 = a }
 func (s *BGProcessService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
-func (s *BGProcessService) SetWorkingDir(dir string)    { s.workingDir = dir }
-func (s *BGProcessService) SetEnvFile(path string)      { s.envFile = path }
-func (s *BGProcessService) SetPIDFile(path string)      { s.pidFile = path }
-func (s *BGProcessService) GetPIDFile() string          { return s.pidFile }
-func (s *BGProcessService) SetFollowPID(path string)    { s.followPID = path }
-func (s *BGProcessService) GetFollowPID() string        { return s.followPID }
+
+// SetReloadCommand sets the command slinitctl reload-signal runs.
+func (s *BGProcessService) SetReloadCommand(cmd []string) { s.reloadCommand = cmd }
+func (s *BGProcessService) SetWorkingDir(dir string)      { s.workingDir = dir }
+func (s *BGProcessService) SetEnvFile(path string)        { s.envFile = path }
+func (s *BGProcessService) SetPIDFile(path string)        { s.pidFile = path }
+func (s *BGProcessService) GetPIDFile() string            { return s.pidFile }
+func (s *BGProcessService) SetFollowPID(path string)      { s.followPID = path }
+func (s *BGProcessService) GetFollowPID() string          { return s.followPID }
 
 // pidFileToWatch is the file the daemon's pid is read from: the one an
 // adopted process's owner writes, or the one our own launcher writes.

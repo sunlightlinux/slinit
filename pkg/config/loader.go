@@ -677,6 +677,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetCommand(desc.Command)
 		s.SetArgv0(desc.Argv0)
 		s.SetStopCommand(desc.StopCommand)
+		s.SetReloadCommand(desc.ReloadCommand)
 		s.SetWorkingDir(desc.WorkingDir)
 		s.SetEnvFile(desc.EnvFile)
 		s.SetPIDFile(desc.PIDFile)
@@ -1195,6 +1196,13 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 // field rule. Load and reload both call it, so a reload cannot install a
 // description a fresh load would refuse.
 func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
+	// reload-command needs a running main process to reload: a new
+	// setting, so refusing it elsewhere costs no config that loads today.
+	if len(desc.ReloadCommand) > 0 && desc.Type != service.TypeProcess && desc.Type != service.TypeBGProcess {
+		return &ServiceLoadError{ServiceName: name,
+			Message: fmt.Sprintf("reload-command is for type = process and bgprocess (type = %s has no process to reload)", desc.Type)}
+	}
+
 	// restart-steps grows the delay geometrically from restart-delay to
 	// restart-delay-cap; restart-delay-step grows it linearly. One curve:
 	// the two together would leave which one applies to a precedence
@@ -1685,7 +1693,9 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 		// are systemd's per-connection service, slinit's socket-accept.
 		if base := strings.TrimSuffix(name, ".service"); !strings.Contains(base, "@") {
 			if tmpl, ok := SystemdAcceptTemplate(dl.systemdDirs, base); ok && !systemdUnitMasked(tmpl) {
-				desc, err := SystemdAcceptToServiceDescription(tmpl, name, dl.systemdDirs...)
+				// The service name, as in base: "lpd.service" is lpd,
+				// whose socket is lpd.socket.
+				desc, err := SystemdAcceptToServiceDescription(tmpl, base, dl.systemdDirs...)
 				if err != nil {
 					return nil, "", &ServiceLoadError{ServiceName: name, Message: err.Error()}
 				}

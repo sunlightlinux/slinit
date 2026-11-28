@@ -2887,8 +2887,10 @@ func (sr *ServiceRecord) Start() {
 	if sr.markedDown {
 		sr.markedDown = false
 	}
-	// ... and the restart-steps count, as systemd flushes n_restarts.
-	if sr.state.Load() == StateStopped {
+	// ... and the restart-steps count, as systemd flushes n_restarts:
+	// not for one only waiting out its restart-delay, which is still in
+	// its run of restarts.
+	if sr.state.Load() == StateStopped && !sr.restartPending {
 		sr.backoffRestarts = 0
 	}
 

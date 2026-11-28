@@ -1503,6 +1503,11 @@ func exSameSignal(a, b string) bool {
 // ReloadSignal='s, otherwise the one ExecReload= sends.
 func exFinishReload(cfg *SystemdConfig, st *exState) []SystemdWarning {
 	warns := slices.Clone(st.execReloadWarns)
+	if v, ok := exMapped(cfg, "reload-command"); ok && cfg.svcType != "process" && cfg.svcType != "bgprocess" {
+		cfg.dropMapped("reload-command")
+		warns = append(warns, exWarn("ExecReload", v, fmt.Sprintf(
+			"dropped: slinit runs a reload-command for a process or bgprocess service, and this one is %s", cfg.svcType)))
+	}
 	es, rs := st.execReloadSignal, st.reloadSignal
 	switch {
 	case cfg.unitType == "notify-reload":

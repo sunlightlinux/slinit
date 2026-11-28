@@ -229,10 +229,14 @@ what tells you the oldest slinit your configuration will run on. See
     service's **run-as**, sandbox, environment and credentials, or as
     root without them with **+**, and *MAINPID* set to the main
     process. **slinitctl reload-signal** waits for it, bounded by
-    **hook-timeout**, and fails when it exits non-zero. A
-    **reload-signal** set as well is sent after a command that
-    succeeded. **type** = *process* only. systemd's **ExecReload=** with
-    a command; its *kill -HUP $MAINPID* form is **reload-signal**.
+    **start-timeout** as systemd bounds **ExecReload=** by
+    **TimeoutStartSec=** (**hook-timeout** without one), and fails when
+    it exits non-zero; what it left running in its process group is
+    killed when it ends. A **reload-signal** set as well is sent after a
+    command that succeeded. **type** = *process* and *bgprocess* (the
+    daemon's pid is *MAINPID*); on another type it is a load error.
+    systemd's **ExecReload=** with a command; its *kill -HUP $MAINPID*
+    form is **reload-signal**.
 
 **finish-command**=[**+**]*program* [*args*...]
 :   Runit-style: a program executed *after* **command** exits, before
@@ -661,8 +665,9 @@ error. Repeat the line for several targets.
     *service* stops, for any reason, a stop asked for included. Not a
     dependency: this service neither waits for *service* nor stops with
     it. At most 5 such starts in 10 seconds, so a service that cannot
-    stay up comes to rest; one pinned stopped, or a shutdown, is left
-    alone. An alternative to **restart** on *service* itself, kept by
+    stay up comes to rest; one pinned stopped, one waiting out its own
+    **restart-delay**, and anything during a shutdown are left alone,
+    and the start is made only if an upholder is still up. An alternative to **restart** on *service* itself, kept by
     the service that needs it. systemd's **Upholds=**; by name, like
     **part-of**.
 
