@@ -39,6 +39,45 @@ verified with `git tag -v`.
   that no longer exist are removed, which clears what earlier versions
   left. Present in 4.0.x and 4.1.0.
 
+## [4.0.6] — 2026-11-28
+
+**A fix release on the 4.0 long-term-support line.** `slinit-logind`
+no longer leaves an empty cgroup behind at every logout. `before:` now
+orders as documented and as in dinit, with the declaring service
+starting first; a setup that only worked with the old, inverted order
+needs `after:` instead. A prepared-by dependency is restarted once per
+crash, not twice; `options =` no longer clears `no-boot-marker`; and a
+scripted service reads its `env-file` and runs no stop-command after a
+condition skipped it. The control protocol stays at version 7. The same
+fixes are in 4.1.0, except the logind one, which comes in the next 4.1
+release.
+
+### Fixed
+
+- **`slinit-logind` left an empty cgroup behind at every logout**:
+  `ReleaseSession` comes from inside the session, so the scope's rmdir
+  failed with EBUSY and nothing tried again; every console, ssh or
+  display-manager logout, and every `TerminateSession`, leaked one
+  `/sys/fs/cgroup/c<N>`. A scope still in use is now watched through its
+  `cgroup.events` and removed once it has emptied, and at startup the
+  scopes of sessions that no longer exist are removed.
+- **`before:` ordered the other way round.** `a: before: x` was stored
+  as an edge that made `a` wait for `x`; it now makes `x` wait for `a`,
+  as in dinit, and a `before:` that closes a start-order cycle is
+  refused at load, as dinit refuses it.
+- **A prepared-by dependency was restarted twice for one crash.** When
+  the dependency crashed and restarted itself, the dependent its crash
+  stopped then restarted it again: the fresh run was SIGTERMed a moment
+  after its exec, and one more spawn ran past restart-limit-count.
+- **`no-boot-marker = yes` was lost to a later `options =` line**, which
+  cleared every flag; `options =` now replaces only what it sets.
+- **A scripted service a condition skipped ran its stop-command** at
+  its stop and at shutdown; systemd runs no ExecStop= then.
+- **A scripted service ignored its `env-file`**, documented for every
+  type; it is read at each run, as for a process service.
+- Tests: `TestRestartDuringRestartDelayHolds` waited too little for the
+  restart hold; `pkg/journal` failed with a Go 1.27 toolchain.
+
 ## [4.1.0] — 2026-11-28
 
 **The first feature release after the 4.0 long-term-support line.** Most
