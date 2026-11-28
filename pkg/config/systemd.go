@@ -126,6 +126,7 @@ type SystemdConfig struct {
 	restartRaw  string   // Restart= as written, for lcFinishOneshotRestart
 	conflicts   []string // conflicts: X
 	onFailure   []string // on-failure: X
+	upholds     []string // upholds: X
 	socketUnits []string // Sockets=: the socket units to read (systemd_socket.go)
 	before      []string // before: X (ordering only)
 	aliases     []string // [Install] Alias= .service names, bare
@@ -717,15 +718,18 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		cfg.waitsFor = append(cfg.waitsFor, deps...)
 		warns = append(warns, noteDroppedTargets(key, targets, self)...)
-	case "Conflicts", "OnFailure":
+	case "Conflicts", "OnFailure", "Upholds":
 		// conflicts: and on-failure:, by name like part-of: (a name that
 		// is not installed changes nothing, as in systemd). A target in
 		// them is dropped: slinit has no targets to stop or start
 		// (OnFailure=emergency.target is failure-action's job).
 		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		list := &cfg.conflicts
-		if key == "OnFailure" {
+		switch key {
+		case "OnFailure":
 			list = &cfg.onFailure
+		case "Upholds":
+			list = &cfg.upholds
 		}
 		for _, d := range deps {
 			if !slices.Contains(*list, d) {
@@ -2088,6 +2092,9 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	}
 	for _, d := range c.onFailure {
 		fmt.Fprintf(w, "on-failure: %s\n", d)
+	}
+	for _, d := range c.upholds {
+		fmt.Fprintf(w, "upholds: %s\n", d)
 	}
 }
 

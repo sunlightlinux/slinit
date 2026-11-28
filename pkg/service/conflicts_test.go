@@ -165,3 +165,48 @@ func TestOnFailureNotForADependencysFailure(t *testing.T) {
 		set.StopService(h)
 	}
 }
+
+// upholds: while u is up, h is started whenever it is found stopped:
+// at u's start, and after h stops, even on request; at most 5 times in
+// 10 seconds. Once u is down, h stays down.
+func TestUpholds(t *testing.T) {
+	set, _ := newTestSet()
+	h := sleeper(set, "h")
+	u := sleeper(set, "u")
+	u.SetUpholds([]string{"h"})
+	defer func() { set.StopService(u); set.StopService(h) }()
+	set.StartService(u)
+	if got := waitState(t, h, StateStarted, 3*time.Second); got != StateStarted {
+		t.Fatalf("h %v after u started, want STARTED", got)
+	}
+	set.StopService(h)
+	if got := waitState(t, h, StateStarted, 3*time.Second); got != StateStarted {
+		t.Fatalf("h %v after it was stopped while u is up, want started again", got)
+	}
+	set.StopService(u)
+	waitState(t, u, StateStopped, 3*time.Second)
+	set.StopService(h)
+	time.Sleep(200 * time.Millisecond)
+	if st := h.State(); st != StateStopped {
+		t.Errorf("h %v with u down, want left STOPPED", st)
+	}
+}
+
+// One that cannot stay up is started at most 5 times in 10 seconds.
+func TestUpholdsLimited(t *testing.T) {
+	set, _ := newTestSet()
+	runs := t.TempDir() + "/runs"
+	h := NewProcessService(set, "h")
+	h.SetCommand([]string{"/bin/sh", "-c", "echo x >> " + runs + "; exit 1"})
+	h.autoRestart = RestartNever
+	set.AddService(h)
+	u := sleeper(set, "u")
+	u.SetUpholds([]string{"h"})
+	defer set.StopService(u)
+	set.StartService(u)
+	time.Sleep(1500 * time.Millisecond)
+	b, _ := os.ReadFile(runs)
+	if n := strings.Count(string(b), "\n"); n != 5 {
+		t.Errorf("h ran %d times, want 5 (the limit)", n)
+	}
+}

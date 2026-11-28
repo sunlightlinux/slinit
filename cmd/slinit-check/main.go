@@ -380,6 +380,7 @@ func checkNamedRefs(loader *config.DirLoader, svcName string, desc *config.Servi
 		{"part-of", desc.PartOf},
 		{"conflicts", desc.Conflicts},
 		{"on-failure", desc.OnFailure},
+		{"upholds", desc.Upholds},
 	}
 	if desc.ChainTo != "" {
 		refs = append(refs, struct {

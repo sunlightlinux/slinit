@@ -58,6 +58,11 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`upholds: X`**, systemd's `Upholds=`: while a service is up, X is
+  started whenever it is found stopped (when the service starts, and
+  each time X stops), at most 5 times in 10 seconds. By name, like
+  `part-of`; a unit's `Upholds=` maps onto it.
+
 - **`conflicts: X`** and **`on-failure: X`**, systemd's `Conflicts=` and
   `OnFailure=`. Starting a service stops what it conflicts with, either
   side naming the other (tlp, tuned, auto-cpufreq and

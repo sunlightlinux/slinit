@@ -129,6 +129,7 @@ type ServiceDescription struct {
 	PartOf     []string // part-of: stopped and restarted with these
 	Conflicts  []string // conflicts: stopped when this one starts, and the reverse
 	OnFailure  []string // on-failure: started when this one ends failed
+	Upholds    []string // upholds: started whenever found stopped while this one is up
 
 	// fromSystemd marks a description read from a systemd unit; the
 	// loader commits it to DirLoader.systemdLoaded when it installs it.
@@ -1859,12 +1860,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid dependency name: %w", err)
 		}
 		desc.After = append(desc.After, depName)
-	case "part-of", "conflicts", "on-failure":
+	case "part-of", "conflicts", "on-failure", "upholds":
 		name := expandEnvVars(value, serviceArg)
 		if err := ValidateServiceName(name); err != nil {
 			return fmt.Errorf("invalid %s name: %w", setting, err)
 		}
-		list := map[string]*[]string{"part-of": &desc.PartOf, "conflicts": &desc.Conflicts, "on-failure": &desc.OnFailure}[setting]
+		list := map[string]*[]string{"part-of": &desc.PartOf, "conflicts": &desc.Conflicts,
+			"on-failure": &desc.OnFailure, "upholds": &desc.Upholds}[setting]
 		if !slices.Contains(*list, name) {
 			*list = append(*list, name)
 		}

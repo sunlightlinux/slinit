@@ -31,6 +31,7 @@ const (
 type onFailureStart struct {
 	from string
 	name string
+	why  string // "" for on-failure, "upholds" (upholds.go)
 }
 
 // queueOnFailure queues svc's on-failure starts. Caller holds queueMu.
@@ -40,7 +41,7 @@ func (ss *ServiceSet) queueOnFailure(svc Service) {
 			ss.logger.Error("Service '%s': on-failure names the service itself; skipped", svc.Name())
 			continue
 		}
-		ss.onFailureQueue = append(ss.onFailureQueue, onFailureStart{svc.Name(), name})
+		ss.onFailureQueue = append(ss.onFailureQueue, onFailureStart{from: svc.Name(), name: name})
 	}
 }
 
@@ -64,13 +65,24 @@ func (ss *ServiceSet) startQueuedOnFailure() bool {
 		r.onFailureStarts = slices.DeleteFunc(r.onFailureStarts, func(t time.Time) bool {
 			return now.Sub(t) >= onFailureInterval
 		})
+		what := "on-failure"
+		if st.why != "" {
+			what = st.why
+		}
+		if st.why != "" && (h.State() != StateStopped || h.Record().pinnedStopped) {
+			continue // upholds: up again by now, or pinned down
+		}
 		if len(r.onFailureStarts) >= onFailureBurst {
-			ss.logger.Error("Service '%s': on-failure: '%s' started %d times in %v already; not again",
-				st.from, st.name, onFailureBurst, onFailureInterval)
+			ss.logger.Error("Service '%s': %s: '%s' started %d times in %v already; not again",
+				st.from, what, st.name, onFailureBurst, onFailureInterval)
 			continue
 		}
 		r.onFailureStarts = append(r.onFailureStarts, now)
-		ss.logger.Info("Service '%s': failed; starting '%s' (on-failure)", st.from, st.name)
+		if st.why != "" {
+			ss.logger.Info("Service '%s': starting '%s', which it upholds", st.from, st.name)
+		} else {
+			ss.logger.Info("Service '%s': failed; starting '%s' (on-failure)", st.from, st.name)
+		}
 		h.Start()
 	}
 	return true

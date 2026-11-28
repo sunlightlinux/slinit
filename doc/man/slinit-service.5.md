@@ -642,6 +642,17 @@ error. Repeat the line for several targets.
     systemd's **OnFailure=**; a template instance such as *notify@web*
     works, as *notify@%n.service* does in a unit.
 
+**upholds**: *service* (since 4.1.0)
+:   While this service is started, *service* is started whenever it is
+    found stopped: when this one reaches *started*, and each time
+    *service* stops, for any reason, a stop asked for included. Not a
+    dependency: this service neither waits for *service* nor stops with
+    it. At most 5 such starts in 10 seconds, so a service that cannot
+    stay up comes to rest; one pinned stopped, or a shutdown, is left
+    alone. An alternative to **restart** on *service* itself, kept by
+    the service that needs it. systemd's **Upholds=**; by name, like
+    **part-of**.
+
 **chain-to**=*service*
 :   Start *service* when this one finishes. Three conditions, all
     required: this service **terminated on its own** rather than being

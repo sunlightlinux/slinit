@@ -3,7 +3,8 @@
 #
 # test-337-a conflicts with test-337-b: starting either stops the other.
 # test-337-f exits 1 with no restart: its on-failure service
-# test-337-h starts; test-337-ok exits 0 and starts nothing.
+# test-337-h starts; test-337-ok exits 0 and starts nothing. test-337-u
+# upholds test-337-k.
 
 cat > /etc/slinit.d/test-337-a <<'SVC'
 type = process
@@ -46,5 +47,26 @@ slinitctl --system --no-wait start test-337-f >/dev/null 2>&1
 wait_for_service test-337-h "STARTED" 10
 assert_service_state test-337-h "STARTED" "a failed service started its on-failure service"
 slinitctl --system stop test-337-h >/dev/null 2>&1
+
+# upholds: while test-337-u is up, test-337-k is started whenever it is
+# found stopped, a stop asked for included.
+cat > /etc/slinit.d/test-337-k <<'SVC'
+type = process
+command = /bin/sleep 1000
+SVC
+cat > /etc/slinit.d/test-337-u <<'SVC'
+type = process
+command = /bin/sleep 1000
+upholds: test-337-k
+SVC
+slinitctl --system start test-337-u >/dev/null 2>&1
+wait_for_service test-337-k "STARTED" 10
+assert_service_state test-337-k "STARTED" "the upheld service started with its upholder"
+slinitctl --system --no-wait stop test-337-k >/dev/null 2>&1
+sleep 2
+assert_service_state test-337-k "STARTED" "stopped while upheld, it was started again"
+slinitctl --system stop test-337-u >/dev/null 2>&1
+slinitctl --system stop test-337-k >/dev/null 2>&1
+assert_service_state test-337-k "STOPPED" "with the upholder down it stays stopped"
 
 test_summary

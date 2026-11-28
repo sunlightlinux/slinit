@@ -392,6 +392,7 @@ var BuiltinDirectives = []string{
 	"umask",
 	"unhealthy-command",
 	"unset-environment",
+	"upholds",
 	"usage",
 	"utmp-mode",
 	"version",

@@ -480,6 +480,9 @@ func RenderShow(s Service) string {
 	if len(sr.onFailure) > 0 {
 		p("OnFailure", strings.Join(sr.onFailure, " "))
 	}
+	if len(sr.upholds) > 0 {
+		p("Upholds", strings.Join(sr.upholds, " "))
+	}
 	if sr.socketPath != "" {
 		p("SocketPath", sr.socketPath)
 	}

@@ -9,7 +9,6 @@ import "slices"
 
 func init() {
 	gaps := map[string]sdGap{
-		"Upholds":              {why: "slinit does not restart that unit whenever it stops; give it `restart = yes`"},
 		"PropagatesReloadTo":   {why: "`slinitctl reload` of this service reloads only this service"},
 		"PropagateReloadTo":    {why: "`slinitctl reload` of this service reloads only this service"},
 		"ReloadPropagatedFrom": {why: "a reload of that unit does not reach this service"},

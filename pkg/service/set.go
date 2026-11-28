@@ -74,6 +74,8 @@ type ServiceSet struct {
 	// so a start has to look for services that conflict with it
 	// (conflicts.go); without any, the look is skipped.
 	anyConflicts atomic.Bool
+	// anyUpholds: some loaded service upholds another (upholds.go).
+	anyUpholds atomic.Bool
 	// onFailureQueue holds on-failure starts until the queues are
 	// drained (onfailure.go).
 	onFailureQueue []onFailureStart

@@ -273,6 +273,7 @@ type ServiceRecord struct {
 	// see conflicts.go and onfailure.go.
 	conflicts []string
 	onFailure []string
+	upholds   []string // upholds.go
 	// onFailureStarts: when on-failure last started this service, for
 	// its start limit (onfailure.go).
 	onFailureStarts []time.Time
@@ -1627,7 +1628,13 @@ func (sr *ServiceRecord) SetConflicts(names []string) {
 		sr.services.anyConflicts.Store(true)
 	}
 }
-func (sr *ServiceRecord) SetOnFailure(names []string)        { sr.onFailure = names }
+func (sr *ServiceRecord) SetOnFailure(names []string) { sr.onFailure = names }
+func (sr *ServiceRecord) SetUpholds(names []string) {
+	sr.upholds = names
+	if len(names) > 0 {
+		sr.services.anyUpholds.Store(true)
+	}
+}
 func (sr *ServiceRecord) SetServiceDscDir(dir string)        { sr.serviceDscDir = dir }
 func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)   { sr.termSignal = sig }
 func (sr *ServiceRecord) SetSendSIGHUP(v bool)               { sr.sendSIGHUP = v }
@@ -3674,6 +3681,10 @@ func (sr *ServiceRecord) Started() {
 	}
 	sr.startedEmitted = true
 
+	if len(sr.upholds) > 0 {
+		sr.services.upholdOnStarted(sr.self)
+	}
+
 	// The run of each PREPARED_BY dependency this start came up with:
 	// see the restart of them in Stopped.
 	for _, dep := range sr.dependsOn {
@@ -3945,6 +3956,11 @@ func (sr *ServiceRecord) Stopped() {
 	}
 
 	sr.state.Store(StateStopped)
+
+	// One that comes back by itself needs nobody to start it again.
+	if !willRestart && sr.services.anyUpholds.Load() && !sr.services.IsShuttingDown() {
+		sr.services.upholdOnStopped(sr.self)
+	}
 
 	if willRestart {
 		// Record this as a supervisor-driven restart for heartbeat /
