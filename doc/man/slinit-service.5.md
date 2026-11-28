@@ -2651,6 +2651,22 @@ watch; the service remains startable via `slinitctl start`.
     restart, and not while a running service depends on it, as its
     stop would wait for that service or take it down.
 
+**start-on-boot-sec**=*duration* (since 4.1.0)
+:   Start the service once, *duration* (a Go duration: *15m*) after the
+    kernel booted, suspend included; at once if that is already past
+    when the service loads. A finished **scripted** job is run again,
+    as for **start-on-calendar**. systemd's **OnBootSec=** (and
+    **OnStartupSec=**, which for PID 1 is the same).
+
+**start-on-unit-active-sec**=*duration* (since 4.1.0)
+:   Start the service *duration* after it last started, again and
+    again: an operator's start counts, and so does the last start this
+    timer made, so a slow job still coming up does not make it fire
+    again. With no start yet to count from it waits for the first
+    (with **start-on-boot-sec**, the boot one). systemd's
+    **OnUnitActiveSec=**. **start-on-calendar-randomized-delay** applies
+    to both.
+
 **start-on-calendar-randomized-delay**=*duration* (since 4.1.0)
 :   Start the service up to *duration* (a Go duration: *30m*, *1h30m*)
     later than each time **start-on-calendar** names, a fresh random

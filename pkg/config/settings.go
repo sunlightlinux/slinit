@@ -232,6 +232,8 @@ var KnownSettings = map[string]OperatorType{
 	"start-on-calendar":                  OpEquals,
 	"start-on-calendar-persistent":       OpEquals,
 	"start-on-calendar-randomized-delay": OpEquals,
+	"start-on-boot-sec":                  OpEquals,
+	"start-on-unit-active-sec":           OpEquals,
 
 	// cpu affinity
 	"cpu-affinity": OpEquals,

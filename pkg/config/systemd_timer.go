@@ -47,6 +47,7 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 	var warns []SystemdWarning
 	persistent := false
 	delay := ""
+	var bootSec, activeSec time.Duration
 	for _, f := range append([]string{path}, systemdDropins(unitDirs, name)...) {
 		b, err := os.ReadFile(f)
 		if err != nil {
@@ -88,11 +89,27 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 			}
 			key, val := m[1], strings.TrimSpace(trimQuotes(strings.TrimSpace(m[2])))
 			switch {
+			case (key == "OnCalendar" || sdTimerMonotonic[key]) && val == "":
+				// An empty one resets the timer's list, calendar and
+				// monotonic times alike.
+				cals, bootSec, activeSec = nil, 0, 0
 			case key == "OnCalendar":
-				if val == "" {
-					cals = nil // an empty assignment resets the list
-				} else {
-					cals = append(cals, val)
+				cals = append(cals, val)
+			case key == "OnBootSec" || key == "OnStartupSec" || key == "OnUnitActiveSec":
+				// OnStartupSec= counts from the manager's start, which
+				// for PID 1 is the boot: start-on-boot-sec.
+				us, ok := sdTimespanUsec(val)
+				if !ok {
+					warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: %s=%s is no time span; ignored", name, key, val)})
+					break
+				}
+				d := &bootSec
+				if key == "OnUnitActiveSec" {
+					d = &activeSec
+				}
+				// Several: the earliest elapses first; slinit keeps one.
+				if v := time.Duration(us) * time.Microsecond; *d == 0 || v < *d {
+					*d = v
 				}
 			case key == "Persistent":
 				persistent = truthy(val)
@@ -107,29 +124,44 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 				if strings.TrimSuffix(val, ".service") != cfg.svcName {
 					return []SystemdWarning{{"NOTE", fmt.Sprintf("%s starts %s, not this service: not read", name, val)}}
 				}
-			case sdTimerMonotonic[key] && val != "":
+			case sdTimerMonotonic[key]:
 				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
-					"%s: %s=%s not carried: slinit's start-on-calendar takes calendar times only", name, key, val)})
+					"%s: %s=%s not carried: slinit's timers count from the boot and from the service's last start only", name, key, val)})
 			case sdTimerNotCarried[key] && val != "":
 				warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s: %s=%s not carried", name, key, val)})
 			}
 		}
 	}
-	if len(cals) == 0 {
+	if len(cals) > 0 {
+		if _, err := service.ParseCalendar(cals[0]); err != nil {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"%s: OnCalendar=%s is no calendar expression slinit reads (%v) — not carried", name, cals[0], err)})
+			cals = nil
+		}
+	}
+	if len(cals) == 0 && bootSec == 0 && activeSec == 0 {
 		return warns
 	}
-	if _, err := service.ParseCalendar(cals[0]); err != nil {
-		return append(warns, SystemdWarning{"WARN", fmt.Sprintf(
-			"%s: OnCalendar=%s is no calendar expression slinit reads (%v) — the timer is not carried", name, cals[0], err)})
+	var what []string
+	if len(cals) > 0 {
+		if len(cals) > 1 {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"%s: slinit's start-on-calendar takes one expression, so OnCalendar=%s is kept and %s not carried",
+				name, cals[0], strings.Join(cals[1:], ", "))})
+		}
+		cfg.setMapped("start-on-calendar", cals[0])
+		if persistent {
+			cfg.setMapped("start-on-calendar-persistent", "yes")
+		}
+		what = append(what, "OnCalendar="+cals[0])
 	}
-	if len(cals) > 1 {
-		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
-			"%s: slinit's start-on-calendar takes one expression, so OnCalendar=%s is kept and %s not carried",
-			name, cals[0], strings.Join(cals[1:], ", "))})
+	if bootSec > 0 {
+		cfg.setMapped("start-on-boot-sec", bootSec.String())
+		what = append(what, "start-on-boot-sec = "+bootSec.String())
 	}
-	cfg.setMapped("start-on-calendar", cals[0])
-	if persistent {
-		cfg.setMapped("start-on-calendar-persistent", "yes")
+	if activeSec > 0 {
+		cfg.setMapped("start-on-unit-active-sec", activeSec.String())
+		what = append(what, "start-on-unit-active-sec = "+activeSec.String())
 	}
 	if delay != "" {
 		cfg.setMapped("start-on-calendar-randomized-delay", delay)
@@ -142,7 +174,7 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 				"%s: %s=%s not carried: it gates the timer, and this service also starts at boot", name, c[0], c[1])})
 		}
 		return append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
-			"%s read: started at OnCalendar=%s (start-on-calendar), and at boot when enabled, as its [Install] asks", name, cals[0])})
+			"%s read: started at %s, and at boot when enabled, as its [Install] asks", name, strings.Join(what, ", "))})
 	}
 	// Nothing starts it but the timer, in systemd. manual = yes keeps
 	// it so when an enable, or a unit naming it, loads it; a hard
@@ -164,6 +196,6 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 		warns = append(warns, applyUnitKey(cfg, c[0], c[1])...)
 	}
 	return append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
-		"%s read: started at OnCalendar=%s (start-on-calendar), with manual = yes so the calendar alone starts it "+
-			"(a service that depends on it does not start it; drop manual if one should)", name, cals[0])})
+		"%s read: started at %s, with manual = yes so the timer alone starts it "+
+			"(a service that depends on it does not start it; drop manual if one should)", name, strings.Join(what, ", "))})
 }

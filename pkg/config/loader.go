@@ -527,7 +527,13 @@ func activationChanged(svc service.Service, desc *ServiceDescription) bool {
 		svc.Record().StartOnMount() != desc.StartOnMount ||
 		svc.Record().StartOnCalendarExpr() != desc.StartOnCalendar ||
 		svc.Record().StartOnCalendarPersistent() != desc.StartOnCalendarPersistent ||
-		svc.Record().StartOnCalendarRandomizedDelay() != desc.StartOnCalendarRandomizedDelay
+		svc.Record().StartOnCalendarRandomizedDelay() != desc.StartOnCalendarRandomizedDelay ||
+		monotonicChanged(svc, desc)
+}
+
+func monotonicChanged(svc service.Service, desc *ServiceDescription) bool {
+	boot, active := svc.Record().StartOnMonotonic()
+	return boot != desc.StartOnBootSec || active != desc.StartOnUnitActiveSec
 }
 
 // cronTarget is a service type that can carry a cron task.
@@ -2606,6 +2612,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	_ = rec.SetStartOnCalendar(desc.StartOnCalendar) // checked by the parser
 	rec.SetStartOnCalendarPersistent(desc.StartOnCalendarPersistent)
 	rec.SetStartOnCalendarRandomizedDelay(desc.StartOnCalendarRandomizedDelay)
+	rec.SetStartOnMonotonic(desc.StartOnBootSec, desc.StartOnUnitActiveSec)
 	rec.SetGuessMainPID(desc.GuessMainPID)
 	rec.SetSELinuxContext(desc.SELinuxContext)
 	rec.SetSMACKProcessLabel(desc.SMACKProcessLabel)

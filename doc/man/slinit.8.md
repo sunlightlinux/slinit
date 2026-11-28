@@ -629,8 +629,10 @@ again). One expression is kept; **Persistent=** is
 **Assert\*=** become the service's when only the calendar starts it
 (*fstrim.timer*'s *ConditionVirtualization=!container*); a service its
 **[Install]** has wanted by a target does not get **manual**.
-**RandomizedDelaySec=** is **start-on-calendar-randomized-delay**; the
-monotonic **OnBootSec=** family is reported, not carried.
+**RandomizedDelaySec=** is **start-on-calendar-randomized-delay**;
+**OnBootSec=** and **OnStartupSec=** are **start-on-boot-sec**,
+**OnUnitActiveSec=** is **start-on-unit-active-sec**; **OnActiveSec=**
+and **OnUnitInactiveSec=** are reported, not carried.
 
 A service's socket unit is read with it, though (since 4.1.0):
 *foo.socket*, or the units its **Sockets=** names, with their

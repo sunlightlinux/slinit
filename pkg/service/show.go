@@ -503,9 +503,15 @@ func RenderShow(s Service) string {
 		if sr.startOnCalendarPersistent {
 			p("OnCalendarPersistent", "yes")
 		}
-		if sr.startOnCalendarDelay > 0 {
-			p("OnCalendarRandomizedDelay", sr.startOnCalendarDelay.String())
-		}
+	}
+	if sr.startOnCalendarDelay > 0 && (sr.startOnCalendarExpr != "" || sr.startOnBootSec > 0 || sr.startOnUnitActiveSec > 0) {
+		p("OnCalendarRandomizedDelay", sr.startOnCalendarDelay.String())
+	}
+	if sr.startOnBootSec > 0 {
+		p("OnBootSec", sr.startOnBootSec.String())
+	}
+	if sr.startOnUnitActiveSec > 0 {
+		p("OnUnitActiveSec", sr.startOnUnitActiveSec.String())
 	}
 	if sr.socketPath != "" {
 		p("SocketPath", sr.socketPath)

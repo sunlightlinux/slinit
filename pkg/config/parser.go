@@ -380,6 +380,8 @@ type ServiceDescription struct {
 	StartOnCalendarPersistent bool
 	// StartOnCalendarRandomizedDelay: each start up to this much later.
 	StartOnCalendarRandomizedDelay time.Duration
+	// StartOnBootSec / StartOnUnitActiveSec: the monotonic timers.
+	StartOnBootSec, StartOnUnitActiveSec time.Duration
 
 	// Socket activation
 	SocketPath  string   // primary socket path (first socket-listen)
@@ -3285,6 +3287,16 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("socket-reuseport: %w", err)
 		}
 		desc.SocketReusePort = b
+	case "start-on-boot-sec", "start-on-unit-active-sec":
+		d, err := time.ParseDuration(strings.TrimSpace(value))
+		if err != nil || d < 0 {
+			return fmt.Errorf("%s: want a duration >= 0 (%q)", setting, value)
+		}
+		if setting == "start-on-boot-sec" {
+			desc.StartOnBootSec = d
+		} else {
+			desc.StartOnUnitActiveSec = d
+		}
 	case "start-on-calendar-randomized-delay":
 		d, err := time.ParseDuration(strings.TrimSpace(value))
 		if err != nil || d < 0 {

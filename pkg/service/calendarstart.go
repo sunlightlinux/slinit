@@ -246,10 +246,17 @@ func nextCalendarFire(spec *CalendarSpec, now, fired time.Time) time.Time {
 // oneshot leaves the units after it alone in systemd. Reports whether
 // it started or ran anything.
 func (ss *ServiceSet) calendarFire(s Service) bool {
+	return ss.timerFire(s, "start-on-calendar", func(r *ServiceRecord) bool { return r.startOnCalendar != nil })
+}
+
+// timerFire is calendarFire for any timer: what names the timer in the
+// log, and armed reports, under queueMu, whether the service still has
+// it (a reload may have cleared it).
+func (ss *ServiceSet) timerFire(s Service, what string, armed func(*ServiceRecord) bool) bool {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
 	r := s.Record()
-	if r.startOnCalendar == nil || ss.IsShuttingDown() {
+	if !armed(r) || ss.IsShuttingDown() {
 		// Cleared by a reload meanwhile; or a shutdown, checked under
 		// queueMu as StartServiceUnlessShuttingDown does, so it cannot
 		// begin between the check and the start.
@@ -258,11 +265,11 @@ func (ss *ServiceSet) calendarFire(s Service) bool {
 	_, scripted := s.(*ScriptedService)
 	switch st := r.state.Load(); {
 	case st == StateStopped:
-		ss.logger.Info("Service '%s': start-on-calendar fired", s.Name())
+		ss.logger.Info("Service '%s': %s fired", s.Name(), what)
 		s.Start()
 	case st == StateStarted && scripted:
 		if r.IsStartPinned() {
-			ss.logger.Info("Service '%s': start-on-calendar fired; pinned started, so the job is not run again", s.Name())
+			ss.logger.Info("Service '%s': %s fired; pinned started, so the job is not run again", s.Name(), what)
 			return false
 		}
 		for _, d := range r.dependents {
@@ -270,12 +277,12 @@ func (ss *ServiceSet) calendarFire(s Service) bool {
 				// Its stop would wait for that service to stop, or
 				// take it down: neither is what a timer does to the
 				// units after a oneshot.
-				ss.logger.Info("Service '%s': start-on-calendar fired; '%s' depends on it and is up, so the job is not run again",
-					s.Name(), d.From.Name())
+				ss.logger.Info("Service '%s': %s fired; '%s' depends on it and is up, so the job is not run again",
+					s.Name(), what, d.From.Name())
 				return false
 			}
 		}
-		ss.logger.Info("Service '%s': start-on-calendar fired; running the job again", s.Name())
+		ss.logger.Info("Service '%s': %s fired; running the job again", s.Name(), what)
 		r.rerunJob = true
 		r.Restart()
 	default:

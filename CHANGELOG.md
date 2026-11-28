@@ -134,7 +134,11 @@ verified with `git tag -v`.
   calendar starts it (fstrim.timer: ConditionVirtualization=!container),
   the same check twice kept once; RandomizedDelaySec= is
   `start-on-calendar-randomized-delay` (each start up to that much
-  later, at random); the monotonic OnBootSec= family is reported.
+  later, at random); OnBootSec= / OnStartupSec= are `start-on-boot-sec`
+  and OnUnitActiveSec= is `start-on-unit-active-sec` (the monotonic
+  timers, a starter of their own: systemd-tmpfiles-clean.timer's pair
+  carries over); OnActiveSec= / OnUnitInactiveSec= are reported.
+  `slinitctl list-timers` shows them too.
 
 - **`condition-capability = CAP_X`**, systemd's `ConditionCapability=`:
   the capability is in slinit's own bounding set, as systemd checks the

@@ -72,7 +72,7 @@ func cmdListTimers(conn net.Conn, now time.Time, user bool) error {
 		if err != nil {
 			return err
 		}
-		if r, ok := timerRowFrom(name, body, now); ok {
+		if r, ok := timerRowFrom(name, body, now, service.KernelBootTime()); ok {
 			rows = append(rows, r)
 		}
 	}
@@ -115,8 +115,10 @@ func showBody(conn net.Conn, name string) (string, error) {
 
 // timerRowFrom reads a show body; ok is false for a service with no
 // start-on-calendar.
-func timerRowFrom(name, body string, now time.Time) (timerRow, bool) {
+func timerRowFrom(name, body string, now, boot time.Time) (timerRow, bool) {
 	r := timerRow{name: name}
+	var bootSec, activeSec time.Duration
+	var started time.Time
 	for _, line := range strings.Split(body, "\n") {
 		k, v, _ := strings.Cut(line, "=")
 		switch k {
@@ -126,14 +128,43 @@ func timerRowFrom(name, body string, now time.Time) (timerRow, bool) {
 			r.persistent = v == "yes"
 		case "OnCalendarRandomizedDelay":
 			r.delay = v
+		case "OnBootSec":
+			bootSec, _ = time.ParseDuration(v)
+		case "OnUnitActiveSec":
+			activeSec, _ = time.ParseDuration(v)
+		case "ActiveEnterTimestamp":
+			started, _ = time.Parse(time.RFC3339, v)
 		}
 	}
-	if r.expr == "" {
+	if r.expr == "" && bootSec == 0 && activeSec == 0 {
 		return r, false
 	}
-	if spec, err := service.ParseCalendar(r.expr); err == nil {
-		r.next = spec.NextAfter(now)
+	var what []string
+	if r.expr != "" {
+		what = append(what, r.expr)
+		if spec, err := service.ParseCalendar(r.expr); err == nil {
+			r.next = spec.NextAfter(now)
+		}
 	}
+	// The monotonic times, as the starter reckons them: the boot one if
+	// still ahead, the interval after the last start (the starter also
+	// counts its own last start, which show does not have).
+	earliest := func(t time.Time) {
+		if t.After(now) && (r.next.IsZero() || t.Before(r.next)) {
+			r.next = t
+		}
+	}
+	if bootSec > 0 {
+		what = append(what, "boot+"+bootSec.String())
+		earliest(boot.Add(bootSec))
+	}
+	if activeSec > 0 {
+		what = append(what, "every "+activeSec.String()+" after start")
+		if !started.IsZero() {
+			earliest(started.Add(activeSec))
+		}
+	}
+	r.expr = strings.Join(what, "; ")
 	if r.persistent {
 		r.last, _ = service.ReadCalendarStamp(name)
 	}
@@ -142,7 +173,7 @@ func timerRowFrom(name, body string, now time.Time) (timerRow, bool) {
 
 func printTimers(w io.Writer, rows []timerRow, now time.Time) {
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "No loaded service has start-on-calendar.")
+		fmt.Fprintln(w, "No loaded service has a timer (start-on-calendar, start-on-boot-sec, start-on-unit-active-sec).")
 		return
 	}
 	// By next run; one with none (an expression past its last match) last.

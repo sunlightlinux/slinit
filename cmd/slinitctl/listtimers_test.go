@@ -9,15 +9,15 @@ import (
 
 func TestListTimersRows(t *testing.T) {
 	now := time.Date(2026, 11, 28, 10, 0, 0, 0, time.Local)
-	daily, ok := timerRowFrom("logrotate", "Type=scripted\nOnCalendar=daily\nOnCalendarRandomizedDelay=1h0m0s\n", now)
+	daily, ok := timerRowFrom("logrotate", "Type=scripted\nOnCalendar=daily\nOnCalendarRandomizedDelay=1h0m0s\n", now, now)
 	if !ok || !daily.next.Equal(time.Date(2026, 11, 29, 0, 0, 0, 0, time.Local)) || daily.delay != "1h0m0s" {
 		t.Fatalf("daily: %+v %v", daily, ok)
 	}
-	hourly, _ := timerRowFrom("fwupd", "OnCalendar=*-*-* *:30:00\n", now)
-	if _, ok := timerRowFrom("sshd", "Type=process\n", now); ok {
+	hourly, _ := timerRowFrom("fwupd", "OnCalendar=*-*-* *:30:00\n", now, now)
+	if _, ok := timerRowFrom("sshd", "Type=process\n", now, now); ok {
 		t.Error("a service without start-on-calendar listed")
 	}
-	past, _ := timerRowFrom("once", "OnCalendar=2020-01-01 00:00:00\n", now)
+	past, _ := timerRowFrom("once", "OnCalendar=2020-01-01 00:00:00\n", now, now)
 	var b bytes.Buffer
 	printTimers(&b, []timerRow{daily, past, hourly}, now)
 	lines := strings.Split(strings.TrimSpace(b.String()), "\n")
@@ -35,6 +35,18 @@ func TestListTimersRows(t *testing.T) {
 	}
 	var e bytes.Buffer
 	printTimers(&e, nil, now)
+	// Monotonic: the boot time while ahead, then the interval after the
+	// last start.
+	mono, ok := timerRowFrom("clean", "OnBootSec=15m0s\nOnUnitActiveSec=24h0m0s\nActiveEnterTimestamp="+
+		now.Add(-time.Hour).Format(time.RFC3339)+"\n", now, now.Add(-10*time.Minute))
+	if !ok || !mono.next.Equal(now.Add(5*time.Minute)) || mono.expr != "boot+15m0s; every 24h0m0s after start" {
+		t.Errorf("mono: %+v", mono)
+	}
+	mono, _ = timerRowFrom("clean", "OnBootSec=15m0s\nOnUnitActiveSec=24h0m0s\nActiveEnterTimestamp="+
+		now.Add(-time.Hour).Format(time.RFC3339)+"\n", now, now.Add(-2*time.Hour))
+	if !mono.next.Equal(now.Add(23 * time.Hour)) {
+		t.Errorf("mono after boot: next %v", mono.next)
+	}
 	if !strings.Contains(e.String(), "No loaded service") {
 		t.Errorf("empty: %q", e.String())
 	}

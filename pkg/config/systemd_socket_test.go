@@ -236,7 +236,7 @@ func TestSystemdTimerRead(t *testing.T) {
 		{name: "daily", timer: "[Timer]\nOnCalendar=daily\nAccuracySec=1h\n", cal: "daily", manual: true, warn: "AccuracySec=1h not carried"},
 		{name: "drop-in resets and sets", timer: "[Timer]\nOnCalendar=daily\n", dropin: "[Timer]\nOnCalendar=\nOnCalendar=Mon 04:00\n", cal: "Mon 04:00", manual: true},
 		{name: "two expressions", timer: "[Timer]\nOnCalendar=daily\nOnCalendar=weekly\n", cal: "daily", manual: true, warn: "takes one expression"},
-		{name: "monotonic only", timer: "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\n", warn: "calendar times only"},
+		{name: "monotonic unsupported", timer: "[Timer]\nOnActiveSec=5min\n", warn: "count from the boot"},
 		{name: "for another unit", timer: "[Timer]\nOnCalendar=daily\nUnit=other.service\n", warn: "not this service"},
 		{name: "bad expression", timer: "[Timer]\nOnCalendar=Funday\n", warn: "no calendar expression"},
 	} {
@@ -337,5 +337,25 @@ func TestSystemdTimerConditionReset(t *testing.T) {
 	desc, _ := sockConvert(t, dir, sockSvc)
 	if got := predParams(desc); strings.Contains(got, "container") || !strings.Contains(got, "/etc/a") {
 		t.Errorf("after the drop-in's reset: %q", got)
+	}
+}
+
+// OnBootSec= / OnStartupSec= / OnUnitActiveSec= are the monotonic
+// timers; several of one kind keep the earliest; an empty one resets
+// the timer's list, calendar times included.
+func TestSystemdTimerMonotonic(t *testing.T) {
+	dir := t.TempDir()
+	writeUnit(t, dir, "foo.timer", "[Timer]\nOnBootSec=15min\nOnStartupSec=10min\nOnUnitActiveSec=1d\n")
+	desc, warns := sockConvert(t, dir, sockSvc)
+	if desc.StartOnBootSec != 10*time.Minute || desc.StartOnUnitActiveSec != 24*time.Hour || !desc.ManualStart ||
+		desc.StartOnCalendar != "" || !sockWarned(warns, "start-on-unit-active-sec") {
+		t.Errorf("boot %v active %v manual %v calendar %q warns %v", desc.StartOnBootSec, desc.StartOnUnitActiveSec,
+			desc.ManualStart, desc.StartOnCalendar, warns)
+	}
+	dir = t.TempDir()
+	writeUnit(t, dir, "foo.timer", "[Timer]\nOnCalendar=daily\nOnBootSec=15min\nOnBootSec=\nOnUnitActiveSec=2h\n")
+	desc, _ = sockConvert(t, dir, sockSvc)
+	if desc.StartOnCalendar != "" || desc.StartOnBootSec != 0 || desc.StartOnUnitActiveSec != 2*time.Hour {
+		t.Errorf("after the reset: calendar %q boot %v active %v", desc.StartOnCalendar, desc.StartOnBootSec, desc.StartOnUnitActiveSec)
 	}
 }

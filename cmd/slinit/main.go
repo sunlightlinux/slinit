@@ -1503,6 +1503,9 @@ func main() {
 	// start-on-calendar: one timer per service, armed when it loads.
 	calStarter := service.NewCalendarStarter(serviceSet, logger)
 	defer calStarter.Close()
+	// start-on-boot-sec / start-on-unit-active-sec: the monotonic timers.
+	monoStarter := service.NewMonoStarter(serviceSet, logger)
+	defer monoStarter.Close()
 	{
 		prevLoaded := serviceSet.OnServiceLoaded
 		serviceSet.OnServiceLoaded = func(svc service.Service) {
@@ -1512,6 +1515,9 @@ func main() {
 			if svc.Record().StartOnCalendar() != nil {
 				calStarter.Add(svc)
 			}
+			if boot, active := svc.Record().StartOnMonotonic(); boot > 0 || active > 0 {
+				monoStarter.Add(svc)
+			}
 		}
 		prevUnloaded := serviceSet.OnServiceUnloaded
 		serviceSet.OnServiceUnloaded = func(svc service.Service) {
@@ -1519,6 +1525,7 @@ func main() {
 				prevUnloaded(svc)
 			}
 			calStarter.Remove(svc.Name())
+			monoStarter.Remove(svc.Name())
 		}
 	}
 

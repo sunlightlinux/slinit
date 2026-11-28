@@ -287,6 +287,9 @@ type ServiceRecord struct {
 	startOnCalendarPersistent bool
 	// startOnCalendarDelay: start-on-calendar-randomized-delay.
 	startOnCalendarDelay time.Duration
+	// startOnBootSec / startOnUnitActiveSec: the monotonic timers
+	// (monostart.go), a .timer's OnBootSec= / OnUnitActiveSec=.
+	startOnBootSec, startOnUnitActiveSec time.Duration
 	// rerunJob marks the stop of a scripted job the calendar runs
 	// again: not a restart, so its dependents, the services part of it
 	// and its prepared-by dependencies are left alone, and it is not
@@ -1719,6 +1722,18 @@ func (sr *ServiceRecord) SetStartOnCalendarRandomizedDelay(d time.Duration) {
 // start-on-calendar-randomized-delay.
 func (sr *ServiceRecord) StartOnCalendarRandomizedDelay() time.Duration {
 	return sr.startOnCalendarDelay
+}
+
+// SetStartOnMonotonic sets start-on-boot-sec and
+// start-on-unit-active-sec.
+func (sr *ServiceRecord) SetStartOnMonotonic(boot, active time.Duration) {
+	sr.startOnBootSec, sr.startOnUnitActiveSec = boot, active
+}
+
+// StartOnMonotonic reports start-on-boot-sec and
+// start-on-unit-active-sec.
+func (sr *ServiceRecord) StartOnMonotonic() (boot, active time.Duration) {
+	return sr.startOnBootSec, sr.startOnUnitActiveSec
 }
 
 // StartOnCalendarPersistent reports start-on-calendar-persistent.
