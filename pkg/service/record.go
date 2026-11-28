@@ -274,6 +274,9 @@ type ServiceRecord struct {
 	conflicts []string
 	onFailure []string
 	upholds   []string // upholds.go
+	// inlineEnv: the environment setting's KEY=VALUE words, between the
+	// global environment and the env-file (BuildFullEnv).
+	inlineEnv []string
 	// startOnCalendar: when CalendarStarter starts the service
 	// (calendarstart.go); nil for none.
 	startOnCalendar     *CalendarSpec
@@ -1982,14 +1985,23 @@ func (sr *ServiceRecord) BuildFullEnv() []string {
 	extra := sr.BuildEnvSlice()
 	// exec-search-path has to reach the child even when nothing else
 	// does: the early nil used to drop it, leaving PID 1's PATH.
-	if len(globalEnv) == 0 && len(extra) == 0 && sr.ExecSearchPath() == "" {
+	if len(globalEnv) == 0 && len(sr.inlineEnv) == 0 && len(extra) == 0 && sr.ExecSearchPath() == "" {
 		return nil
 	}
-	result := make([]string, 0, len(globalEnv)+len(extra))
+	// Later entries win (os/exec keeps the last of a name): global, then
+	// the environment setting, then what slinitctl setenv added.
+	result := make([]string, 0, len(globalEnv)+len(sr.inlineEnv)+len(extra))
 	result = append(result, globalEnv...)
+	result = append(result, sr.inlineEnv...)
 	result = append(result, extra...)
 	return sr.applyBucketDEnvFilters(result)
 }
+
+// SetInlineEnv sets the environment setting's KEY=VALUE words.
+func (sr *ServiceRecord) SetInlineEnv(env []string) { sr.inlineEnv = env }
+
+// InlineEnv returns them.
+func (sr *ServiceRecord) InlineEnv() []string { return sr.inlineEnv }
 
 // BuildEnvWithFile returns global env + env-file vars + per-service extraEnv
 // with a single pre-allocated slice. Used by ProcessService and BGProcessService.
@@ -2007,12 +2019,15 @@ func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
 		}
 	}
 
-	totalCap := len(globalEnv) + len(fileEnv) + len(extra)
+	totalCap := len(globalEnv) + len(sr.inlineEnv) + len(fileEnv) + len(extra)
 	if totalCap == 0 && sr.ExecSearchPath() == "" {
 		return nil
 	}
+	// Later entries win: global, the environment setting, the env-file
+	// (as systemd's EnvironmentFile= overrides Environment=), setenv.
 	env := make([]string, 0, totalCap)
 	env = append(env, globalEnv...)
+	env = append(env, sr.inlineEnv...)
 	for k, v := range fileEnv {
 		env = append(env, k+"="+v)
 	}

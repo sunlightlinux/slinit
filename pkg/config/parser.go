@@ -94,6 +94,7 @@ type ServiceDescription struct {
 	ExtraStartedCommands map[string][]string // custom actions (only when STARTED)
 	Privileged           service.PrivilegedHooks
 	WorkingDir           string
+	Environment          []string // environment: KEY=VALUE, before the env-file
 	EnvFile              string
 	EnvDir               string // runit-style: directory with one file per env var
 	// EnvGenerator: executable path invoked at start-time; its stdout
@@ -2747,6 +2748,24 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.AppArmorSwitch = value
 
+	case "environment":
+		// systemd's Environment=: KEY=VALUE words, quoted as a command's
+		// arguments are, with no $ expansion (systemd does none either).
+		// An env-file overrides them, as EnvironmentFile= overrides
+		// Environment=.
+		var list []string
+		for _, w := range splitCommand(value) {
+			k, _, ok := strings.Cut(w, "=")
+			if !ok || !validEnvName(k) {
+				return fmt.Errorf("environment: %q is not KEY=VALUE", w)
+			}
+			list = append(list, w)
+		}
+		if op == OpPlusEqual {
+			desc.Environment = append(desc.Environment, list...)
+		} else {
+			desc.Environment = list
+		}
 	case "private-devices":
 		b, err := parseBool(value)
 		if err != nil {
@@ -3767,6 +3786,22 @@ func applyOptions(desc *ServiceDescription, value string, append bool) error {
 // A quoted run starts a word even when it is empty, so `""` is an empty
 // argument, as in dinit's read_setting_value; it used to vanish, which
 // shifted every later argument of a command such as `prog "" file`.
+// validEnvName reports whether k is a name an environment variable can
+// have: a letter or _ first, then letters, digits and _.
+func validEnvName(k string) bool {
+	if k == "" {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func splitCommand(cmd string) []string {
 	// Fast-path: no quotes, escapes, or NUL separators → use strings.Fields
 	if strings.IndexByte(cmd, '"') < 0 &&

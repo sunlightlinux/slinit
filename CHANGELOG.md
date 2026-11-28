@@ -68,6 +68,13 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`environment = KEY=VALUE ...`**, systemd's `Environment=`: variables
+  set in the service file itself, quoted as a command's words, nothing
+  expanded; an env-file overrides them and `slinitctl setenv` overrides
+  both. A unit's `Environment=` lines map onto it; they were a warning
+  telling the operator to write an env-file, the most frequent loss in
+  this host's and systemd's units (44).
+
 - **`private-devices = yes`**, systemd's `PrivateDevices=`: the service
   gets a /dev holding only the pseudo devices (null, zero, full,
   random, urandom, tty), the pts tree, shm, mqueue, the log socket and

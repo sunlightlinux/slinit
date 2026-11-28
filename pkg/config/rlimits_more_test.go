@@ -249,3 +249,51 @@ func TestStartOnCalendarParsed(t *testing.T) {
 		t.Error("a malformed expression loaded")
 	}
 }
+
+func TestEnvironmentSetting(t *testing.T) {
+	d, err := Parse(strings.NewReader(`type = process
+command = /bin/true
+environment = A=1 "B=two words"
+environment += C=3 D=
+`), "e", "e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(d.Environment, "|") != "A=1|B=two words|C=3|D=" {
+		t.Errorf("environment %q", d.Environment)
+	}
+	d, _ = Parse(strings.NewReader("type = process\ncommand = /bin/true\nenvironment = A=1\nenvironment = B=2\n"), "e", "e")
+	if strings.Join(d.Environment, "|") != "B=2" {
+		t.Errorf("= did not replace: %q", d.Environment)
+	}
+	d, _ = Parse(strings.NewReader("type = process\ncommand = /bin/true\nenvironment = P=$HOME\n"), "e", "e")
+	if strings.Join(d.Environment, "|") != "P=$HOME" {
+		t.Errorf("a $ was expanded: %q", d.Environment)
+	}
+	for _, bad := range []string{"NOEQUALS", "1A=x", "=x"} {
+		if _, err := Parse(strings.NewReader("type = process\ncommand = /bin/true\nenvironment = "+bad+"\n"), "e", "e"); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestSystemdEnvironmentMapped(t *testing.T) {
+	p := writeUnit(t, t.TempDir(), "e.service", `[Service]
+ExecStart=/bin/true
+Environment="A=1" "B=two words"
+Environment=C=x\\y Q="say \"hi\""
+Environment=bad
+`)
+	desc, err := SystemdUnitToServiceDescription(p, "e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `A=1|B=two words|C=x\y|Q=say "hi"`
+	if got := strings.Join(desc.Environment, "|"); got != want {
+		t.Errorf("environment %q, want %q", got, want)
+	}
+	p2 := writeUnit(t, t.TempDir(), "r.service", "[Service]\nExecStart=/bin/true\nEnvironment=A=1\nEnvironment=\nEnvironment=B=2\n")
+	if d, _ := SystemdUnitToServiceDescription(p2, "r"); strings.Join(d.Environment, "|") != "B=2" {
+		t.Errorf("reset: %q", d.Environment)
+	}
+}

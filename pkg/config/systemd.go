@@ -355,6 +355,7 @@ func convertSystemdUnit(abs, name string, unitDirs []string, accept bool) (*Syst
 // LogExtraFields="NOTE=two words" into two fields.
 var sdKeepQuotes = map[string]bool{
 	"LogExtraFields": true,
+	"Environment":    true,
 }
 
 var (
@@ -848,7 +849,10 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		}
 		cfg.envFile = f
 	case "Environment":
-		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Environment=%s inline — slinit has env-file only; consolidate into a KEY=VAL file", val)})
+		// slinit's environment (since 4.1): the same KEY=VALUE words,
+		// quoted for slinit's word splitting; an empty assignment resets
+		// the list.
+		warns = append(warns, mapEnvironment(cfg, key, val)...)
 	case "Restart":
 		cfg.restartRaw = val
 		switch val {
@@ -1242,6 +1246,46 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 			*cur, *privp = value, priv
 			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
 		}
+	}
+	return warns
+}
+
+// mapEnvironment maps an Environment= line onto environment: systemd's
+// quoted KEY=VALUE words, written back quoted for slinit's splitting,
+// which removes a backslash before any character, and expands nothing.
+func mapEnvironment(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	if strings.TrimSpace(val) == "" {
+		cfg.dropMapped("environment")
+		return nil
+	}
+	var warns []SystemdWarning
+	var words []string
+	rest := val
+	for {
+		w, r, found, err := extractSystemdWord(rest, true)
+		if err != nil {
+			return append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s=%s: %v — ignored, as systemd ignores it", key, val, err)})
+		}
+		if !found {
+			break
+		}
+		rest = r
+		k, _, ok := strings.Cut(w, "=")
+		if !ok || !validEnvName(k) {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: %q is not KEY=VALUE — ignored, as systemd ignores it", key, w)})
+			continue
+		}
+		if strings.Contains(w, "\n") {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: %q holds a newline, which a slinit setting cannot — ignored", key, k)})
+			continue
+		}
+		if strings.ContainsAny(w, " \t\"'\\") {
+			w = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w) + `"`
+		}
+		words = append(words, w)
+	}
+	if len(words) > 0 {
+		cfg.appendMapped("environment", strings.Join(words, " "))
 	}
 	return warns
 }

@@ -500,6 +500,15 @@ service's **run-as** user.
 
 ## ENVIRONMENT
 
+**environment**=*KEY*=*VALUE* [*KEY*=*VALUE*...] (since 4.1.0)
+:   Set variables in the service's environment, in the file itself. The
+    words are quoted as a command's arguments are (*"MSG=two words"*),
+    and nothing in them is expanded. **+=** adds, **=** replaces what
+    earlier lines set. An **env-file** sets after them, so its value of
+    a variable wins, as systemd's **EnvironmentFile=** overrides
+    **Environment=**; **slinitctl setenv** wins over both. systemd's
+    **Environment=**.
+
 **env-file**=*path*
 :   Read additional *KEY*=*VALUE* assignments from *path* before
     exec. Same syntax as **slinit**(8)'s **\--env-file**.

@@ -2589,6 +2589,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetSocketMulticastGroup(desc.SocketMulticastGroup)
 	rec.SetSocketAccept(desc.SocketAccept)
 	rec.SetStartOnMount(desc.StartOnMount)
+	rec.SetInlineEnv(desc.Environment)
 	_ = rec.SetStartOnCalendar(desc.StartOnCalendar) // checked by the parser
 	rec.SetGuessMainPID(desc.GuessMainPID)
 	rec.SetSELinuxContext(desc.SELinuxContext)

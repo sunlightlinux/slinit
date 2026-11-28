@@ -62,6 +62,8 @@ var KnownSettings = map[string]OperatorType{
 
 	// Environment
 	"env-file": OpEquals,
+	// KEY=VALUE words, quoted as a command's; += adds, = replaces.
+	"environment": OpEquals | OpPlusEqual,
 
 	// Process management
 	"run-as":                     OpEquals,

@@ -144,6 +144,7 @@ var BuiltinDirectives = []string{
 	"env-dir",
 	"env-file",
 	"env-generator",
+	"environment",
 	"error-logger",
 	"exec-condition",
 	"exec-search-path",
