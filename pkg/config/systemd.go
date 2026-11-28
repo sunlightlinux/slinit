@@ -1167,6 +1167,10 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 	}
 	for _, c := range cmds {
 		argv := c.cmd.argv
+		rt := runtimeVars(c.refs)
+		if rt {
+			argv = runtimeShellArgv(argv)
+		}
 		if c.ignoreFailure && key == "ExecStartPre" {
 			// slinit fails the start on a failing pre-start-command and
 			// has no way to say otherwise; the shell ignores it instead.
@@ -1189,7 +1193,7 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 				"%s=%s: the program's path starts with \"+\", which slinit would read as its \"+\" prefix — command dropped", key, val)})
 			continue
 		}
-		warns = append(warns, warnExecVars(key, c.refs, c.bad)...)
+		warns = append(warns, warnExecVarsRT(key, c.refs, c.bad, rt)...)
 		warns = append(warns, execPrefixNotes(key, val, c.execPrefixes)...)
 		switch key {
 		case "ExecStart":
@@ -1208,7 +1212,7 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 						"%s=%s: argv[0] %q dropped — %s; the program gets its path as argv[0]", key, val, c.cmd.argv0, why)})
 				}
 			}
-			cfg.commandIgnoreFailure, cfg.commandArgv = c.ignoreFailure, c.cmd.argv
+			cfg.commandIgnoreFailure, cfg.commandArgv = c.ignoreFailure, argv
 		case "ExecStop":
 			warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
 			// slinit has no $MAINPID: it would expand to nothing. The
@@ -1303,6 +1307,69 @@ func mapEnvironment(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	return warns
 }
 
+// shellWord writes w, a command word in slinit's $ syntax (sdEnvWord),
+// as a shell word that expands its variables when the shell runs, as
+// systemd does when it runs the command: a lone $NAME unquoted, so it
+// is split into words and vanishes when empty; ${NAME} inside double
+// quotes, one argument whatever its value; "$$", a literal $, as \$. A
+// word with no $ is single-quoted.
+func shellWord(w string) string {
+	if !strings.Contains(w, "$") {
+		return shellQuote(w) // openrc_confd.go
+	}
+	if loneVarRe.MatchString(w) {
+		return w
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(w); i++ {
+		switch c := w[i]; {
+		case c == '$' && i+1 < len(w) && w[i+1] == '$':
+			b.WriteString(`\$`)
+			i++
+		case c == '\\' || c == '"' || c == '`':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// shellScript joins the words of a command (shellWord each) and makes
+// the result a slinit command word: every $ doubled, so slinit leaves
+// it to the shell.
+func shellScript(argv []string) string {
+	words := make([]string, len(argv))
+	for i, w := range argv {
+		words[i] = shellWord(w)
+	}
+	return strings.Join(words, " ")
+}
+
+// runtimeShellArgv runs argv through /bin/sh -c "exec ...", so that its
+// $VAR and ${VAR} are expanded from the service's environment when it
+// runs, the environment setting and the env-file included, as systemd
+// expands them from the unit's. exec keeps the process the program: a
+// main process stays the one slinit supervises.
+func runtimeShellArgv(argv []string) []string {
+	return []string{"/bin/sh", "-c", strings.ReplaceAll("exec "+shellScript(argv), "$", "$$")}
+}
+
+// runtimeVars reports whether a command's variables are to be expanded
+// at run time: it has some, and no $MAINPID, which slinit handles on its
+// own (term-signal, reload-signal) or drops.
+func runtimeVars(refs []string) bool {
+	for _, r := range refs {
+		if r == "$MAINPID" || r == "${MAINPID}" {
+			return false
+		}
+	}
+	return len(refs) > 0
+}
+
 // loneVarRe matches a word that is one unbraced $VAR, nothing else.
 var loneVarRe = regexp.MustCompile(`^\$[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -1340,15 +1407,10 @@ func foldStartHooks(key, setting string, all []foldCmd, cur *string, priv *bool)
 	for _, c := range all {
 		words := make([]string, len(c.argv))
 		for i, w := range c.argv {
-			// A lone $VAR is split into words by systemd, and vanishes
-			// when empty; quoted, it would be one argument, an empty one
-			// for an unset variable (sshd -t ''). ${VAR} is one argument
-			// in systemd, and stays quoted. shellQuote is openrc_confd.go's.
-			if loneVarRe.MatchString(w) {
-				words[i] = w
-			} else {
-				words[i] = shellQuote(w)
-			}
+			// Expanded by the shell when it runs (shellWord): a lone
+			// $VAR split into words and gone when empty (quoted, sshd -t
+			// got an empty argument), ${VAR} one argument.
+			words[i] = shellWord(w)
 		}
 		step := strings.Join(words, " ")
 		if c.ignore {
@@ -1356,7 +1418,7 @@ func foldStartHooks(key, setting string, all []foldCmd, cur *string, priv *bool)
 		}
 		script = append(script, step)
 	}
-	v, ok := slinitCommandValue([]string{"/bin/sh", "-c", strings.Join(script, " && ")})
+	v, ok := slinitCommandValue([]string{"/bin/sh", "-c", strings.ReplaceAll(strings.Join(script, " && "), "$", "$$")})
 	if !ok {
 		return []SystemdWarning{{"WARN", fmt.Sprintf("multiple %s= — an argument holds a newline; keeping the first", key)}}
 	}
@@ -1456,6 +1518,18 @@ func warnArgv0(key, argv0 string) []SystemdWarning {
 // environment, so a variable the unit's env-file sets comes out empty.
 // Every other $, which systemd keeps as text, is written $$ and needs no
 // warning.
+// warnExecVarsRT is warnExecVars for a command whose variables are, with
+// rt, expanded at run time (runtimeShellArgv): a note, not a warning.
+func warnExecVarsRT(key string, refs, bad []string, rt bool) []SystemdWarning {
+	if !rt {
+		return warnExecVars(key, refs, bad)
+	}
+	warns := []SystemdWarning{{"NOTE", fmt.Sprintf(
+		"%s= uses %s — run through /bin/sh -c \"exec ...\" so they are expanded from the service's environment "+
+			"(environment, env-file) when it runs, as systemd expands them", key, strings.Join(refs, " "))}}
+	return append(warns, warnExecVars(key, nil, bad)...)
+}
+
 func warnExecVars(key string, refs, bad []string) []SystemdWarning {
 	var warns []SystemdWarning
 	if len(refs) > 0 {

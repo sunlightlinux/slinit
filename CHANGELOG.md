@@ -26,6 +26,17 @@ verified with `git tag -v`.
 
 ### Changed
 
+- **A unit's `Exec*=` variables are expanded when the command runs**,
+  from the service's environment (its Environment= and EnvironmentFile=),
+  as systemd does: such a command goes through `/bin/sh -c "exec ..."`
+  with systemd's rules ($VAR split into words and gone when empty,
+  ${VAR} one argument), `exec` keeping the program the service's
+  process. slinit expanded them when it loaded the file, from its own
+  environment, so a variable the env-file set came out empty (sshd's
+  $SSHD_OPTS, mdadm's, smartd's...). An ExecReload= command may use
+  $MAINPID, which slinit sets for a reload-command. *Compat:* such a
+  command now sees the service's values.
+
 - **Several `ExecStartPre=` (or `ExecStartPost=`, or a oneshot's
   `ExecStart=`) lines run in turn**
   from one pre-start-command (post-start-command), a shell running each

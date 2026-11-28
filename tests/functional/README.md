@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (338 cases)
+# Run all tests (339 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -469,6 +469,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 337 | conflicts-on-failure | starting either side of a `conflicts:` pair stops the other; a service that exits 1 with no restart starts its `on-failure:` service, one that exits 0 does not; an `upholds:` service is started with its upholder and again after it is stopped, and left stopped once the upholder is down (fails with each removed) |
 | 338 | reload-command | `slinitctl reload-signal` runs a `reload-command` with `$MAINPID` the service's main pid, fails when it fails, and runs a systemd unit's `ExecReload=` command (fails with the command not run) |
 | 339 | private-devices | a `private-devices` service has /dev/null and the pseudo devices, no /dev/kmsg, and CAP_MKNOD out of its bounding set (fails with the runner flag not passed) |
+| 340 | unit-env-at-run-time | a systemd unit's `ExecStart=` gets `$OPTS` from its `EnvironmentFile=` split into words, `${X}` from `Environment=` as one argument, and `Environment=`'s variables in its environment (fails before 4.1's run-time expansion: `[][inline]`) |
 
 ## How It Works
 

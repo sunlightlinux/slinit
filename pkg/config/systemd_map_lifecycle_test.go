@@ -571,3 +571,43 @@ func TestSystemdOneshotExecStartsFolded(t *testing.T) {
 		t.Errorf("simple: %q %v", desc2.Command, warns)
 	}
 }
+
+// An Exec line's variables are expanded from the service's environment
+// when it runs, with systemd's rules: a lone $VAR split into words (none
+// when empty), ${VAR} one argument, $$ a literal $.
+func TestSystemdExecVarsAtRunTime(t *testing.T) {
+	_, warns, desc := lcConvert(t, `ExecStart=/bin/sh -c 'printf "[%s]" "$@" > "$0"' $OUT $OPTS ${ONE} lit$$x "q\"b"`)
+	argv := desc.Command
+	if len(argv) != 3 || argv[0] != "/bin/sh" || !strings.HasPrefix(argv[2], "exec ") {
+		t.Fatalf("command %q", argv)
+	}
+	if !lcWarned(warns, "NOTE", "expanded from the service's environment") {
+		t.Errorf("no note: %v", warns)
+	}
+	run := func(env ...string) string {
+		out := filepath.Join(t.TempDir(), "out")
+		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd.Env = append([]string{"OUT=" + out}, env...)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		b, _ := os.ReadFile(out)
+		return string(b)
+	}
+	if got := run("OPTS=-a -b", "ONE=x y"); got != `[-a][-b][x y][lit$x][q"b]` {
+		t.Errorf("got %s", got)
+	}
+	if got := run("ONE="); got != `[][lit$x][q"b]` {
+		t.Errorf("unset OPTS, empty ONE: got %s", got)
+	}
+}
+
+// An ExecReload= using $MAINPID other than as kill's target becomes a
+// reload-command that expands it when it runs (slinit sets it there).
+func TestSystemdExecReloadMainPIDAtRunTime(t *testing.T) {
+	_, warns, desc := lcConvert(t, "ExecReload=/usr/bin/ctl reload --pid $MAINPID")
+	got := runtimeArgv(t, desc.ReloadCommand, "MAINPID=4242")
+	if strings.Join(got, " ") != "/usr/bin/ctl reload --pid 4242" {
+		t.Errorf("reload-command runs as %q (%v)", got, warns)
+	}
+}

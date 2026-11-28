@@ -546,7 +546,7 @@ ExecStop=/usr/bin/wctl stop ${MAINPID}
 	if len(w.StopCommand) != 0 {
 		t.Errorf("stop-command = %q, want it dropped: it has no PID to act on", w.StopCommand)
 	}
-	for _, want := range []string{"v: ExecStart", "$OPTS", "${MORE}", "/etc/a", "w: ExecStop", "v: ExecStop", "u: ExecStop"} {
+	for _, want := range []string{"/etc/a", "w: ExecStop", "v: ExecStop", "u: ExecStop"} {
 		found := false
 		for _, g := range got {
 			found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, want))
@@ -554,6 +554,15 @@ ExecStop=/usr/bin/wctl stop ${MAINPID}
 		if !found {
 			t.Errorf("no WARN mentioning %q: %v", want, got)
 		}
+	}
+	// Since 4.1 ExecStart='s variables are expanded when it runs, from
+	// the service's environment: a note, not a warning.
+	found := false
+	for _, g := range got {
+		found = found || strings.HasPrefix(g, "NOTE: v: ExecStart= uses $OPTS ${MORE}")
+	}
+	if !found {
+		t.Errorf("no NOTE that ExecStart='s $OPTS ${MORE} are expanded at run time: %v", got)
 	}
 	for _, g := range got {
 		if strings.Contains(g, "literal") {

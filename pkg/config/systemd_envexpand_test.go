@@ -2,6 +2,7 @@ package config
 
 import (
 	"math/rand"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -131,24 +132,46 @@ ExecStop=|echo $SDV_A "$$" 'a $HOME'
 	want := []string{"/bin/echo", "x${SDV_A:-dflt}", "a$1", "a$SDV_A", "val", "val", "", "", "a$", "$SDV_A", "${SDV_A"}
 	direct, got := loadSystemdDirect(t, unit)
 	converted, warns := convertWarns(t, unit)
+	// Since 4.1 the variables are expanded when the command runs, from
+	// the service's environment (runtimeShellArgv): what the program is
+	// given then is what systemd gives it. SDV_A=val there, set above
+	// for the old load-time expansion too.
 	for name, d := range map[string]*ServiceDescription{"converted": converted, "direct": direct} {
-		argvIs(t, name+": command", d.Command, want)
+		argvIs(t, name+": command", runtimeArgv(t, d.Command, "SDV_A=val"), want)
 		argvIs(t, name+": pre-start-command", d.PreStartCommand, []string{"/bin/sh", "-c", `echo $HOME $1 "$@"`})
 		// "|" substitutes word by word, then joins the words.
-		argvIs(t, name+": stop-command", d.StopCommand, []string{"/bin/sh", "-c", "echo val $ a $HOME"})
+		argvIs(t, name+": stop-command", runtimeArgv(t, d.StopCommand, "SDV_A=val"), []string{"/bin/sh", "-c", "echo val $ a $HOME"})
 	}
 	var refs, bad bool
 	for _, w := range warns {
-		refs = refs || w.Level == "WARN" && strings.Contains(w.Msg, "ExecStart= uses $SDV_A ${SDV_A} ${SDV_UNSET} —")
+		refs = refs || w.Level == "NOTE" && strings.Contains(w.Msg, "ExecStart= uses $SDV_A ${SDV_A} ${SDV_UNSET} —")
 		bad = bad || w.Level == "WARN" && strings.Contains(w.Msg, "ExecStart= uses $1x $HOME/x ${1} $, no valid variable name")
 		if strings.Contains(w.Msg, "ExecStartPre= uses") {
 			t.Errorf("ExecStartPre= has no variable systemd substitutes, yet: %v", w)
 		}
 	}
 	if !refs || !bad {
-		t.Errorf("want a WARN on $SDV_A ${SDV_A} ${SDV_UNSET} and one on $1x $HOME/x ${1} $: %v", warns)
+		t.Errorf("want a NOTE on $SDV_A ${SDV_A} ${SDV_UNSET} and a WARN on $1x $HOME/x ${1} $: %v", warns)
 	}
 	if len(got) == 0 {
 		t.Errorf("the direct load gave no warnings")
 	}
+}
+
+// runtimeArgv is what a command made by runtimeShellArgv hands its
+// program when it runs with env: its words, through the shell, printed
+// one per NUL. Any other command is returned as it is.
+func runtimeArgv(t *testing.T, cmd []string, env ...string) []string {
+	t.Helper()
+	if len(cmd) != 3 || cmd[0] != "/bin/sh" || cmd[1] != "-c" || !strings.HasPrefix(cmd[2], "exec ") {
+		return cmd
+	}
+	script := "set -- " + strings.TrimPrefix(cmd[2], "exec ") + `; printf '%s\0' "$@"`
+	c := exec.Command("/bin/sh", "-c", script)
+	c.Env = env
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("run %q: %v", script, err)
+	}
+	return strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
 }

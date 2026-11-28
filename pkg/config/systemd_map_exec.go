@@ -1369,7 +1369,12 @@ func mapExecStopPost(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		return warns
 	}
 	for _, c := range cmds {
-		value, ok := slinitCommandValue(exFinishArgv(c.cmd.argv))
+		fargv := c.cmd.argv
+		rt := runtimeVars(c.refs)
+		if rt {
+			fargv = runtimeShellArgv(fargv)
+		}
+		value, ok := slinitCommandValue(exFinishArgv(fargv))
 		if !ok {
 			warns = append(warns, exWarn(key, val, "an argument holds a newline, which a slinit command setting cannot — command dropped"))
 			continue
@@ -1385,7 +1390,7 @@ func mapExecStopPost(cfg *SystemdConfig, key, val string) []SystemdWarning {
 			warns = append(warns, exIgnored(key, val, err))
 			continue
 		}
-		warns = append(warns, warnExecVars(key, c.refs, c.bad)...)
+		warns = append(warns, warnExecVarsRT(key, c.refs, c.bad, rt)...)
 		warns = append(warns, warnArgv0(key, c.cmd.argv0)...)
 		switch {
 		case c.fullPriv:
@@ -1420,9 +1425,8 @@ func exFinishStopPost(cfg *SystemdConfig) []SystemdWarning {
 // "kill -HUP $MAINPID", is slinit's reload-signal; any other command is
 // its reload-command (since 4.1), which runs in the service's context
 // as systemd runs ExecReload=. slinit runs one: a second command is
-// dropped with a warning. A command using $MAINPID otherwise is dropped
-// too: slinit expands a command's variables when it loads the file, and
-// the main pid is not known then. The signal is settled with
+// dropped with a warning. Its variables are expanded when it runs, from
+// the service's environment, where slinit puts $MAINPID too. The signal is settled with
 // ReloadSignal= in exFinishReload; an empty assignment drops what
 // ExecReload= said, and nothing else.
 func mapExecReload(cfg *SystemdConfig, key, val string) []SystemdWarning {
@@ -1438,15 +1442,20 @@ func mapExecReload(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		return warns
 	}
 	for _, c := range cmds {
-		if slices.Contains(c.refs, "$MAINPID") || slices.Contains(c.refs, "${MAINPID}") {
+		mainpid := slices.Contains(c.refs, "$MAINPID") || slices.Contains(c.refs, "${MAINPID}")
+		if mainpid {
 			if sig, ok := killMainPID(c.cmd.argv); ok {
 				st.execReloadSignal, st.execReloadLine = sig, val
 				continue
 			}
-			warns = append(warns, exWarn(key, val, "uses $MAINPID, which slinit does not provide — dropped"))
-			continue
 		}
 		argv := c.cmd.argv
+		// A reload-command has $MAINPID in its environment, so its
+		// variables, that one included, are expanded when it runs.
+		rt := runtimeVars(c.refs) || mainpid
+		if rt {
+			argv = runtimeShellArgv(argv)
+		}
 		if c.ignoreFailure {
 			argv = ignoreFailureArgv(argv)
 		}
@@ -1465,7 +1474,7 @@ func mapExecReload(cfg *SystemdConfig, key, val string) []SystemdWarning {
 			warns = append(warns, exIgnored(key, val, err))
 			continue
 		}
-		warns = append(warns, warnExecVars(key, c.refs, c.bad)...)
+		warns = append(warns, warnExecVarsRT(key, c.refs, c.bad, rt)...)
 		cfg.setMapped("reload-command", value)
 	}
 	st.execReloadWarns = append(st.execReloadWarns, warns...)

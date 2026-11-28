@@ -1,0 +1,4 @@
+[Service]
+EnvironmentFile=/etc/test-340.env
+Environment="X=two words" Y=inline
+ExecStart=/bin/sh -c 'printf "[%%s]" "$@" "$Y" > /run/test-340.args; exec sleep 1000' sh $OPTS ${X}

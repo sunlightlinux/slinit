@@ -142,12 +142,15 @@ loaded, so those are written **$$** and reach the command as systemd
 passes them on; the path of the command is never expanded, as in
 systemd. A word that is **$** followed by no valid name (**$1**,
 **$HOME/x**) is dropped, and a **${...}** with no valid name inside
-becomes empty, as systemd does at run time, with a warning. The
-variables systemd would substitute are not what they are under
-systemd, which takes them from the unit's **Environment** and
-**EnvironmentFile** when it runs the command: slinit expands them when
-the service file is loaded, from its own environment, so one the
-env-file sets comes out empty. Each such line is warned about. slinit reads
+becomes empty, as systemd does at run time, with a warning. A command
+with variables systemd substitutes is run through
+**/bin/sh -c "exec ..."** (since 4.1.0), so that they are expanded
+when it runs, from the service's environment (its **environment**
+setting, from **Environment**, and its **env-file**), with the same
+rules: **$VAR** split into words, **${VAR}** one argument; **exec**
+keeps the program the service's process. Before, slinit expanded them
+when the file was loaded, from its own environment, and one the
+env-file set came out empty. slinit reads
 a single **env-file**: of several **EnvironmentFile** lines the last is
 kept, with a warning. slinit has no **$MAINPID**: an **ExecStop** of
 the form **kill** [**-s** *SIG*] **$MAINPID** becomes

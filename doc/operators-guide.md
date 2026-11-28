@@ -124,9 +124,11 @@ the notes. The common ones:
   naming it, as systemd breaks it.
 - **`ExecReload`** becomes `reload-signal` for the
   `kill -HUP $MAINPID` form and `reload-command` for a command; both
-  are what `slinitctl reload-signal` (systemd's `reload`) uses. A
-  command that names `$MAINPID` some other way is dropped: slinit
-  expands a command's variables when it reads the file.
+  are what `slinitctl reload-signal` (systemd's `reload`) uses, and a
+  reload-command gets `$MAINPID` in its environment.
+- **`$VAR` in an `Exec` line** is expanded when the command runs, from
+  the service's environment (`Environment=`, `EnvironmentFile=`), as
+  systemd does: the command goes through `/bin/sh -c "exec ..."`.
 - **`PrivateUsers` and a few others** have no slinit equivalent and are
   reported as warnings so you know the hardening is not there; so are
   the forms of the sandbox directives slinit cannot express (a `+` path,
