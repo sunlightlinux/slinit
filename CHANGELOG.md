@@ -92,7 +92,9 @@ verified with `git tag -v`.
 - **A service's `.timer` unit is read with it**: `foo.timer`'s
   `OnCalendar=` becomes `foo`'s `start-on-calendar`, with `manual = yes`
   so the calendar alone runs it, as the timer alone runs a
-  timer-activated unit. One expression is kept; Persistent=,
+  timer-activated unit. One expression is kept; `Persistent=` is
+  `start-on-calendar-persistent` (a time missed while down is caught up
+  at once, the last start recorded beside cron-persistent's);
   RandomizedDelaySec= and the monotonic OnBootSec= family are reported.
 
 - **`condition-capability = CAP_X`**, systemd's `ConditionCapability=`:

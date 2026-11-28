@@ -88,3 +88,34 @@ func TestNextCalendarFireAfterClockStep(t *testing.T) {
 		t.Errorf("next %v, want the next day's", got)
 	}
 }
+
+// start-on-calendar-persistent: a time missed since the last recorded
+// start is caught up when the timer is armed; with no record, nothing
+// is; and each start is recorded.
+func TestCalendarPersistentCatchUp(t *testing.T) {
+	old := cronPersistDir
+	cronPersistDir = t.TempDir()
+	defer func() { cronPersistDir = old }()
+	set, logger := newTestSet()
+	s := sleeper(set, "p")
+	s.Record().SetStartOnCalendar("*-*-* 03:00:00")
+	s.Record().SetStartOnCalendarPersistent(true)
+	cs := NewCalendarStarter(set, logger)
+	defer cs.Close()
+	defer set.StopService(s)
+
+	cs.Add(s) // no record yet: nothing to catch up
+	time.Sleep(200 * time.Millisecond)
+	if st := s.State(); st != StateStopped {
+		t.Fatalf("started with no record of a last start: %v", st)
+	}
+	writeStamp(calendarStampPath("p"), time.Now().Add(-48*time.Hour))
+	cs.Add(s)
+	if got := waitState(t, s, StateStarted, 3*time.Second); got != StateStarted {
+		t.Fatalf("a missed 03:00 was not caught up: %v", got)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if last, ok := readStamp(calendarStampPath("p")); !ok || time.Since(last) > time.Minute {
+		t.Errorf("the catch-up start was not recorded: %v %v", last, ok)
+	}
+}

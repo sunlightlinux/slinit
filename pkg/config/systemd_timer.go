@@ -23,7 +23,7 @@ import (
 // the monotonic OnBootSec=/OnUnitActiveSec= family) is reported.
 
 var sdTimerNotCarried = map[string]bool{
-	"Persistent": true, "RandomizedDelaySec": true, "FixedRandomDelay": true, "AccuracySec": true,
+	"RandomizedDelaySec": true, "FixedRandomDelay": true, "AccuracySec": true,
 	"WakeSystem": true, "RemainAfterElapse": true, "OnClockChange": true, "OnTimezoneChange": true,
 	"RandomizedOffsetSec": true, "DeferReactivation": true,
 }
@@ -42,6 +42,7 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 	}
 	var cals []string
 	var warns []SystemdWarning
+	persistent := false
 	for _, f := range append([]string{path}, systemdDropins(unitDirs, name)...) {
 		b, err := os.ReadFile(f)
 		if err != nil {
@@ -69,6 +70,8 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 				} else {
 					cals = append(cals, val)
 				}
+			case key == "Persistent":
+				persistent = truthy(val)
 			case key == "Unit":
 				if strings.TrimSuffix(val, ".service") != cfg.svcName {
 					return []SystemdWarning{{"NOTE", fmt.Sprintf("%s starts %s, not this service: not read", name, val)}}
@@ -94,6 +97,9 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 			name, cals[0], strings.Join(cals[1:], ", "))})
 	}
 	cfg.setMapped("start-on-calendar", cals[0])
+	if persistent {
+		cfg.setMapped("start-on-calendar-persistent", "yes")
+	}
 	cfg.setMapped("manual", "yes")
 	return append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
 		"%s read: started at OnCalendar=%s (start-on-calendar), with manual = yes so the calendar alone starts it", name, cals[0])})

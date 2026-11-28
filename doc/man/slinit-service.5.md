@@ -2584,7 +2584,16 @@ watch; the service remains startable via `slinitctl start`.
     (**type** = *scripted*) or a process that exits when done. Pair it
     with **manual** = *yes* for a service only the calendar should start.
     A malformed expression is a load error; a reload that changes it
-    re-arms the timer.
+    re-arms the timer. A **scripted** service that is *started* (its
+    command has run) is run again at each time.
+
+**start-on-calendar-persistent**=*yes*|*no* (since 4.1.0)
+:   Record each calendar start (in */var/lib/slinit/cron/calendar.*\
+    *service*) and, when the calendar is armed again — at boot, after a
+    reload — start the service at once if a time it names went by
+    since then: a daily job on a machine that was off at midnight runs
+    when it comes up. With no record nothing is caught up. systemd's
+    **Persistent=**.
 
 **start-on-mount**=*yes*|*no*|*path* (since 3.1.6)
 :   Start the service when a filesystem is mounted. This is launchd's

@@ -232,7 +232,7 @@ func TestSystemdTimerRead(t *testing.T) {
 		manual              bool
 		warn                string
 	}{
-		{name: "daily", timer: "[Timer]\nOnCalendar=daily\nPersistent=true\n", cal: "daily", manual: true, warn: "Persistent=true not carried"},
+		{name: "daily", timer: "[Timer]\nOnCalendar=daily\nRandomizedDelaySec=1h\n", cal: "daily", manual: true, warn: "RandomizedDelaySec=1h not carried"},
 		{name: "drop-in resets and sets", timer: "[Timer]\nOnCalendar=daily\n", dropin: "[Timer]\nOnCalendar=\nOnCalendar=Mon 04:00\n", cal: "Mon 04:00", manual: true},
 		{name: "two expressions", timer: "[Timer]\nOnCalendar=daily\nOnCalendar=weekly\n", cal: "daily", manual: true, warn: "takes one expression"},
 		{name: "monotonic only", timer: "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\n", warn: "calendar times only"},
@@ -265,5 +265,14 @@ func TestSystemdTimerRead(t *testing.T) {
 	d, err := SystemdUnitToServiceDescription(p, "foo", etc, lib)
 	if err != nil || d.StartOnCalendar != "" {
 		t.Errorf("masked timer read: %q %v", d.StartOnCalendar, err)
+	}
+}
+
+func TestSystemdTimerPersistent(t *testing.T) {
+	dir := t.TempDir()
+	writeUnit(t, dir, "foo.timer", "[Timer]\nOnCalendar=daily\nPersistent=true\n")
+	desc, _ := sockConvert(t, dir, sockSvc)
+	if !desc.StartOnCalendarPersistent {
+		t.Error("Persistent=true not carried")
 	}
 }

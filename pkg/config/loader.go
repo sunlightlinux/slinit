@@ -2592,6 +2592,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetStartOnMount(desc.StartOnMount)
 	rec.SetInlineEnv(desc.Environment)
 	_ = rec.SetStartOnCalendar(desc.StartOnCalendar) // checked by the parser
+	rec.SetStartOnCalendarPersistent(desc.StartOnCalendarPersistent)
 	rec.SetGuessMainPID(desc.GuessMainPID)
 	rec.SetSELinuxContext(desc.SELinuxContext)
 	rec.SetSMACKProcessLabel(desc.SMACKProcessLabel)

@@ -374,6 +374,8 @@ type ServiceDescription struct {
 	// path becomes a mount point.
 	StartOnMount string
 	StartOnCalendar string // start-on-calendar: a systemd OnCalendar= expression
+	// StartOnCalendarPersistent: catch up a time missed while down.
+	StartOnCalendarPersistent bool
 
 	// Socket activation
 	SocketPath  string   // primary socket path (first socket-listen)
@@ -3240,6 +3242,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("socket-reuseport: %w", err)
 		}
 		desc.SocketReusePort = b
+	case "start-on-calendar-persistent":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("start-on-calendar-persistent: %w", err)
+		}
+		desc.StartOnCalendarPersistent = b
 	case "start-on-calendar":
 		v := strings.TrimSpace(value)
 		if v != "" {

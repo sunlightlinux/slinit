@@ -1,6 +1,8 @@
 package service
 
 import (
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -46,8 +48,44 @@ func (c *CalendarStarter) Add(svc Service) {
 		t.Stop()
 		delete(c.timers, name)
 	}
-	if spec != nil {
-		c.armLocked(name, spec)
+	if spec == nil {
+		return
+	}
+	// start-on-calendar-persistent, systemd's Persistent=: a time the
+	// expression named since the last start, while slinit was not
+	// running, starts the service now. With no record of a last start
+	// nothing is caught up, as in systemd.
+	if svc.Record().startOnCalendarPersistent {
+		if last, ok := readStamp(calendarStampPath(name)); ok {
+			if missed := spec.NextAfter(last); !missed.IsZero() && missed.Before(c.now()) {
+				c.logger.Info("Service '%s': start-on-calendar catch-up (missed %v)", name, missed)
+				go func() {
+					if s := c.set.FindService(name, false); s != nil && !c.set.IsShuttingDown() {
+						c.set.calendarFire(s)
+						c.stamp(s)
+					}
+				}()
+			}
+		}
+	}
+	c.armLocked(name, spec)
+}
+
+// calendarStampPath is where the last start of a persistent
+// start-on-calendar is kept, beside cron-persistent's records.
+func calendarStampPath(name string) string {
+	return filepath.Join(cronPersistDir, "calendar."+strings.ReplaceAll(name, "/", "_"))
+}
+
+// stamp records now as s's last calendar start, when it is persistent.
+func (c *CalendarStarter) stamp(s Service) {
+	var persistent bool
+	c.set.WithGraphLock(func() { persistent = s.Record().startOnCalendarPersistent })
+	if !persistent {
+		return
+	}
+	if err := writeStamp(calendarStampPath(s.Name()), c.now()); err != nil {
+		c.logger.Error("Service '%s': start-on-calendar-persistent: %v", s.Name(), err)
 	}
 }
 
@@ -101,6 +139,7 @@ func (c *CalendarStarter) armAfterLocked(name string, spec *CalendarSpec, fired 
 			return
 		}
 		c.set.calendarFire(s)
+		c.stamp(s)
 	})
 	c.timers[name] = t
 }

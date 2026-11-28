@@ -151,6 +151,7 @@ var provenanceTable = []Feature{
 	{Name: "log-extra-fields", Kind: KindDirective, Source: SourceSystemd, Category: CatLogging, Notes: "extra FIELD=value pairs on each journal line (LogExtraFields=)"},
 	{Name: "environment", Kind: KindDirective, Source: SourceSystemd, Category: CatEnv, Notes: "inline KEY=VALUE words; the env-file overrides them (Environment=)"},
 	{Name: "private-devices", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "a /dev of pseudo devices only, CAP_MKNOD and CAP_SYS_RAWIO dropped (PrivateDevices=)"},
+	{Name: "start-on-calendar-persistent", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "catch up a calendar time missed while down (a timer's Persistent=)"},
 	{Name: "start-on-calendar", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "start the service at the times a calendar expression names (a timer's OnCalendar=)"},
 	{Name: "reload-command", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "run by slinitctl reload-signal in the service's context, $MAINPID set (ExecReload=)"},
 	{Name: "send-sighup", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "follow the stop signal with SIGHUP (SendSIGHUP=)"},

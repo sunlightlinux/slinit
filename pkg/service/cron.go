@@ -510,7 +510,22 @@ func (cr *CronRunner) persistPath() string {
 // on any error (missing file / unreadable / unparseable), matching the
 // "no previous run" case exactly.
 func (cr *CronRunner) readPersisted() (time.Time, bool) {
-	data, err := os.ReadFile(cr.persistPath())
+	return readStamp(cr.persistPath())
+}
+
+// writePersisted saves the lastRun timestamp atomically (writeStamp).
+// Failures are logged but don't propagate — persistence is best-effort
+// by design.
+func (cr *CronRunner) writePersisted(t time.Time) {
+	if err := writeStamp(cr.persistPath(), t); err != nil {
+		cr.logger.Error("Service '%s': cron persist: %v", cr.svc.Name(), err)
+	}
+}
+
+// readStamp reads a time writeStamp wrote; false on any error, which
+// is "no previous run".
+func readStamp(path string) (time.Time, bool) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -521,35 +536,32 @@ func (cr *CronRunner) readPersisted() (time.Time, bool) {
 	return t, true
 }
 
-// writePersisted saves the lastRun timestamp atomically (temp + rename)
-// so a crash mid-write can't leave a torn file. Failures are logged
-// but don't propagate — persistence is best-effort by design.
-func (cr *CronRunner) writePersisted(t time.Time) {
-	if err := os.MkdirAll(cronPersistDir, 0755); err != nil {
-		cr.logger.Error("Service '%s': cron persist mkdir: %v", cr.svc.Name(), err)
-		return
+// writeStamp saves t at path atomically (temp + rename), so a crash
+// mid-write can't leave a torn file. Shared by cron-persistent and
+// start-on-calendar-persistent.
+func writeStamp(path string, t time.Time) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
 	}
-	path := cr.persistPath()
-	tmp, err := os.CreateTemp(cronPersistDir, filepath.Base(path)+".*")
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*")
 	if err != nil {
-		cr.logger.Error("Service '%s': cron persist create: %v", cr.svc.Name(), err)
-		return
+		return fmt.Errorf("create: %w", err)
 	}
 	if _, err := fmt.Fprintln(tmp, t.Format(time.RFC3339Nano)); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
-		cr.logger.Error("Service '%s': cron persist write: %v", cr.svc.Name(), err)
-		return
+		return fmt.Errorf("write: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmp.Name())
-		cr.logger.Error("Service '%s': cron persist close: %v", cr.svc.Name(), err)
-		return
+		return fmt.Errorf("close: %w", err)
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		os.Remove(tmp.Name())
-		cr.logger.Error("Service '%s': cron persist rename: %v", cr.svc.Name(), err)
+		return fmt.Errorf("rename: %w", err)
 	}
+	return nil
 }
 
 // runOnce executes the cron command once. Returns false if the loop

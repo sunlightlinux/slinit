@@ -282,6 +282,9 @@ type ServiceRecord struct {
 	// (calendarstart.go); nil for none.
 	startOnCalendar     *CalendarSpec
 	startOnCalendarExpr string
+	// startOnCalendarPersistent: catch up a time missed while slinit
+	// was down (calendarstart.go).
+	startOnCalendarPersistent bool
 	// onFailureStarts: when on-failure last started this service, for
 	// its start limit (onfailure.go).
 	onFailureStarts []time.Time
@@ -1684,6 +1687,9 @@ func (sr *ServiceRecord) SetStartOnCalendar(expr string) error {
 
 // StartOnCalendar returns the parsed expression, nil for none.
 func (sr *ServiceRecord) StartOnCalendar() *CalendarSpec { return sr.startOnCalendar }
+
+// SetStartOnCalendarPersistent sets start-on-calendar-persistent.
+func (sr *ServiceRecord) SetStartOnCalendarPersistent(on bool) { sr.startOnCalendarPersistent = on }
 
 // StartOnCalendarExpr returns the expression as written.
 func (sr *ServiceRecord) StartOnCalendarExpr() string { return sr.startOnCalendarExpr }
