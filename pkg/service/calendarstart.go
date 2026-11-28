@@ -34,12 +34,22 @@ type CalendarStarter struct {
 	// before its randomized delay: a re-arm inside that delay must not
 	// lose the run (Add).
 	nominal map[string]time.Time
-	now     func() time.Time // for tests
+	// stopped is a time a Remove caught inside its randomized delay
+	// (stopped before firing, the time named past), for the Add a
+	// reload makes right after (Remove, then Add).
+	stopped map[string]stoppedRun
+	delays  map[string]time.Duration // each armed timer's randomized delay
+	now     func() time.Time         // for tests
 }
 
 // NewCalendarStarter returns a starter for the services of ss.
 func NewCalendarStarter(ss *ServiceSet, logger ServiceLogger) *CalendarStarter {
-	return &CalendarStarter{set: ss, logger: logger, timers: map[string]*time.Timer{}, nominal: map[string]time.Time{}, now: time.Now}
+	return &CalendarStarter{set: ss, logger: logger, timers: map[string]*time.Timer{}, nominal: map[string]time.Time{}, stopped: map[string]stoppedRun{}, delays: map[string]time.Duration{}, now: time.Now}
+}
+
+type stoppedRun struct {
+	missed time.Time
+	delay  time.Duration
 }
 
 // Add arms svc's start-on-calendar, replacing an earlier timer of the
@@ -59,6 +69,15 @@ func (c *CalendarStarter) Add(svc Service) {
 		}
 		delete(c.timers, name)
 		delete(c.nominal, name)
+	}
+	// Or one the Remove of this reload stopped: due if still within the
+	// delay it was waiting out, and stale (a real unload, long ago)
+	// after.
+	if st, ok := c.stopped[name]; ok {
+		delete(c.stopped, name)
+		if missed.IsZero() && !c.now().After(st.missed.Add(st.delay)) {
+			missed = st.missed
+		}
 	}
 	if spec == nil {
 		return
@@ -138,7 +157,9 @@ func (c *CalendarStarter) Remove(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if t := c.timers[name]; t != nil {
-		t.Stop()
+		if t.Stop() && !c.nominal[name].IsZero() && !c.nominal[name].After(c.now()) {
+			c.stopped[name] = stoppedRun{c.nominal[name], c.delays[name]}
+		}
 		delete(c.timers, name)
 	}
 	delete(c.nominal, name)
@@ -163,6 +184,7 @@ func (c *CalendarStarter) armMissedLocked(name string, spec *CalendarSpec, delay
 	})
 	c.timers[name] = t
 	c.nominal[name] = missed
+	c.delays[name] = delay
 }
 
 // Close disarms every timer.
@@ -220,6 +242,7 @@ func (c *CalendarStarter) armAfterLocked(name string, spec *CalendarSpec, fired 
 	})
 	c.timers[name] = t
 	c.nominal[name] = next
+	c.delays[name] = delay
 }
 
 // nextCalendarFire is the first time spec names after now and after

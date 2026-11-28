@@ -108,7 +108,10 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 					d = &activeSec
 				}
 				// Several: the earliest elapses first; slinit keeps one.
-				if v := time.Duration(us) * time.Microsecond; *d == 0 || v < *d {
+				// 0 elapses at once (at boot, or right after a start):
+				// a millisecond, as 0 means unset in slinit.
+				v := max(time.Duration(us)*time.Microsecond, time.Millisecond)
+				if *d == 0 || v < *d {
 					*d = v
 				}
 			case key == "Persistent":

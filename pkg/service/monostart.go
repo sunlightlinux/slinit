@@ -59,15 +59,39 @@ func NewMonoStarter(ss *ServiceSet, logger ServiceLogger) *MonoStarter {
 // KernelBootTime is kernelBootTime, for slinitctl list-timers.
 func KernelBootTime() time.Time { return kernelBootTime() }
 
-// kernelBootTime is when the kernel booted, on the wall clock: now less
-// CLOCK_BOOTTIME (time since boot, suspend included, as systemd's
-// OnBootSec= counts).
+// kernelBootTime is when the kernel booted: now less CLOCK_MONOTONIC,
+// which like systemd's monotonic timers (and Go's own waits) pauses
+// while the machine is suspended.
 func kernelBootTime() time.Time {
 	var ts unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &ts); err != nil {
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
 		return time.Now()
 	}
 	return time.Now().Add(-time.Duration(ts.Nano()))
+}
+
+// CountFromStart makes start-on-boot-sec count from now, the manager's
+// start, instead of the kernel's boot: in a container, whose kernel
+// booted long before it, and for a user instance, as systemd maps
+// OnBootSec= onto OnStartupSec= there. Called before any Add.
+func (m *MonoStarter) CountFromStart() {
+	m.do(func() { m.bootTime = m.now() })
+}
+
+// Replace moves the start listener from a record a reload replaced
+// (a type change) to the new one, and re-arms.
+func (m *MonoStarter) Replace(oldSvc, newSvc Service) {
+	m.do(func() {
+		if m.heard[oldSvc] {
+			oldSvc.Record().RemoveListener(m)
+			delete(m.heard, oldSvc)
+		}
+		if _, active := m.read(newSvc); active > 0 && !m.heard[newSvc] {
+			m.heard[newSvc] = true
+			newSvc.Record().AddListener(m)
+		}
+		m.arm(newSvc.Name())
+	})
 }
 
 func (m *MonoStarter) do(f func()) {
@@ -123,8 +147,9 @@ func (m *MonoStarter) Remove(name string) {
 			t.Stop()
 			delete(m.timers, name)
 		}
-		delete(m.bootDone, name)
-		delete(m.lastFire, name)
+		// bootDone and lastFire stay: a reload goes through Remove and
+		// Add, and a start-on-boot-sec that has fired does not fire
+		// again for it (systemd disables a past OnBootSec= on reload).
 		for svc := range m.heard {
 			if svc.Name() == name {
 				svc.Record().RemoveListener(m)

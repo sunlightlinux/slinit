@@ -359,3 +359,14 @@ func TestSystemdTimerMonotonic(t *testing.T) {
 		t.Errorf("after the reset: calendar %q boot %v active %v", desc.StartOnCalendar, desc.StartOnBootSec, desc.StartOnUnitActiveSec)
 	}
 }
+
+// OnBootSec=0 elapses at once, rather than read as unset; and it stays
+// the earliest when a later one is larger.
+func TestSystemdTimerZero(t *testing.T) {
+	dir := t.TempDir()
+	writeUnit(t, dir, "foo.timer", "[Timer]\nOnBootSec=0\nOnBootSec=5min\n")
+	desc, _ := sockConvert(t, dir, sockSvc)
+	if desc.StartOnBootSec != time.Millisecond {
+		t.Errorf("boot %v", desc.StartOnBootSec)
+	}
+}

@@ -239,7 +239,9 @@ func TestCalendarRearmInsideDelayKeepsTheRun(t *testing.T) {
 	defer set.StopService(s)
 	cs.Add(s)
 	time.Sleep(1100 * time.Millisecond) // the time named has gone by; its start is an hour off
-	cs.Add(s)                           // the reload
+	// A reload: OnServiceUnloaded's Remove, then OnServiceLoaded's Add.
+	cs.Remove("rearm")
+	cs.Add(s)
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if b, _ := os.ReadFile(runs); len(b) > 0 {

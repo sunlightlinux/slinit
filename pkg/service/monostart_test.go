@@ -100,3 +100,55 @@ func TestMonoSlowJobNoLoop(t *testing.T) {
 		t.Errorf("%d elapses in 2s with a 0.5s interval and a 1.5s job: firing in a loop", n)
 	}
 }
+
+// A reload (Remove, then Add) does not fire a start-on-boot-sec that
+// has fired, as systemd disables a past OnBootSec= on reload.
+func TestMonoBootSecNotAgainOnReload(t *testing.T) {
+	set, logger := newTestSet()
+	s, runs := monoJob(t, set, "boot-reload")
+	s.Record().SetStartOnMonotonic(time.Second, 0)
+	m := NewMonoStarter(set, logger)
+	m.bootTime = time.Now().Add(-time.Hour)
+	defer m.Close()
+	defer set.StopService(s)
+	m.Add(s)
+	waitRuns(t, runs, 1, 2*time.Second)
+	set.StopService(s)
+	waitState(t, s, StateStopped, 3*time.Second)
+	m.Remove("boot-reload")
+	m.Add(s)
+	time.Sleep(700 * time.Millisecond)
+	if n := runs(); n != 1 {
+		t.Errorf("ran %d times across a reload, want once", n)
+	}
+}
+
+// A type-change reload (OnServiceReplaced) moves the start listener to
+// the new record: its starts still drive start-on-unit-active-sec.
+func TestMonoReplaceMovesListener(t *testing.T) {
+	set, logger := newTestSet()
+	old := NewProcessService(set, "swap")
+	old.SetCommand([]string{"/bin/sleep", "60"})
+	old.Record().SetStartOnMonotonic(0, 500*time.Millisecond)
+	set.AddService(old)
+	m := NewMonoStarter(set, logger)
+	defer m.Close()
+	m.Add(old)
+	runs := t.TempDir() + "/runs"
+	nu := NewScriptedService(set, "swap")
+	nu.SetStartCommand([]string{"/bin/sh", "-c", "echo x >> " + runs})
+	nu.Record().SetStartOnMonotonic(0, 500*time.Millisecond)
+	set.ReplaceService(old, nu)
+	m.Replace(old, nu)
+	defer set.StopService(nu)
+	set.StartService(nu)
+	waitRuns(t, func() int {
+		b, _ := os.ReadFile(runs)
+		return strings.Count(string(b), "\n")
+	}, 3, 3*time.Second)
+	got := make(chan bool)
+	m.do(func() { got <- m.heard[old] })
+	if <-got {
+		t.Error("still listening to the replaced record")
+	}
+}

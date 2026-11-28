@@ -1506,6 +1506,9 @@ func main() {
 	// start-on-boot-sec / start-on-unit-active-sec: the monotonic timers.
 	monoStarter := service.NewMonoStarter(serviceSet, logger)
 	defer monoStarter.Close()
+	if containerMode || userMode {
+		monoStarter.CountFromStart()
+	}
 	{
 		prevLoaded := serviceSet.OnServiceLoaded
 		serviceSet.OnServiceLoaded = func(svc service.Service) {
@@ -1526,6 +1529,13 @@ func main() {
 			}
 			calStarter.Remove(svc.Name())
 			monoStarter.Remove(svc.Name())
+		}
+		prevReplaced := serviceSet.OnServiceReplaced
+		serviceSet.OnServiceReplaced = func(oldSvc, newSvc service.Service) {
+			if prevReplaced != nil {
+				prevReplaced(oldSvc, newSvc)
+			}
+			monoStarter.Replace(oldSvc, newSvc)
 		}
 	}
 

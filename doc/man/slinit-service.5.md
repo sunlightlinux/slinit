@@ -2653,10 +2653,14 @@ watch; the service remains startable via `slinitctl start`.
 
 **start-on-boot-sec**=*duration* (since 4.1.0)
 :   Start the service once, *duration* (a Go duration: *15m*) after the
-    kernel booted, suspend included; at once if that is already past
-    when the service loads. A finished **scripted** job is run again,
-    as for **start-on-calendar**. systemd's **OnBootSec=** (and
-    **OnStartupSec=**, which for PID 1 is the same).
+    kernel booted, counted on the monotonic clock, which pauses while
+    the machine is suspended, as systemd's; at once if that is already
+    past when the service loads, and not again on a reload. In a
+    container (**slinit -o**) and for a user instance it counts from
+    slinit's start, as systemd counts **OnBootSec=** there. A finished
+    **scripted** job is run again, as for **start-on-calendar**.
+    systemd's **OnBootSec=** (and **OnStartupSec=**, which for PID 1 is
+    the same).
 
 **start-on-unit-active-sec**=*duration* (since 4.1.0)
 :   Start the service *duration* after it last started, again and
