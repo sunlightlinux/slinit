@@ -24,6 +24,19 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [4.0.6] — 2026-11-28
+
+**A fix release on the 4.0 long-term-support line.** `slinit-logind`
+no longer leaves an empty cgroup behind at every logout. `before:` now
+orders as documented and as in dinit, with the declaring service
+starting first; a setup that only worked with the old, inverted order
+needs `after:` instead. A prepared-by dependency is restarted once per
+crash, not twice; `options =` no longer clears `no-boot-marker`; and a
+scripted service reads its `env-file` and runs no stop-command after a
+condition skipped it. The control protocol stays at version 7. The same
+fixes are in 4.1.0, except the logind one, which comes in the next 4.1
+release.
+
 ### Fixed
 
 - **`slinit-logind` left an empty cgroup behind at every logout**:
