@@ -3004,16 +3004,7 @@ func resolveSocketPath(flagValue string, systemMode bool) string {
 // records, following the same XDG-then-$HOME shape as the control socket
 // above. Returns "" when neither is available, which leaves the system
 // default in place rather than guessing at a writable path.
-func userCronPersistDir() string {
-	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return xdg + "/slinit/cron"
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return home + "/.local/state/slinit/cron"
-}
+func userCronPersistDir() string { return service.UserCronPersistDir() }
 
 // sendShutdownAndExit connects to the running slinit instance via the control
 // socket and sends a shutdown command. Used for SysV init compatibility

@@ -64,6 +64,22 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 			}
 			m := kvRe.FindStringSubmatch(line)
 			if m != nil && section == "Unit" && (strings.HasPrefix(m[1], "Condition") || strings.HasPrefix(m[1], "Assert")) {
+				if strings.TrimSpace(trimQuotes(strings.TrimSpace(m[2]))) == "" {
+					// An empty one empties the timer's list of its kind
+					// (conditions or assertions), a drop-in's included.
+					prefix := "Condition"
+					if strings.HasPrefix(m[1], "Assert") {
+						prefix = "Assert"
+					}
+					kept := conds[:0]
+					for _, c := range conds {
+						if !strings.HasPrefix(c[0], prefix) {
+							kept = append(kept, c)
+						}
+					}
+					conds = kept
+					continue
+				}
 				conds = append(conds, [2]string{m[1], strings.TrimSpace(m[2])})
 				continue
 			}

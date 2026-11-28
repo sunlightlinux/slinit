@@ -1,7 +1,6 @@
 package service
 
 import (
-	"github.com/sunlightlinux/slinit/pkg/fstab"
 	"context"
 	"fmt"
 	"hash/fnv"
@@ -13,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/fstab"
 	"github.com/sunlightlinux/slinit/pkg/process"
 )
 

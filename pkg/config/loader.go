@@ -3218,15 +3218,15 @@ func (dl *DirLoader) cgroupFilterShared(name string, desc *ServiceDescription) s
 		return ""
 	}
 	p := filepath.Clean(desc.CgroupPath)
-	if d := dl.set.DefaultCgroupPath(); d != "" && filepath.Clean(d) == p {
-		return fmt.Sprintf("a device or IP filter on cgroup = %s, the daemon's shared default cgroup, would confine "+
+	if d := filepath.Clean(dl.set.DefaultCgroupPath()); d != "." && (d == p || strings.HasPrefix(d, p+"/")) {
+		return fmt.Sprintf("a device or IP filter on cgroup = %s, which is or holds the daemon's shared default cgroup, would confine "+
 			"every service without a cgroup of its own", desc.CgroupPath)
 	}
 	for _, s := range dl.set.ListServices() {
 		if s.Name() == name {
 			continue
 		}
-		if ep := s.Record().EffectiveCgroupPath(); ep != "" && (filepath.Clean(ep) == p || strings.HasPrefix(ep, p+"/")) {
+		if ep := filepath.Clean(s.Record().EffectiveCgroupPath()); ep != "." && (ep == p || strings.HasPrefix(ep, p+"/")) {
 			return fmt.Sprintf("a device or IP filter on cgroup = %s would confine service '%s', whose cgroup is %s; "+
 				"give this service a cgroup of its own", desc.CgroupPath, s.Name(), ep)
 		}

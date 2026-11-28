@@ -23,6 +23,21 @@ import (
 // via SetCronPersistDir for tests / user-mode instances.
 var cronPersistDir = "/var/lib/slinit/cron"
 
+// UserCronPersistDir is the record directory of a user instance
+// (slinit --user): $XDG_STATE_HOME/slinit/cron, or
+// ~/.local/state/slinit/cron; "" with no home. slinitctl list-timers
+// reads a user daemon's calendar records there.
+func UserCronPersistDir() string {
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return xdg + "/slinit/cron"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home + "/.local/state/slinit/cron"
+}
+
 // SetCronPersistDir overrides the on-disk lastRun store location.
 // Meant for tests and user-mode daemons where /var/lib/slinit is
 // unwritable; production use should stick with the default.

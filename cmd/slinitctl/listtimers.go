@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -29,7 +31,14 @@ type timerRow struct {
 // reckoned here from the expression (a randomized delay comes on top);
 // the last start is known for a persistent one, whose record slinit
 // keeps.
-func cmdListTimers(conn net.Conn, now time.Time) error {
+func cmdListTimers(conn net.Conn, now time.Time, user bool) error {
+	if user {
+		// A user daemon keeps its records under the user's state
+		// directory, not the system's.
+		if d := service.UserCronPersistDir(); d != "" {
+			service.SetCronPersistDir(d)
+		}
+	}
 	// One buffered reader for the whole exchange: the list reply is a
 	// packet per service, and the shows follow on the same stream.
 	conn = bufferedConn{conn, bufio.NewReaderSize(conn, 64<<10)}
@@ -57,8 +66,11 @@ func cmdListTimers(conn net.Conn, now time.Time) error {
 	var rows []timerRow
 	for _, name := range names {
 		body, err := showBody(conn, name)
-		if err != nil {
+		if errors.Is(err, errNotLoaded) {
 			continue // unloaded meanwhile
+		}
+		if err != nil {
+			return err
 		}
 		if r, ok := timerRowFrom(name, body, now); ok {
 			rows = append(rows, r)
@@ -68,15 +80,30 @@ func cmdListTimers(conn net.Conn, now time.Time) error {
 	return nil
 }
 
+var errNotLoaded = errors.New("not loaded")
+
+// showBody shows a loaded service. It finds the service rather than
+// loads it: a listing must not load from disk one another client
+// unloaded since.
 func showBody(conn net.Conn, name string) (string, error) {
-	handle, err := loadServiceHandle(conn, name)
-	if err != nil {
-		return "", err
-	}
-	if err := control.WritePacket(conn, control.CmdServiceShow, control.EncodeHandle(handle)); err != nil {
+	if err := control.WritePacket(conn, control.CmdFindService, control.EncodeServiceName(name)); err != nil {
 		return "", err
 	}
 	rply, payload, err := readReply(conn)
+	if err != nil {
+		return "", err
+	}
+	if rply == control.RplyNoService {
+		return "", errNotLoaded
+	}
+	if rply != control.RplyServiceRecord || len(payload) < 5 {
+		return "", fmt.Errorf("find %s: unexpected reply %d", name, rply)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+	if err := control.WritePacket(conn, control.CmdServiceShow, control.EncodeHandle(handle)); err != nil {
+		return "", err
+	}
+	rply, payload, err = readReply(conn)
 	if err != nil {
 		return "", err
 	}

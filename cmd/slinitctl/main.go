@@ -288,7 +288,7 @@ doneFlags:
 	case "list", "ls":
 		err = cmdList(conn)
 	case "list-timers":
-		err = cmdListTimers(conn, time.Now())
+		err = cmdListTimers(conn, time.Now(), userMode || (!systemMode && os.Getuid() != 0))
 	case "run":
 		err = cmdRun(conn, cmdArgs)
 	case "start":

@@ -327,3 +327,15 @@ func TestSystemdTimerRandomizedDelay(t *testing.T) {
 		t.Errorf("delay %v", desc.StartOnCalendarRandomizedDelay)
 	}
 }
+
+// An empty Condition in the timer's drop-in empties the timer's list.
+func TestSystemdTimerConditionReset(t *testing.T) {
+	dir := t.TempDir()
+	writeUnit(t, dir, "foo.timer", "[Unit]\nConditionVirtualization=!container\nAssertPathExists=/etc/a\n[Timer]\nOnCalendar=weekly\n")
+	os.MkdirAll(filepath.Join(dir, "foo.timer.d"), 0o755)
+	os.WriteFile(filepath.Join(dir, "foo.timer.d", "o.conf"), []byte("[Unit]\nConditionVirtualization=\n"), 0o644)
+	desc, _ := sockConvert(t, dir, sockSvc)
+	if got := predParams(desc); strings.Contains(got, "container") || !strings.Contains(got, "/etc/a") {
+		t.Errorf("after the drop-in's reset: %q", got)
+	}
+}

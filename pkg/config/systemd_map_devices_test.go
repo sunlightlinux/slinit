@@ -158,6 +158,11 @@ func TestIPFilterEdges(t *testing.T) {
 	if _, err := loader.LoadService("c"); err == nil || !strings.Contains(err.Error(), "shared default") {
 		t.Errorf("c on the default cgroup: %v", err)
 	}
+	ss.SetDefaultCgroupPath("/sys/fs/cgroup/top/slinit")
+	writeNSServiceFile(t, dir, "d", "type = process\ncommand = /bin/true\ncgroup = /sys/fs/cgroup/top\ndevice-allow = /dev/null\n")
+	if _, err := loader.LoadService("d"); err == nil || !strings.Contains(err.Error(), "shared default") {
+		t.Errorf("d above the default cgroup: %v", err)
+	}
 }
 
 func TestSystemdRequiresMountsFor(t *testing.T) {

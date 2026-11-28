@@ -218,3 +218,36 @@ func TestCalendarRandomizedDelay(t *testing.T) {
 		t.Error("did not run by 2.7s: a time 1.5s late is at most 2.5s away")
 	}
 }
+
+// A re-arm (a reload) inside the randomized delay, after the time named
+// and before the late start, runs the job at once instead of losing it.
+func TestCalendarRearmInsideDelayKeepsTheRun(t *testing.T) {
+	old := calendarJitter
+	defer func() { calendarJitter = old }()
+	calendarJitter = func(d time.Duration) time.Duration { return d } // always the whole delay
+	set, logger := newTestSet()
+	runs := t.TempDir() + "/runs"
+	s := NewScriptedService(set, "rearm")
+	s.SetStartCommand([]string{"/bin/sh", "-c", "echo x >> " + runs})
+	set.AddService(s)
+	if err := s.Record().SetStartOnCalendar("*-*-* *:*:*"); err != nil {
+		t.Fatal(err)
+	}
+	s.Record().SetStartOnCalendarRandomizedDelay(time.Hour)
+	cs := NewCalendarStarter(set, logger)
+	defer cs.Close()
+	defer set.StopService(s)
+	cs.Add(s)
+	time.Sleep(1100 * time.Millisecond) // the time named has gone by; its start is an hour off
+	cs.Add(s)                           // the reload
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if b, _ := os.ReadFile(runs); len(b) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run caught by the re-arm was lost")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
