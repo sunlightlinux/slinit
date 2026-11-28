@@ -122,11 +122,11 @@ the notes. The common ones:
   a reference to a unit that is not installed, as systemd does, and a
   start-order loop between units is broken at load with a warning
   naming it, as systemd breaks it.
-- **`ExecReload` other than a signal dropped.** slinit's reload is
-  signal-based: `ExecReload=/bin/kill -HUP $MAINPID` becomes
-  `reload-signal = HUP`; a reload *command* has no counterpart, so make
-  the daemon reload on a signal and set `reload-signal` in a native
-  description.
+- **`ExecReload`** becomes `reload-signal` for the
+  `kill -HUP $MAINPID` form and `reload-command` for a command; both
+  are what `slinitctl reload-signal` (systemd's `reload`) uses. A
+  command that names `$MAINPID` some other way is dropped: slinit
+  expands a command's variables when it reads the file.
 - **`PrivateUsers` and a few others** have no slinit equivalent and are
   reported as warnings so you know the hardening is not there; so are
   the forms of the sandbox directives slinit cannot express (a `+` path,
@@ -136,6 +136,24 @@ the notes. The common ones:
   be expressed either, and refuse the unit: it would run with every
   device, or every capability. Remove the line, or write a native
   description, if that is acceptable.
+
+How the relations between units carry over:
+
+| systemd | slinit | Notes |
+|---|---|---|
+| `Requires=`, `BindsTo=` | `depends-on:` | stops with the dependency, as `BindsTo=` does |
+| `Wants=` | `waits-for:` | |
+| `After=`, `Before=` | `after:`, `before:` | ordering only; a loop between units is broken at load |
+| `Requisite=` | `assert-service-started` | |
+| `PartOf=` | `part-of:` | a stop or restart of the other reaches this one |
+| `Conflicts=` | `conflicts:` | starting either stops the other |
+| `OnFailure=` | `on-failure:` | started when this one ends failed, no restart to come |
+| `Upholds=` | `upholds:` | the other is kept started while this one is up |
+| `foo.socket` | `socket-listen` | read with `foo.service`; `Accept=yes` with `foo@.service` is `socket-accept` |
+
+`part-of`, `conflicts`, `on-failure` and `upholds` link by name and add
+no dependency: the other service need not be installed, and
+`slinit-check` warns about a name that resolves to nothing.
 
 Directives that *do* carry over include the `Protect*` / `Restrict*`
 cluster, `PrivateTmp`, `ReadOnlyPaths` and the other sandbox paths,
