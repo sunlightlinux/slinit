@@ -262,3 +262,31 @@ func TestScriptedServiceAssertFails(t *testing.T) {
 		t.Error("DidStartFail should be true after assert fail")
 	}
 }
+
+// Triggering checks: every plain one must hold, and at least one of the
+// triggering ones of the same list, as systemd's condition_test_list.
+func TestCombineTriggeringPredicates(t *testing.T) {
+	c := func(trigger, assert bool) Predicate {
+		return Predicate{Kind: PredPathExists, Param: "/x", Trigger: trigger, IsAssert: assert}
+	}
+	for _, tc := range []struct {
+		name  string
+		preds []Predicate
+		ok    []bool
+		want  PredicateOutcome
+	}{
+		{"one trigger holds", []Predicate{c(true, false), c(true, false)}, []bool{false, true}, PredOK},
+		{"no trigger holds", []Predicate{c(true, false), c(true, false)}, []bool{false, false}, PredSkip},
+		{"a plain one fails, a trigger holds", []Predicate{c(false, false), c(true, false)}, []bool{false, true}, PredSkip},
+		{"triggers per list", []Predicate{c(true, false), c(true, true)}, []bool{true, false}, PredFailed},
+		{"no triggers, all hold", []Predicate{c(false, false)}, []bool{true}, PredOK},
+	} {
+		res := make([]predResult, len(tc.ok))
+		for i, ok := range tc.ok {
+			res[i] = predResult{ok: ok, why: "x"}
+		}
+		if got, why := combinePredicates(tc.preds, res); got != tc.want {
+			t.Errorf("%s: %v (%s), want %v", tc.name, got, why, tc.want)
+		}
+	}
+}

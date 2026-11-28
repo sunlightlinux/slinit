@@ -297,3 +297,16 @@ Environment=bad
 		t.Errorf("reset: %q", d.Environment)
 	}
 }
+
+func TestTriggeringConditionParsed(t *testing.T) {
+	d, err := Parse(strings.NewReader("type = internal\ncondition-path-exists = |!/a\ncondition-path-exists = |/b\n"), "c", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Predicates) != 2 || !d.Predicates[0].Trigger || !d.Predicates[0].Negate || d.Predicates[0].Param != "/a" || !d.Predicates[1].Trigger {
+		t.Errorf("predicates %+v", d.Predicates)
+	}
+	if d.Predicates[0].String() != "condition-path-exists=|!/a" {
+		t.Errorf("String() = %q", d.Predicates[0].String())
+	}
+}

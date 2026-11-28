@@ -1437,12 +1437,20 @@ func parsePredicate(setting, value string, serviceArg *string) (service.Predicat
 		return service.Predicate{}, false, nil
 	}
 
-	param, negate := splitPredicateNegation(expandEnvVars(value, serviceArg))
+	// "|" first, then "!", as systemd reads them: a triggering check,
+	// of which at least one must hold (see combinePredicates).
+	v := expandEnvVars(value, serviceArg)
+	trigger := strings.HasPrefix(v, "|")
+	if trigger {
+		v = v[1:]
+	}
+	param, negate := splitPredicateNegation(v)
 	return service.Predicate{
 		Kind:     kind,
 		Param:    param,
 		Negate:   negate,
 		IsAssert: isAssert,
+		Trigger:  trigger,
 	}, true, nil
 }
 

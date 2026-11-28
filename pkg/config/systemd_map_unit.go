@@ -225,12 +225,12 @@ func (cfg *SystemdConfig) applyCondition(key, val string, k sdCondKind, assert b
 		st.triggers = append(st.triggers, sdTrigger{key: key, val: val, k: k, assert: assert, v: v, negate: negate})
 		return nil
 	}
-	return cfg.emitCondition(key, val, k, assert, v, negate)
+	return cfg.emitCondition(key, val, k, assert, v, negate, false)
 }
 
 // emitCondition maps one check, its prefixes taken off and its value
-// expanded, onto slinit's predicates.
-func (cfg *SystemdConfig) emitCondition(key, val string, k sdCondKind, assert bool, v string, negate bool) []SystemdWarning {
+// expanded, onto slinit's predicates; trigger keeps it triggering ("|").
+func (cfg *SystemdConfig) emitCondition(key, val string, k sdCondKind, assert bool, v string, negate, trigger bool) []SystemdWarning {
 	if v == "" {
 		return cfg.conditionUnchecked(key, val, assert, "nothing follows the prefix")
 	}
@@ -246,6 +246,12 @@ func (cfg *SystemdConfig) emitCondition(key, val string, k sdCondKind, assert bo
 			return append(warns, cfg.conditionUnchecked(key, val, assert, err.Error())...)
 		}
 	}
+	if trigger && len(preds) > 1 {
+		// Several slinit checks that must all hold: as triggers they
+		// would be alternatives instead.
+		return append(warns, cfg.conditionUnchecked(key, val, assert,
+			"it maps onto several slinit checks, which cannot together be one triggering (|) check")...)
+	}
 	prefix := "condition-"
 	if assert {
 		prefix = "assert-"
@@ -255,6 +261,9 @@ func (cfg *SystemdConfig) emitCondition(key, val string, k sdCondKind, assert bo
 		param := strings.ReplaceAll(p.param, "$", "$$")
 		if p.negate {
 			param = "!" + param
+		}
+		if trigger {
+			param = "|" + param
 		}
 		cfg.conditions = append(cfg.conditions, condDir{prefix + k.pred, param})
 	}
@@ -283,11 +292,10 @@ func sdUnitStateOf(cfg *SystemdConfig) *sdUnitState {
 // sdFinishTriggers maps the triggering checks. systemd requires every
 // plain check of a list (conditions, assertions) to hold, and, when the
 // list has triggering ones, at least one of those
-// (condition_test_list). slinit has no "at least one of": its checks
-// must all hold. When a list has exactly one triggering check, "at
-// least one of" that one is the check itself, so it is mapped as a
-// plain one. With two or more none of them can be mapped: requiring
-// each would skip the service where systemd runs it.
+// (condition_test_list); slinit's "|" means the same (since 4.1). A
+// list with one slinit cannot check is left out whole: mapping the rest
+// would make "at least one of them" stricter than systemd's, and the
+// service could be skipped where systemd runs it.
 func sdFinishTriggers(cfg *SystemdConfig) []SystemdWarning {
 	var warns []SystemdWarning
 	st := sdUnitStateOf(cfg)
@@ -298,16 +306,25 @@ func sdFinishTriggers(cfg *SystemdConfig) []SystemdWarning {
 				list = append(list, t)
 			}
 		}
+		var bad *sdTrigger
+		for i := range list {
+			if list[i].unchecked != "" || list[i].k.gap != "" {
+				bad = &list[i]
+				break
+			}
+		}
 		for _, t := range list {
 			switch {
 			case t.unchecked != "":
 				warns = append(warns, cfg.conditionUnchecked(t.key, t.val, assert, t.unchecked)...)
-			case len(list) == 1:
-				warns = append(warns, cfg.emitCondition(t.key, t.val, t.k, assert, t.v, t.negate)...)
-			default:
+			case t.k.gap != "":
+				warns = append(warns, cfg.conditionUnchecked(t.key, t.val, assert, t.k.gap)...)
+			case bad != nil:
 				warns = append(warns, cfg.conditionUnchecked(t.key, t.val, assert, fmt.Sprintf(
-					"slinit has no triggering (|) checks, only ones that must all hold, and this unit has %d, "+
-						"of which systemd needs one to hold", len(list)))...)
+					"another triggering (|) check of the unit, %s=%s, cannot be checked, and without it "+
+						"\"at least one of them\" would be stricter than systemd's", bad.key, bad.val))...)
+			default:
+				warns = append(warns, cfg.emitCondition(t.key, t.val, t.k, assert, t.v, t.negate, len(list) > 1)...)
 			}
 		}
 	}

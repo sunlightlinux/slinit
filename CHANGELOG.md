@@ -68,6 +68,14 @@ verified with `git tag -v`.
 
 ### Added
 
+- **Triggering conditions**, systemd's `|` prefix: `condition-X = |VALUE`
+  makes a check of which at least one in its list must hold, besides
+  every plain one; assertions likewise. A unit's triggering checks map
+  onto them; with two or more they were left out with a warning, the
+  most frequent one in this host's and systemd's units (96), and the
+  service started without them. A list with one triggering check
+  slinit cannot read is still left out whole, rather than made stricter.
+
 - **`environment = KEY=VALUE ...`**, systemd's `Environment=`: variables
   set in the service file itself, quoted as a command's words, nothing
   expanded; an env-file overrides them and `slinitctl setenv` overrides

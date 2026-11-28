@@ -137,6 +137,10 @@ type Predicate struct {
 	Param    string
 	Negate   bool
 	IsAssert bool
+	// Trigger: systemd's "|". When a list (conditions, assertions) has
+	// triggering checks, at least one of them must hold, besides every
+	// plain one (combinePredicates).
+	Trigger bool
 	// Privileged: an exec-condition with systemd's "+" prefix, run as
 	// root rather than as the service's run-as user.
 	Privileged bool
@@ -250,6 +254,9 @@ func (p Predicate) String() string {
 	param := p.Param
 	if p.Negate {
 		param = "!" + param
+	}
+	if p.Trigger {
+		param = "|" + param
 	}
 	return prefix + name + "=" + param
 }

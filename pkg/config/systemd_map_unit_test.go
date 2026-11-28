@@ -118,13 +118,15 @@ func TestSystemdConditionPrefixesAndReset(t *testing.T) {
 		{name: "lone triggering condition, negated, beside plain ones",
 			lines: "ConditionPathExists=/b\nConditionHost=|! box\nAssertPathExists=|/c",
 			want:  []string{"condition-path-exists = /b", "condition-host = !box", "assert-path-exists = /c"}},
+		// Since 4.1 slinit's "|" means what systemd's does.
 		{name: "triggering conditions", lines: "ConditionPathExists=|/a\nConditionPathExists=|/b",
-			want: []string{}, warn: "WARN:this unit has 2"},
-		{name: "triggering assertions", lines: "AssertPathExists=|/a\nAssertHost=|box", err: "triggering"},
-		// A triggering check slinit cannot read still counts: with it,
-		// /a is not the only one.
+			want: []string{"condition-path-exists = |/a", "condition-path-exists = |/b"}},
+		{name: "triggering assertions", lines: "AssertPathExists=|/a\nAssertHost=|box",
+			want: []string{"assert-path-exists = |/a", "assert-host = |box"}},
+		// A triggering check slinit cannot read still counts: without
+		// it, "one of them" would be /a alone, stricter than systemd.
 		{name: "triggering, one unexpandable", lines: "ConditionHost=|%H\nConditionPathExists=|/a",
-			want: []string{}, warn: "WARN:this unit has 2"},
+			want: []string{}, warn: "WARN:cannot be checked"},
 		// One condition and one assertion are each alone in their list.
 		{name: "triggering in each list", lines: "ConditionPathExists=|/a\nAssertPathExists=|/b",
 			want: []string{"condition-path-exists = /a", "assert-path-exists = /b"}},
@@ -166,7 +168,8 @@ func TestSystemdTriggeringDropin(t *testing.T) {
 		name, unit, dropin string
 		want               []string
 	}{
-		{"two together", "ConditionPathExists=|/a\n", "ConditionPathExists=|/b\n", nil},
+		{"two together", "ConditionPathExists=|/a\n", "ConditionPathExists=|/b\n",
+			[]string{"condition-path-exists = |/a", "condition-path-exists = |/b"}},
 		{"one in the drop-in", "ConditionPathExists=/a\n", "ConditionPathExists=|/b\n",
 			[]string{"condition-path-exists = /a", "condition-path-exists = /b"}},
 		{"drop-in resets the unit's", "ConditionPathExists=|/a\n", "ConditionPathExists=\nConditionPathExists=|/b\n",
@@ -186,9 +189,7 @@ func TestSystemdTriggeringDropin(t *testing.T) {
 			if strings.Join(got, "\n") != strings.Join(c.want, "\n") {
 				t.Errorf("emitted %q, want %q\nwarnings: %v", got, c.want, warns)
 			}
-			if c.want == nil && !warnWith(warns, "WARN", "this unit has 2") {
-				t.Errorf("no WARN about the two triggering checks: %v", warns)
-			}
+
 		})
 	}
 }

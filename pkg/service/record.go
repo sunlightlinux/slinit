@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1382,13 +1383,36 @@ type predResult struct {
 
 // combinePredicates is CheckPredicates' verdict from the answers res to
 // preds, one for one.
+//
+// As systemd's condition_test_list, each list (conditions, assertions)
+// needs every plain check to hold and, when it has triggering ones
+// ("|"), at least one of those.
 func combinePredicates(preds []Predicate, res []predResult) (PredicateOutcome, string) {
 	var (
 		firstSkipReason string
 		failReason      string
 	)
+	// Per list: whether it has triggers, whether one held, and the
+	// triggers that failed, for the reason.
+	var trig [2]struct {
+		has, held bool
+		failed    []string
+	}
 	for i, p := range preds {
 		ok, why := res[i].ok, res[i].why
+		if p.Trigger {
+			l := &trig[0]
+			if p.IsAssert {
+				l = &trig[1]
+			}
+			l.has = true
+			if ok {
+				l.held = true
+			} else {
+				l.failed = append(l.failed, fmt.Sprintf("%s (%s)", p.String(), why))
+			}
+			continue
+		}
 		if ok {
 			continue
 		}
@@ -1401,6 +1425,12 @@ func combinePredicates(preds []Predicate, res []predResult) (PredicateOutcome, s
 		if firstSkipReason == "" {
 			firstSkipReason = fmt.Sprintf("%s failed: %s", p.String(), why)
 		}
+	}
+	if l := trig[1]; l.has && !l.held && failReason == "" {
+		failReason = "no triggering assertion held: " + strings.Join(l.failed, "; ")
+	}
+	if l := trig[0]; l.has && !l.held && firstSkipReason == "" {
+		firstSkipReason = "no triggering condition held: " + strings.Join(l.failed, "; ")
 	}
 	if failReason != "" {
 		return PredFailed, failReason

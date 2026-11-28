@@ -2937,6 +2937,14 @@ Negate any predicate by prefixing the value with `!` (whitespace
 between the bang and the value is tolerated) — except **exec-condition**,
 whose value is a raw command.
 
+A `|` before the value (and before a `!`) makes the check *triggering*
+(since 4.1.0), as in systemd: when the conditions include triggering
+ones, the start needs at least one of those to hold, besides every
+plain condition; the assertions are a list of their own and work the
+same way. *condition-path-exists = |/etc/foo.conf* with
+*condition-path-exists = |/etc/foo.d* starts the service when either is
+there.
+
 Recognised predicates (each has both a `condition-` and an `assert-`
 form):
 
