@@ -156,7 +156,7 @@ func prepareHookCmdFor(ctx context.Context, svc Service, cmd *exec.Cmd) bool {
 // as systemd's ExecStop=+ does (see process.ExecParams.FullyPrivileged).
 // An exec-condition carries its own flag (Predicate.Privileged).
 type PrivilegedHooks struct {
-	PreStart, PostStart, Stop, Finish, PreStop bool
+	PreStart, PostStart, Stop, Finish, PreStop, Reload bool
 	// Control is keyed by the upper-case signal name, as the
 	// control-command-* map is.
 	Control map[string]bool

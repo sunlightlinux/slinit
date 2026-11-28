@@ -69,6 +69,7 @@ type ProcessService struct {
 	command            []string
 	argv0              string // override argv[0] presented to the exec'd binary (runit chpst -b)
 	stopCommand        []string
+	reloadCommand      []string            // reload.go
 	finishCommand      []string            // runs after process exits (before restart decision)
 	preStartCommand    []string            // runs before fork+exec; non-zero exit fails the start
 	postStartCommand   []string            // runs after Started(); non-zero exit only logs
@@ -455,6 +456,9 @@ func (s *ProcessService) notifySocketPath() string {
 
 // SetStopCommand sets the stop command.
 func (s *ProcessService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
+
+// SetReloadCommand sets the command slinitctl reload-signal runs.
+func (s *ProcessService) SetReloadCommand(cmd []string) { s.reloadCommand = cmd }
 
 // SetFinishCommand sets the finish command (runs after process exits).
 func (s *ProcessService) SetFinishCommand(cmd []string) { s.finishCommand = cmd }

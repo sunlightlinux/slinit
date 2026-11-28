@@ -82,6 +82,7 @@ type ServiceDescription struct {
 	Argv0                string // override argv[0] presented to the target binary (runit chpst -b)
 	ScriptBlock          bool   // command came from a script...end script block
 	StopCommand          []string
+	ReloadCommand        []string // run by slinitctl reload-signal (ExecReload=)
 	FinishCommand        []string            // runs after process exits (before restart)
 	PreStartCommand      []string            // runs before command; non-zero exit fails the start (systemd ExecStartPre=)
 	PostStartCommand     []string            // runs after Started(); non-zero exit only logs (systemd ExecStartPost=)
@@ -1539,6 +1540,8 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.Argv0 = expandEnvVars(value, serviceArg)
 	case "stop-command":
 		return setPrivilegedCommand(&desc.StopCommand, &desc.Privileged.Stop, setting, value, op, serviceArg)
+	case "reload-command":
+		return setPrivilegedCommand(&desc.ReloadCommand, &desc.Privileged.Reload, setting, value, op, serviceArg)
 	case "finish-command":
 		return setPrivilegedCommand(&desc.FinishCommand, &desc.Privileged.Finish, setting, value, op, serviceArg)
 	case "pre-start-command":

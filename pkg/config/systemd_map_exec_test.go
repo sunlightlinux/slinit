@@ -492,7 +492,25 @@ func TestSystemdExecReload(t *testing.T) {
 		{name: "kill -s USR1 ${MAINPID}", body: "ExecReload=/usr/bin/kill -s USR1 ${MAINPID}\n",
 			lines: map[string][]string{"reload-signal": {"USR1"}}},
 		{name: "a reload command", body: "ExecReload=/usr/sbin/nginx -s reload\n",
-			lines: map[string][]string{"reload-signal": nil}, warn: []string{"WARN", "no reload command"}},
+			lines: map[string][]string{"reload-signal": nil, "reload-command": {"/usr/sbin/nginx -s reload"}},
+			desc: func(t *testing.T, d *ServiceDescription) {
+				if strings.Join(d.ReloadCommand, " ") != "/usr/sbin/nginx -s reload" {
+					t.Errorf("ReloadCommand = %q", d.ReloadCommand)
+				}
+			}},
+		{name: "a second command is dropped", body: "ExecReload=/bin/a\nExecReload=/bin/b\n",
+			lines: map[string][]string{"reload-command": {"/bin/a"}}, warn: []string{"WARN", "keeping the first"}},
+		{name: "+ is root", body: "ExecReload=+/bin/a\n",
+			lines: map[string][]string{"reload-command": {"+/bin/a"}},
+			desc: func(t *testing.T, d *ServiceDescription) {
+				if !d.Privileged.Reload {
+					t.Error("+ not carried")
+				}
+			}},
+		{name: "a command and a signal", body: "ExecReload=/bin/a\nExecReload=/bin/kill -HUP $MAINPID\n",
+			lines: map[string][]string{"reload-command": {"/bin/a"}, "reload-signal": {"HUP"}}},
+		{name: "reset drops the command", body: "ExecReload=/bin/a\nExecReload=\n",
+			lines: map[string][]string{"reload-command": nil}},
 		{name: "reset", body: "ExecReload=/bin/kill -HUP $MAINPID\nExecReload=\n",
 			lines: map[string][]string{"reload-signal": nil}},
 	})

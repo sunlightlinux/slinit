@@ -566,8 +566,10 @@ service name or rejected.
 :   Send the signal declared in *service*'s **reload-signal** stanza
     (see **slinit-service**(5)) to its main running process. This is
     the "tell the daemon to re-read its own config" idiom — typical
-    for nginx, sshd, syslog and similar services. Rejects the
-    request when *service* has no **reload-signal** configured
+    for nginx, sshd, syslog and similar services. With a
+    **reload-command** (since 4.1.0) that command runs first, and this
+    waits for it and fails if it does; the signal, if one is set too,
+    follows. Rejects the request when *service* has neither configured
     (with an explicit error rather than silently no-op'ing) or when
     the service has no running process. Different from **reload**
     above, which re-reads the slinit-side service description and

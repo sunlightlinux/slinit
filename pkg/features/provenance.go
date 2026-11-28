@@ -149,6 +149,7 @@ var provenanceTable = []Feature{
 	{Name: "syslog-level", Kind: KindDirective, Source: SourceSystemd, Category: CatLogging, Notes: "default priority of the service's journal lines (SyslogLevel=)"},
 	{Name: "syslog-level-prefix", Kind: KindDirective, Source: SourceSystemd, Category: CatLogging, Notes: "read a <N> kernel-style priority prefix off each line (SyslogLevelPrefix=)"},
 	{Name: "log-extra-fields", Kind: KindDirective, Source: SourceSystemd, Category: CatLogging, Notes: "extra FIELD=value pairs on each journal line (LogExtraFields=)"},
+	{Name: "reload-command", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "run by slinitctl reload-signal in the service's context, $MAINPID set (ExecReload=)"},
 	{Name: "send-sighup", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "follow the stop signal with SIGHUP (SendSIGHUP=)"},
 	{Name: "kill-mode", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "control-group / process / mixed / none"},
 	{Name: "stop-timeout", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "grace period before SIGKILL after term-signal"},

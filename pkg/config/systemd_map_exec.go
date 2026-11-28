@@ -1417,15 +1417,19 @@ func exFinishStopPost(cfg *SystemdConfig) []SystemdWarning {
 }
 
 // mapExecReload: the ExecReload= that only signals the main process,
-// "kill -HUP $MAINPID", is slinit's reload-signal. slinit has no reload
-// command: its extra-started-command runs as root, outside the service's
-// environment and credentials, so any other ExecReload= is dropped. The
-// signal is settled with ReloadSignal= in exFinishReload; an empty
-// assignment drops what ExecReload= said, and nothing else.
+// "kill -HUP $MAINPID", is slinit's reload-signal; any other command is
+// its reload-command (since 4.1), which runs in the service's context
+// as systemd runs ExecReload=. slinit runs one: a second command is
+// dropped with a warning. A command using $MAINPID otherwise is dropped
+// too: slinit expands a command's variables when it loads the file, and
+// the main pid is not known then. The signal is settled with
+// ReloadSignal= in exFinishReload; an empty assignment drops what
+// ExecReload= said, and nothing else.
 func mapExecReload(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	st := exStateOf(cfg)
 	if strings.TrimSpace(val) == "" {
 		st.execReloadSignal, st.execReloadLine, st.execReloadWarns = "", "", nil
+		cfg.dropMapped("reload-command")
 		return nil
 	}
 	cmds, warns, err := parseExecLine(cfg, key, val)
@@ -1442,8 +1446,27 @@ func mapExecReload(cfg *SystemdConfig, key, val string) []SystemdWarning {
 			warns = append(warns, exWarn(key, val, "uses $MAINPID, which slinit does not provide — dropped"))
 			continue
 		}
-		warns = append(warns, exWarn(key, val, "dropped: slinit has no reload command (an extra-started-command runs as root, "+
-			"outside the service's environment); run it by hand, or make the daemon reload on a signal and set reload-signal"))
+		argv := c.cmd.argv
+		if c.ignoreFailure {
+			argv = ignoreFailureArgv(argv)
+		}
+		value, ok := slinitCommandValue(argv)
+		if !ok {
+			warns = append(warns, exWarn(key, val, "an argument holds a newline, which a slinit command setting cannot — command dropped"))
+			continue
+		}
+		if prev, ok := exMapped(cfg, "reload-command"); ok {
+			warns = append(warns, exWarn(key, val, fmt.Sprintf(
+				"slinit runs one reload-command, keeping the first, %q (dropped: %q)", prev, value)))
+			continue
+		}
+		value = privPrefix(c.fullPriv) + value
+		if err := validateSlinitSetting("reload-command", value); err != nil {
+			warns = append(warns, exIgnored(key, val, err))
+			continue
+		}
+		warns = append(warns, warnExecVars(key, c.refs, c.bad)...)
+		cfg.setMapped("reload-command", value)
 	}
 	st.execReloadWarns = append(st.execReloadWarns, warns...)
 	return nil

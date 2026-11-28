@@ -221,6 +221,19 @@ what tells you the oldest slinit your configuration will run on. See
     settings; with the **+** prefix (since 4.0.3; see **The + prefix** below)
     it runs as root without them.
 
+**reload-command**=[**+**]*program* [*args*...] (since 4.1.0)
+:   What **slinitctl reload-signal** runs to have the running service
+    re-read its own configuration, for a daemon that offers a command
+    for it rather than a signal (*nft -f ...*, *avahi-daemon -r*,
+    *apachectl graceful*). It runs as **stop-command** does, with the
+    service's **run-as**, sandbox, environment and credentials, or as
+    root without them with **+**, and *MAINPID* set to the main
+    process. **slinitctl reload-signal** waits for it, bounded by
+    **hook-timeout**, and fails when it exits non-zero. A
+    **reload-signal** set as well is sent after a command that
+    succeeded. **type** = *process* only. systemd's **ExecReload=** with
+    a command; its *kill -HUP $MAINPID* form is **reload-signal**.
+
 **finish-command**=[**+**]*program* [*args*...]
 :   Runit-style: a program executed *after* **command** exits, before
     a possible restart. It runs as the service's **run-as** user, or as

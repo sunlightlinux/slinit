@@ -58,6 +58,15 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`reload-command`**, systemd's `ExecReload=` with a command: what
+  `slinitctl reload-signal` runs for a daemon that reloads by command
+  (nft, avahi-daemon -r, apachectl graceful, multipathd reconfigure:
+  20 of the 31 ExecReload= lines on this host). It runs in the
+  service's context as stop-command does, with `$MAINPID` set;
+  reload-signal waits for it and fails with it, and a reload-signal set
+  as well follows a command that succeeded. A unit's ExecReload= command
+  maps onto it (it was dropped); `slinitctl show` prints it.
+
 - **`slinit-check` warns about a by-name reference that names nothing**:
   a `part-of`, `conflicts`, `on-failure`, `upholds` or `chain-to` name
   that resolves to no service file, init.d script or systemd unit loads

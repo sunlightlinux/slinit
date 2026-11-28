@@ -1384,7 +1384,21 @@ func (c *Connection) handleReloadSignal(payload []byte) error {
 	// Read under the graph lock: a reload rewrites it there.
 	var sig syscall.Signal
 	c.server.services.WithGraphLock(func() { sig = svc.Record().ReloadSignal() })
-	if sig == 0 {
+
+	// A reload-command runs first, and the reload-signal, if any, follows
+	// one that succeeded (see service/reload.go).
+	hasPID, err := c.server.services.RunReloadCommand(svc)
+	if !errors.Is(err, service.ErrNoReloadCommand) {
+		if !hasPID {
+			return c.writePacket(RplySignalNoPID, nil)
+		}
+		if err != nil {
+			return c.writePacket(RplySignalErr, []byte(err.Error()))
+		}
+		if sig == 0 {
+			return c.writePacket(RplyACK, nil)
+		}
+	} else if sig == 0 {
 		return c.writePacket(RplyNAK, nil)
 	}
 

@@ -4516,14 +4516,14 @@ func cmdReloadSignal(conn net.Conn, name string) error {
 	}
 	switch rply {
 	case control.RplyACK:
-		info("Reload signal sent to '%s'.\n", name)
+		info("Reload sent to '%s'.\n", name)
 		return nil
 	case control.RplyNAK:
-		return fmt.Errorf("service '%s' has no reload-signal configured", name)
+		return fmt.Errorf("service '%s' has no reload-signal or reload-command configured", name)
 	case control.RplySignalNoPID:
 		return fmt.Errorf("service '%s' has no running process", name)
 	case control.RplySignalErr:
-		return fmt.Errorf("reload-signal failed for '%s': %s", name, string(payload))
+		return fmt.Errorf("reload failed for '%s': %s", name, string(payload))
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}

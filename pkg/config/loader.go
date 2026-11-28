@@ -581,6 +581,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetCommand(desc.Command)
 		s.SetArgv0(desc.Argv0)
 		s.SetStopCommand(desc.StopCommand)
+		s.SetReloadCommand(desc.ReloadCommand)
 		s.SetFinishCommand(desc.FinishCommand)
 		s.SetPreStartCommand(desc.PreStartCommand)
 		s.SetPostStartCommand(desc.PostStartCommand)

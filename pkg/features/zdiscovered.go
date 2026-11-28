@@ -269,6 +269,7 @@ var BuiltinDirectives = []string{
 	"reboot-argument",
 	"refuse-manual-start",
 	"refuse-manual-stop",
+	"reload-command",
 	"reload-signal",
 	"remove-ipc",
 	"required-dirs",

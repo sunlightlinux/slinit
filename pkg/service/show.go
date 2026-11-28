@@ -545,6 +545,9 @@ func RenderShow(s Service) string {
 		if len(ss.stopCommand) > 0 {
 			p("ExecStop", showCommand(ss.stopCommand, ss.privHooks.Stop))
 		}
+		if len(ss.reloadCommand) > 0 {
+			p("ExecReload", showCommand(ss.reloadCommand, ss.privHooks.Reload))
+		}
 		if len(ss.preStartCommand) > 0 {
 			p("ExecStartPre", showCommand(ss.preStartCommand, ss.privHooks.PreStart))
 		}

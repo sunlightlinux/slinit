@@ -55,6 +55,7 @@ var KnownSettings = map[string]OperatorType{
 	"command":       OpEquals | OpPlusEqual,
 	"command-argv0": OpEquals, // runit chpst -b: override argv[0] presented to the exec'd target
 	"stop-command":  OpEquals | OpPlusEqual,
+	"reload-command": OpEquals | OpPlusEqual,
 
 	// Working directory
 	"working-dir": OpEquals,
