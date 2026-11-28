@@ -250,9 +250,10 @@ verified with `git tag -v`.
   read as `Requires=` and `Requisite=`, as systemd reads them, and
   `StopWhenUnneeded=` is slinit's `stop-when-unneeded`. They were
   dropped without a word, like every `[Unit]` key the loader did not
-  know; such a key now draws a warning, and `PartOf=`, `Upholds=`,
-  `PropagatesReloadTo=`, `PropagatesStopTo=`, `JoinsNamespaceOf=`,
-  `RequiresMountsFor=` and `OnSuccess=` say what to use instead.
+  know; such a key now draws a warning, and `PropagatesReloadTo=`,
+  `PropagatesStopTo=`, `JoinsNamespaceOf=`, `RequiresMountsFor=` and
+  `OnSuccess=` say what to use instead (`PartOf=`, `Conflicts=`,
+  `OnFailure=` and `Upholds=` map onto settings of their own, above).
   *Compat:* like `Requires=`, a `BindsTo=` naming a service that is not
   installed now fails the load, as it fails the unit in systemd.
 
