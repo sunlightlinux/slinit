@@ -159,3 +159,26 @@ func TestIPFilterEdges(t *testing.T) {
 		t.Errorf("c on the default cgroup: %v", err)
 	}
 }
+
+func TestSystemdRequiresMountsFor(t *testing.T) {
+	writeUnitBody := "[Unit]\nRequiresMountsFor=/var/lib/foo /srv/x\nRequiresMountsFor=/var/lib/foo\n[Service]\nExecStart=/usr/bin/lc\n"
+	p := writeUnit(t, t.TempDir(), "lc.service", writeUnitBody)
+	desc, err := SystemdUnitToServiceDescription(p, "lc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, pr := range desc.Predicates {
+		if pr.IsAssert && pr.Kind == service.PredMountsFor {
+			got = append(got, pr.Param)
+		}
+	}
+	if strings.Join(got, "|") != "/var/lib/foo|/srv/x" {
+		t.Errorf("assert-mounts-for %q", got)
+	}
+	p = writeUnit(t, t.TempDir(), "lc.service", "[Unit]\nRequiresMountsFor=/a\nRequiresMountsFor=\n[Service]\nExecStart=/usr/bin/lc\n")
+	desc, _ = SystemdUnitToServiceDescription(p, "lc")
+	if len(desc.Predicates) != 0 {
+		t.Errorf("an empty RequiresMountsFor= left %v", desc.Predicates)
+	}
+}

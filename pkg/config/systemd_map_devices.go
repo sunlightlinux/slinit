@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sunlightlinux/slinit/pkg/bpfdev"
@@ -34,6 +35,7 @@ func init() {
 	registerService("IPAddressAllow", sdRule{custom: mapIPAddressList})
 	registerService("IPAddressDeny", sdRule{custom: mapIPAddressList})
 	registerFinisher(finishDeviceFilter)
+	registerUnit("RequiresMountsFor", sdRule{custom: mapRequiresMountsFor})
 }
 
 // mapDeviceAllow: each assignment adds an entry, an empty one clears the
@@ -112,4 +114,38 @@ func finishDeviceFilter(cfg *SystemdConfig) []SystemdWarning {
 	cfg.setMapped("slice", "system.slice")
 	return []SystemdWarning{{"NOTE", "slice = system.slice: the device and IP filters go on a cgroup of the " +
 		"service's own, which systemd gives every service under system.slice"}}
+}
+
+// mapRequiresMountsFor: systemd pulls in the mounts on the way to each
+// path and orders the unit after them. slinit mounts nothing for a
+// service; assert-mounts-for checks at each start that the /etc/fstab
+// mount points on the way are mounted, and fails the start when one is
+// not, rather than let the service write into the directory under it.
+// An empty assignment clears the list.
+func mapRequiresMountsFor(cfg *SystemdConfig, key, val string) []SystemdWarning {
+	v := strings.TrimSpace(trimQuotes(val))
+	if v == "" {
+		kept := cfg.conditions[:0]
+		for _, c := range cfg.conditions {
+			if c.name != "assert-mounts-for" {
+				kept = append(kept, c)
+			}
+		}
+		cfg.conditions = kept
+		return nil
+	}
+	var warns []SystemdWarning
+	for _, w := range strings.Fields(v) {
+		p, ok, w2 := systemdPath(key, w, false)
+		warns = append(warns, w2...)
+		if !ok {
+			continue
+		}
+		c := condDir{"assert-mounts-for", strings.ReplaceAll(p, "$", "$$")}
+		if !slices.Contains(cfg.conditions, c) {
+			cfg.conditions = append(cfg.conditions, c)
+		}
+	}
+	return append(warns, SystemdWarning{"NOTE", key + "=" + v + " → assert-mounts-for: slinit mounts nothing for a " +
+		"service, so the start fails if a mount point /etc/fstab names on the way is not mounted by then"})
 }

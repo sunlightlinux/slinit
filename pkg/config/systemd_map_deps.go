@@ -19,8 +19,6 @@ func init() {
 			"`depends-on:` it if this service must stop with it"},
 		"JoinsNamespaceOf": {confine: true, why: "the service gets namespaces of its own, " +
 			"not those of that unit (see the namespace-* settings)"},
-		"RequiresMountsFor": {why: "slinit does not order services after the mounts of a path; " +
-			"make sure the path is mounted first, e.g. `depends-on:` the service that mounts it"},
 		"WantsMountsFor": {why: "slinit does not order services after the mounts of a path"},
 		"OnSuccess": {why: "`chain-to` starts a service when this one exits 0 on its own; " +
 			"systemd also starts it after a clean stop. Use chain-to if that is the case that matters"},

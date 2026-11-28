@@ -3038,6 +3038,16 @@ form):
     **ConditionCapability=** checks the manager's. In a container that
     took **CAP_SYS_ADMIN** away, a service that needs it is skipped.
 
+**\*-mounts-for**=*path* (since 4.1.0)
+:   Every mount point */etc/fstab* names on the way to *path* (*path*
+    itself or a directory above it; */* and swap left out) is mounted
+    now, *noauto* ones included. As **assert-mounts-for** it is
+    systemd's **RequiresMountsFor=**: systemd mounts those file systems
+    for the unit and orders it after them; slinit mounts nothing for a
+    service, so the boot graph must have mounted them, and the start
+    fails, saying which, when one is not, rather than let the service
+    write into the directory underneath. With no */etc/fstab* it holds.
+
 **\*-path-exists**=*path*
 :   *path* exists (any file type, symlinks followed).
 

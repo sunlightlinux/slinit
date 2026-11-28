@@ -89,6 +89,13 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`condition-mounts-for` / `assert-mounts-for`**: every /etc/fstab
+  mount point on the way to a path is mounted. `RequiresMountsFor=`
+  (31 units of the corpus, a gap until now) maps onto the assert: slinit
+  mounts nothing for a service, so a start whose file system is not
+  there fails, naming it, instead of writing into the directory under
+  the mount point. Functional case 344.
+
 - **`slinitctl list-timers`**: the loaded services with
   `start-on-calendar`, by next run, with the time left, the randomized
   delay, the last start of a persistent one and the expression, as
