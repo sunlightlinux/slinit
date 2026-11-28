@@ -26,6 +26,14 @@ verified with `git tag -v`.
 
 ### Changed
 
+- **Several `ExecStartPre=` (or `ExecStartPost=`) lines run in turn**
+  from one pre-start-command (post-start-command), a shell running each
+  step after the last succeeded, `-` steps allowed to fail, as systemd
+  runs them; slinit kept the first and dropped the rest with a warning
+  (sshd's config test, postfix's five steps, mariadb's preparation).
+  Lines that differ in `+` keep the first, as before. *Compat:* such a
+  unit now runs every step.
+
 - **A unit with `Type=oneshot` and `Restart=always` or `on-success` is
   refused**, as systemd refuses it; `Restart=on-failure` and the like on
   one are reported as not carried (slinit never runs a scripted

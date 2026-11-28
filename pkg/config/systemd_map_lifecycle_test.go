@@ -3,6 +3,9 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -516,5 +519,38 @@ func TestSystemdOneshotRestart(t *testing.T) {
 		if _, _, err := ConvertSystemdUnit(p); err == nil || !strings.Contains(err.Error(), "not allowed for Type=oneshot") {
 			t.Errorf("Restart=%s on a oneshot: err %v, want refused", v, err)
 		}
+	}
+}
+
+// Several ExecStartPre= lines run in turn from one pre-start-command, as
+// systemd runs them: each must succeed unless "-", a failure stops the
+// rest, and a lone $VAR that is empty is no argument.
+func TestSystemdExecStartPreFolded(t *testing.T) {
+	run := func(t *testing.T, lines string) (string, error, []SystemdWarning) {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), "out")
+		_, warns, desc := lcConvert(t, strings.ReplaceAll(lines, "OUT", f))
+		if len(desc.PreStartCommand) == 0 {
+			t.Fatalf("no pre-start-command: %v", warns)
+		}
+		err := exec.Command(desc.PreStartCommand[0], desc.PreStartCommand[1:]...).Run()
+		b, _ := os.ReadFile(f)
+		return string(b), err, warns
+	}
+	out, err, warns := run(t, "ExecStartPre=/bin/sh -c 'echo a >> OUT'\nExecStartPre=-/bin/false\nExecStartPre=/bin/sh -c 'echo b >> OUT'")
+	if out != "a\nb\n" || err != nil || !lcWarned(warns, "NOTE", "3 ExecStartPre= lines run in turn") {
+		t.Errorf("folded: out %q err %v warns %v", out, err, warns)
+	}
+	out, err, _ = run(t, "ExecStartPre=/bin/sh -c 'echo a >> OUT'\nExecStartPre=/bin/false\nExecStartPre=/bin/sh -c 'echo b >> OUT'")
+	if out != "a\n" || err == nil {
+		t.Errorf("a failing step: out %q err %v, want the rest skipped and a failure", out, err)
+	}
+	out, _, _ = run(t, "ExecStartPre=/bin/true\nExecStartPre=/bin/sh -c 'echo $$# > OUT' sh $SLINIT_TEST_UNSET_VAR")
+	if strings.TrimSpace(out) != "0" {
+		t.Errorf("an empty lone $VAR became %s argument(s), want 0", strings.TrimSpace(out))
+	}
+	_, warns, _ = lcConvert(t, "ExecStartPre=/bin/a\nExecStartPre=+/bin/b")
+	if !lcWarned(warns, "WARN", "with and without") {
+		t.Errorf("mixed +: %v", warns)
 	}
 }

@@ -173,13 +173,14 @@ ExecStop=/usr/bin/stop it ; /usr/bin/stop2 ""
 	for name, d := range map[string]*ServiceDescription{"converted": parseEmitted(t, unit), "direct": direct} {
 		argvIs(t, name+": command", d.Command, []string{"/usr/bin/foo", "", "a\tb", "x y", "A", `q"uote`, `back\slash`,
 			";", "end 1", "probe.service", "probe.service"})
-		argvIs(t, name+": pre-start-command", d.PreStartCommand, []string{"/usr/bin/a", "1"})
+		// Two commands on one line run in turn, from one shell.
+		argvIs(t, name+": pre-start-command", d.PreStartCommand, []string{"/bin/sh", "-c", "'/usr/bin/a' '1' && '/usr/bin/b' '2'"})
 		// A newline cannot be written in a slinit value: dropped, warned.
 		argvIs(t, name+": post-start-command", d.PostStartCommand, nil)
 		// One stop-command: the last, as for ExecStart.
 		argvIs(t, name+": stop-command", d.StopCommand, []string{"/usr/bin/stop2", ""})
 	}
-	for _, want := range []string{"multiple ExecStartPre", "/usr/bin/b", "newline", "multiple ExecStop"} {
+	for _, want := range []string{"newline", "multiple ExecStop"} {
 		found := false
 		for _, g := range got {
 			found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, want))

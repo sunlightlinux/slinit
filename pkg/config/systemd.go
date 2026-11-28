@@ -87,6 +87,8 @@ type SystemdConfig struct {
 	// The hook had "+" (or "!" on a start hook): it is written with
 	// slinit's "+", which runs it as root rather than as run-as.
 	preStartPriv, postStartPriv, stopPriv bool
+	// Every ExecStartPre= / ExecStartPost= line, for foldStartHooks.
+	preStartAll, postStartAll []foldCmd
 
 	// TimeoutStartSec= / TimeoutSec=; startTimeoutSet records that the
 	// unit gave one, which a oneshot's default depends on.
@@ -491,6 +493,8 @@ func finishSystemdUnit(cfg *SystemdConfig) []SystemdWarning {
 	for _, f := range sdFinishers {
 		warns = append(warns, f(cfg)...)
 	}
+	warns = append(warns, foldStartHooks("ExecStartPre", "pre-start-command", cfg.preStartAll, &cfg.preStart, &cfg.preStartPriv)...)
+	warns = append(warns, foldStartHooks("ExecStartPost", "post-start-command", cfg.postStartAll, &cfg.postStart, &cfg.postStartPriv)...)
 	warns = append(warns, cgroupWarning(cfg)...)
 	if cfg.capBounding.set {
 		switch cfg.capBounding.mask {
@@ -1120,8 +1124,10 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 			cfg.stopCommand, cfg.stopPriv, cfg.stopSignal, cfg.stopLine = "", false, "", ""
 		case "ExecStartPre":
 			cfg.preStart, cfg.preStartPriv, *preN = "", false, 0
+			cfg.preStartAll = nil
 		case "ExecStartPost":
 			cfg.postStart, cfg.postStartPriv, *postN = "", false, 0
+			cfg.postStartAll = nil
 		}
 		return nil
 	}
@@ -1202,10 +1208,16 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 			if key == "ExecStartPost" {
 				n, cur, privp, setting = postN, &cfg.postStart, &cfg.postStartPriv, "post-start-command"
 			}
+			all := &cfg.preStartAll
+			if key == "ExecStartPost" {
+				all = &cfg.postStartAll
+			}
+			*all = append(*all, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, priv: priv, value: value})
 			*n++
 			if *n > 1 {
-				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
-					"multiple %s= — slinit takes one %s, keeping the first (dropped: %q)", key, setting, value)})
+				// Folded into one shell command once the unit is read
+				// (foldStartHooks), or warned about there.
+				_ = setting
 				continue
 			}
 			*cur, *privp = value, priv
@@ -1213,6 +1225,68 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 		}
 	}
 	return warns
+}
+
+// loneVarRe matches a word that is one unbraced $VAR, nothing else.
+var loneVarRe = regexp.MustCompile(`^\$[A-Za-z_][A-Za-z0-9_]*$`)
+
+// foldCmd is one ExecStartPre= / ExecStartPost= line.
+type foldCmd struct {
+	argv   []string // in slinit's $ syntax, as parseExecLine gives it
+	ignore bool     // the "-" prefix
+	priv   bool     // slinit's "+"
+	value  string   // the line as one slinit command, for a warning
+}
+
+// foldStartHooks gives several ExecStartPre= (or ExecStartPost=) lines
+// to slinit's one pre-start-command (post-start-command) as a shell
+// running them in turn, as systemd runs them: each must succeed for the
+// next to run, unless it has the "-" prefix. sshd's key generation and
+// config test, postfix's five steps, mariadb's preparation all used to
+// lose every line but the first. Lines that differ in "+" cannot share
+// one command, and keep the first with a warning, as before.
+func foldStartHooks(key, setting string, all []foldCmd, cur *string, priv *bool) []SystemdWarning {
+	if len(all) < 2 {
+		return nil
+	}
+	for _, c := range all[1:] {
+		if c.priv != all[0].priv {
+			var dropped []string
+			for _, d := range all[1:] {
+				dropped = append(dropped, d.value)
+			}
+			return []SystemdWarning{{"WARN", fmt.Sprintf(
+				"multiple %s= with and without \"+\" — slinit takes one %s, keeping the first (dropped: %q)",
+				key, setting, strings.Join(dropped, "; "))}}
+		}
+	}
+	var script []string
+	for _, c := range all {
+		words := make([]string, len(c.argv))
+		for i, w := range c.argv {
+			// A lone $VAR is split into words by systemd, and vanishes
+			// when empty; quoted, it would be one argument, an empty one
+			// for an unset variable (sshd -t ''). ${VAR} is one argument
+			// in systemd, and stays quoted. shellQuote is openrc_confd.go's.
+			if loneVarRe.MatchString(w) {
+				words[i] = w
+			} else {
+				words[i] = shellQuote(w)
+			}
+		}
+		step := strings.Join(words, " ")
+		if c.ignore {
+			step = "{ " + step + " || :; }"
+		}
+		script = append(script, step)
+	}
+	v, ok := slinitCommandValue([]string{"/bin/sh", "-c", strings.Join(script, " && ")})
+	if !ok {
+		return []SystemdWarning{{"WARN", fmt.Sprintf("multiple %s= — an argument holds a newline; keeping the first", key)}}
+	}
+	*cur, *priv = v, all[0].priv
+	return []SystemdWarning{{"NOTE", fmt.Sprintf("%d %s= lines run in turn from one %s (a shell), as systemd runs them",
+		len(all), key, setting)}}
 }
 
 // ignoreFailureArgv runs argv through a shell that turns any failure,

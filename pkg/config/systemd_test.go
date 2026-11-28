@@ -198,9 +198,8 @@ func TestExecStartPrefixStripping(t *testing.T) {
 	}
 }
 
-// TestMultipleExecStartPre — slinit takes one pre-start-command.
-// Second and subsequent lines should warn without overwriting the
-// first (predictable behaviour, operator can review).
+// TestMultipleExecStartPre — slinit takes one pre-start-command, so the
+// lines run in turn from one shell (foldStartHooks), with a note.
 func TestMultipleExecStartPre(t *testing.T) {
 	unit := `[Service]
 ExecStartPre=/usr/bin/prepare-first
@@ -209,17 +208,15 @@ ExecStart=/usr/bin/main
 `
 	cfg := &SystemdConfig{svcType: "process", restart: "no"}
 	warns := parseSystemdUnit(cfg, unit)
-	if cfg.preStart != "/usr/bin/prepare-first" {
-		t.Errorf("preStart = %q, want the first ExecStartPre value", cfg.preStart)
+	if want := `/bin/sh -c "'/usr/bin/prepare-first' && '/usr/bin/prepare-second'"`; cfg.preStart != want {
+		t.Errorf("preStart = %q, want %q", cfg.preStart, want)
 	}
-	var multiWarned bool
+	var noted bool
 	for _, w := range warns {
-		if strings.Contains(w.Msg, "multiple ExecStartPre") {
-			multiWarned = true
-		}
+		noted = noted || strings.Contains(w.Msg, "2 ExecStartPre= lines run in turn")
 	}
-	if !multiWarned {
-		t.Errorf("expected WARN about multiple ExecStartPre")
+	if !noted {
+		t.Errorf("expected a NOTE about the folded ExecStartPre= lines: %v", warns)
 	}
 }
 
