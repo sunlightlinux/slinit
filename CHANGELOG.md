@@ -68,6 +68,13 @@ verified with `git tag -v`.
 
 ### Added
 
+- **`condition-capability = CAP_X`**, systemd's `ConditionCapability=`:
+  the capability is in slinit's own bounding set, as systemd checks the
+  manager's (a service needing CAP_SYS_ADMIN is skipped in a container
+  that took it away); a unit's line maps onto it (18 such lines here).
+  The `%v` specifier (the kernel release) is expanded in a unit, as in
+  `ConditionPathExists=/usr/lib/modules/%v/...`.
+
 - **Triggering conditions**, systemd's `|` prefix: `condition-X = |VALUE`
   makes a check of which at least one in its list must hold, besides
   every plain one; assertions likewise. A unit's triggering checks map

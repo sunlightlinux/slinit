@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // The [Unit] directives other than the dependencies: the Condition*= and
@@ -113,11 +115,21 @@ var sdConditionKinds = map[string]sdCondKind{
 	"ControlGroupController": {pred: "control-group-controller", conv: sdCondCgroupController},
 
 	// No slinit evaluator means the same thing.
-	"Capability":      {gap: "slinit has no check of its own capability bounding set"},
+	"Capability":      {pred: "capability", conv: sdCondCapability},
 	"PathIsEncrypted": {path: true, gap: "slinit has no check for a path on an encrypted block device"},
 	"MemoryPressure":  {gap: sdPSIGap},
 	"CPUPressure":     {gap: sdPSIGap},
 	"IOPressure":      {gap: sdPSIGap},
+}
+
+// sdCondCapability checks the name, as systemd's capability_from_name
+// refuses an unknown one.
+func sdCondCapability(v string, negate bool) ([]sdPred, []SystemdWarning, error) {
+	caps, err := process.ParseCapabilities(v)
+	if err != nil || len(caps) != 1 {
+		return nil, nil, fmt.Errorf("%q is not a capability name", v)
+	}
+	return []sdPred{{strings.ToUpper(v), negate}}, nil, nil
 }
 
 const sdPSIGap = "slinit's pressure checks hold when the 10s 'some' average is AT LEAST the value " +

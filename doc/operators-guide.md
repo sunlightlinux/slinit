@@ -131,7 +131,7 @@ the notes. The common ones:
   reported as warnings so you know the hardening is not there; so are
   the forms of the sandbox directives slinit cannot express (a `+` path,
   a `%` specifier other than `%%`, `%n`, `%N`, `%p`, `%i`, `%t`, `%S`,
-  `%C`, `%L` and `%E`, which are expanded).
+  `%C`, `%L`, `%E` and `%v`, which are expanded).
 - **An empty `CapabilityBoundingSet=`** cannot be expressed either, and
   refuses the unit: it would run with every capability. Remove the
   line, or write a native description, if that is acceptable.

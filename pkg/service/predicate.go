@@ -117,6 +117,12 @@ const (
 	// Predicate.Evaluate, because it needs the service set and
 	// Evaluate stays a pure function of the machine.
 	PredServiceStarted
+
+	// PredCapability holds when the named capability is in slinit's own
+	// bounding set, as systemd's ConditionCapability= checks the
+	// manager's: a service that needs CAP_SYS_ADMIN is skipped in a
+	// container that took it away.
+	PredCapability
 )
 
 // execConditionTimeout caps how long the pre-flight command may run
@@ -233,6 +239,8 @@ func (p Predicate) String() string {
 		name = "boot-cond"
 	case PredServiceStarted:
 		name = "service-started"
+	case PredCapability:
+		name = "capability"
 	case PredFileValue:
 		name = "file-value"
 	case PredExecCondition:
@@ -404,6 +412,8 @@ func evalRaw(ctx context.Context, p Predicate, prep func(*exec.Cmd)) (bool, stri
 		return checkBootCond(p.Param)
 	case PredFileValue:
 		return checkFileValue(p.Param)
+	case PredCapability:
+		return checkCapability(p.Param)
 	case PredServiceStarted:
 		// Unreachable in practice: CheckPredicates handles this kind
 		// before it gets here, because the answer lives in the service
@@ -663,6 +673,8 @@ func PredicateKindByName(name string) (PredicateKind, bool) {
 		return PredFileValue, true
 	case "service-started":
 		return PredServiceStarted, true
+	case "capability":
+		return PredCapability, true
 	}
 	return 0, false
 }

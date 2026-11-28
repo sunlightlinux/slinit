@@ -2948,6 +2948,11 @@ there.
 Recognised predicates (each has both a `condition-` and an `assert-`
 form):
 
+**\*-capability**=*CAP_NAME* (since 4.1.0)
+:   *CAP_NAME* is in slinit's own capability bounding set, as systemd's
+    **ConditionCapability=** checks the manager's. In a container that
+    took **CAP_SYS_ADMIN** away, a service that needs it is skipped.
+
 **\*-path-exists**=*path*
 :   *path* exists (any file type, symlinks followed).
 

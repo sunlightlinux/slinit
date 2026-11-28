@@ -134,8 +134,8 @@ func TestSystemdConditionPrefixesAndReset(t *testing.T) {
 		{name: "reset takes back a triggering condition",
 			lines: "ConditionPathExists=|/a\nConditionHost=\nConditionPathExists=|/b",
 			want:  []string{"condition-path-exists = /b"}},
-		{name: "a gap is unchecked, triggering or not", lines: "ConditionCapability=|CAP_SYS_ADMIN",
-			want: []string{}, warn: "WARN:bounding set"},
+		{name: "a gap is unchecked, triggering or not", lines: "ConditionPathIsEncrypted=|/x",
+			want: []string{}, warn: "WARN:encrypted"},
 		{name: "repeated assignments add up", lines: "ConditionPathExists=/a\nConditionPathExists=/b\nConditionPathIsDirectory=/c",
 			want: []string{"condition-path-exists = /a", "condition-path-exists = /b", "condition-path-is-directory = /c"}},
 		{name: "an empty condition empties every condition",
@@ -313,8 +313,10 @@ func TestSystemdConditionKinds(t *testing.T) {
 		{name: "executable", lines: "ConditionFileIsExecutable=/usr/bin/foo", want: []string{"condition-file-is-executable = /usr/bin/foo"}},
 
 		// Kinds slinit has no evaluator for, and three it gained in 4.1.
-		{name: "capability", lines: "ConditionCapability=CAP_SYS_ADMIN", warn: "WARN:bounding set"},
-		{name: "capability assert", lines: "AssertCapability=CAP_SYS_ADMIN", err: "bounding set"},
+		{name: "capability", lines: "ConditionCapability=CAP_SYS_ADMIN", want: []string{"condition-capability = CAP_SYS_ADMIN"}},
+		{name: "capability negated", lines: "ConditionCapability=!cap_net_admin", want: []string{"condition-capability = !CAP_NET_ADMIN"}},
+		{name: "capability assert", lines: "AssertCapability=CAP_SYS_ADMIN", want: []string{"assert-capability = CAP_SYS_ADMIN"}},
+		{name: "capability unknown", lines: "ConditionCapability=CAP_NOPE", warn: "WARN:not a capability name"},
 		{name: "needs update", lines: "ConditionNeedsUpdate=/etc", want: []string{"condition-needs-update = /etc"}},
 		{name: "needs update negated", lines: "ConditionNeedsUpdate=!/var", want: []string{"condition-needs-update = !/var"}},
 		{name: "needs update relative", lines: "ConditionNeedsUpdate=etc", warn: "WARN:must be absolute"},
@@ -486,5 +488,18 @@ func TestSDParseSize(t *testing.T) {
 		if _, err := ucParseSize(in); err == nil {
 			t.Errorf("ucParseSize(%q) accepted", in)
 		}
+	}
+}
+
+// %v is the running kernel's release, as uname -r prints it.
+func TestSpecifierKernelRelease(t *testing.T) {
+	rel := kernelRelease()
+	if rel == "" {
+		t.Skip("no uname")
+	}
+	cfg := &SystemdConfig{svcName: "s"}
+	got, warns := expandSpecifiers(cfg, "ConditionPathExists", "/usr/lib/modules/%v/sysctl.conf")
+	if got != "/usr/lib/modules/"+rel+"/sysctl.conf" || len(warns) != 0 {
+		t.Errorf("%q %v", got, warns)
 	}
 }

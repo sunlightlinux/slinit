@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"golang.org/x/sys/unix"
 )
 
@@ -293,4 +294,39 @@ func checkDirectoryNotEmpty(path string) (bool, string) {
 		return false, fmt.Sprintf("dir %q: %v", path, err)
 	}
 	return true, ""
+}
+
+// checkCapability answers condition-capability: is the capability in
+// slinit's bounding set (CapBnd in /proc/self/status)?
+func checkCapability(name string) (bool, string) {
+	caps, err := process.ParseCapabilities(name)
+	if err != nil || len(caps) != 1 {
+		return false, fmt.Sprintf("%q is not one capability name", name)
+	}
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return false, fmt.Sprintf("cannot read the bounding set: %v", err)
+	}
+	in, err := capInBoundingSet(string(b), caps[0])
+	if err != nil {
+		return false, err.Error()
+	}
+	if !in {
+		return false, fmt.Sprintf("%s is not in slinit's capability bounding set", strings.ToUpper(name))
+	}
+	return true, ""
+}
+
+// capInBoundingSet reads CapBnd from a /proc/PID/status text.
+func capInBoundingSet(status string, c uintptr) (bool, error) {
+	for _, line := range strings.Split(status, "\n") {
+		if v, ok := strings.CutPrefix(line, "CapBnd:"); ok {
+			mask, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64)
+			if err != nil {
+				return false, fmt.Errorf("bad CapBnd %q", v)
+			}
+			return c < 64 && mask&(1<<c) != 0, nil
+		}
+	}
+	return false, errors.New("no CapBnd in the status")
 }

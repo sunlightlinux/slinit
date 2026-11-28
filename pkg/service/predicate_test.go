@@ -3,6 +3,7 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -288,5 +289,29 @@ func TestCombineTriggeringPredicates(t *testing.T) {
 		if got, why := combinePredicates(tc.preds, res); got != tc.want {
 			t.Errorf("%s: %v (%s), want %v", tc.name, got, why, tc.want)
 		}
+	}
+}
+
+func TestConditionCapability(t *testing.T) {
+	status := "Name:\tx\nCapBnd:\t0000000000200000\n" // only bit 21, CAP_SYS_ADMIN
+	if in, err := capInBoundingSet(status, 21); err != nil || !in {
+		t.Errorf("bit 21: %v %v", in, err)
+	}
+	if in, _ := capInBoundingSet(status, 0); in {
+		t.Error("CAP_CHOWN reported in a set without it")
+	}
+	if _, err := capInBoundingSet("Name:\tx\n", 0); err == nil {
+		t.Error("a status without CapBnd answered")
+	}
+	// This process's own set: the answer and its negation disagree.
+	p := Predicate{Kind: PredCapability, Param: "CAP_CHOWN"}
+	ok, _ := p.Evaluate()
+	p.Negate = true
+	nok, _ := p.Evaluate()
+	if ok == nok {
+		t.Errorf("CAP_CHOWN %v, negated %v", ok, nok)
+	}
+	if ok, why := (Predicate{Kind: PredCapability, Param: "CAP_NOPE"}).Evaluate(); ok || !strings.Contains(why, "not one capability") {
+		t.Errorf("a bad name: %v %q", ok, why)
 	}
 }

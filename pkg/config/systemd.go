@@ -232,6 +232,10 @@ func expandSpecifiers(cfg *SystemdConfig, key, val string) (string, []SystemdWar
 			b.WriteString("/var/log")
 		case 'E':
 			b.WriteString("/etc")
+		case 'v':
+			// The kernel release, as uname -r prints it: the running
+			// kernel's, as systemd expands it when it loads the unit.
+			b.WriteString(kernelRelease())
 		default:
 			b.WriteByte('%')
 			b.WriteByte(c)
@@ -1248,6 +1252,15 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 		}
 	}
 	return warns
+}
+
+// kernelRelease is uname -r, for the %v specifier.
+func kernelRelease() string {
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		return ""
+	}
+	return unix.ByteSliceToString(u.Release[:])
 }
 
 // mapEnvironment maps an Environment= line onto environment: systemd's
