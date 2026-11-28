@@ -119,3 +119,60 @@ func TestCalendarPersistentCatchUp(t *testing.T) {
 		t.Errorf("the catch-up start was not recorded: %v %v", last, ok)
 	}
 }
+
+// Running the job again is not a restart: it is not counted as one;
+// and one a running service depends on is not run again (its stop
+// would wait for that service or take it down), the service keeping
+// its process.
+func TestCalendarRerunLeavesDependentsAlone(t *testing.T) {
+	set, _ := newTestSet()
+	runs := t.TempDir() + "/runs"
+	job := NewScriptedService(set, "job")
+	job.SetStartCommand([]string{"/bin/sh", "-c", "echo x >> " + runs})
+	set.AddService(job)
+	if err := job.Record().SetStartOnCalendar("*-*-* 03:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	dep := sleeper(set, "dep")
+	dep.Record().AddDep(job, DepRegular) // before either runs (-race)
+	set.StartService(job)                // explicitly: it stays up when dep stops
+	waitState(t, job, StateStarted, 3*time.Second)
+	set.StartService(dep)
+	defer set.StopService(dep)
+	defer set.StopService(job)
+	if got := waitState(t, dep, StateStarted, 3*time.Second); got != StateStarted {
+		t.Fatalf("dep %v", got)
+	}
+	pid := dep.PID()
+	if set.calendarFire(job) {
+		t.Error("calendarFire ran a job a running service depends on")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if dep.PID() != pid || dep.State() != StateStarted || job.State() != StateStarted {
+		t.Errorf("dep went from pid %d to %d (%v), job %v", pid, dep.PID(), dep.State(), job.State())
+	}
+	// With the dependent stopped it runs again, counted as no restart.
+	set.StopService(dep)
+	waitState(t, dep, StateStopped, 3*time.Second)
+	if st := job.State(); st != StateStarted {
+		t.Fatalf("job %v once dep stopped, want STARTED (the rerun path)", st)
+	}
+	if !set.calendarFire(job) {
+		t.Fatal("calendarFire ran nothing")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		b, _ := os.ReadFile(runs)
+		if strings.Count(string(b), "\n") >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the job did not run again: %q", b)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitState(t, job, StateStarted, 3*time.Second)
+	if n := job.Record().RestartCount(); n != 0 {
+		t.Errorf("the rerun was counted as %d restarts", n)
+	}
+}

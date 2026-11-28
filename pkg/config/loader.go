@@ -525,7 +525,8 @@ func activationChanged(svc service.Service, desc *ServiceDescription) bool {
 	path, trigger := svc.Record().StartOnPath()
 	return path != desc.StartOnPath || trigger != desc.StartOnPathTrigger ||
 		svc.Record().StartOnMount() != desc.StartOnMount ||
-		svc.Record().StartOnCalendarExpr() != desc.StartOnCalendar
+		svc.Record().StartOnCalendarExpr() != desc.StartOnCalendar ||
+		svc.Record().StartOnCalendarPersistent() != desc.StartOnCalendarPersistent
 }
 
 // cronTarget is a service type that can carry a cron task.

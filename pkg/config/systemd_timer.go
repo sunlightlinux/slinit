@@ -18,7 +18,8 @@ import (
 // (systemd_socket.go): OnCalendar= becomes start-on-calendar, and the
 // service gets manual = yes, so that being loaded as a dependency (from
 // an enable) starts nothing and the calendar alone runs it, as the
-// timer alone runs a timer-activated unit. What slinit's calendar does
+// timer alone runs a timer-activated unit; not when its [Install] has
+// it wanted by a target, as systemd then starts it at boot as well. What slinit's calendar does
 // not do (more than one OnCalendar=, Persistent=, RandomizedDelaySec=,
 // the monotonic OnBootSec=/OnUnitActiveSec= family) is reported.
 
@@ -100,7 +101,18 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 	if persistent {
 		cfg.setMapped("start-on-calendar-persistent", "yes")
 	}
+	if cfg.installed {
+		// Wanted by a target too: systemd starts it at boot as well as
+		// at the times, and so may slinit.
+		return append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+			"%s read: started at OnCalendar=%s (start-on-calendar), and at boot when enabled, as its [Install] asks", name, cals[0])})
+	}
+	// Nothing starts it but the timer, in systemd. manual = yes keeps
+	// it so when an enable, or a unit naming it, loads it; a hard
+	// dependency on it then waits for the calendar, where systemd would
+	// start it: said, since that is a unit's choice.
 	cfg.setMapped("manual", "yes")
 	return append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
-		"%s read: started at OnCalendar=%s (start-on-calendar), with manual = yes so the calendar alone starts it", name, cals[0])})
+		"%s read: started at OnCalendar=%s (start-on-calendar), with manual = yes so the calendar alone starts it "+
+			"(a service that depends on it does not start it; drop manual if one should)", name, cals[0])})
 }

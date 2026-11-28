@@ -135,6 +135,7 @@ type SystemdConfig struct {
 	socketUnits []string // Sockets=: the socket units to read (systemd_socket.go)
 	before      []string // before: X (ordering only)
 	aliases     []string // [Install] Alias= .service names, bare
+	installed   bool     // [Install] WantedBy=/RequiredBy=: started at boot in systemd
 	conditions  []condDir
 	comments    []string
 
@@ -1132,6 +1133,9 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 func applyInstallKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	switch key {
 	case "WantedBy", "RequiredBy":
+		if strings.TrimSpace(val) != "" {
+			cfg.installed = true
+		}
 		return []SystemdWarning{{"NOTE", fmt.Sprintf("[Install] %s=%s — on slinit, add to your boot service graph or run `slinitctl enable`", key, val)}}
 	case "Alias":
 		for _, a := range strings.Fields(val) {
@@ -1208,7 +1212,7 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 			// and for anything else the last is kept, so that an empty
 			// ExecStart= followed by a new one replaces it as in systemd.
 			// ExecStart= takes no "+" in slinit (priv is for the hooks).
-			cfg.commandAll = append(cfg.commandAll, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, value: value, argv0: c.cmd.hasArgv0})
+			cfg.commandAll = append(cfg.commandAll, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, value: value, argv0: c.cmd.hasArgv0, shellSet: refsShellSet(c.refs)})
 			cfg.command, cfg.argv0 = value, ""
 			if c.cmd.hasArgv0 {
 				if v, why, ok := slinitArgv0Value(c.cmd.argv0); ok {
@@ -1249,7 +1253,7 @@ func (cfg *SystemdConfig) applyExec(key, val string, preN, postN *int) []Systemd
 			if key == "ExecStartPost" {
 				all = &cfg.postStartAll
 			}
-			*all = append(*all, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, priv: priv, value: value, argv0: c.cmd.hasArgv0})
+			*all = append(*all, foldCmd{argv: c.cmd.argv, ignore: c.ignoreFailure, priv: priv, value: value, argv0: c.cmd.hasArgv0, shellSet: refsShellSet(c.refs)})
 			*n++
 			if *n > 1 {
 				// Folded into one shell command once the unit is read
@@ -1387,11 +1391,19 @@ func runtimeVars(refs []string) bool {
 		if r == "$MAINPID" || r == "${MAINPID}" {
 			return false
 		}
+	}
+	return len(refs) > 0 && !refsShellSet(refs)
+}
+
+// refsShellSet reports whether refs name a variable the shell sets
+// itself (shSetVars).
+func refsShellSet(refs []string) bool {
+	for _, r := range refs {
 		if shSetVars[strings.Trim(r, "${}")] {
-			return false
+			return true
 		}
 	}
-	return len(refs) > 0
+	return false
 }
 
 // loneVarRe matches a word that is one unbraced $VAR, nothing else.
@@ -1399,11 +1411,12 @@ var loneVarRe = regexp.MustCompile(`^\$[A-Za-z_][A-Za-z0-9_]*$`)
 
 // foldCmd is one ExecStartPre= / ExecStartPost= line.
 type foldCmd struct {
-	argv   []string // in slinit's $ syntax, as parseExecLine gives it
-	ignore bool     // the "-" prefix
-	priv   bool     // slinit's "+"
-	argv0  bool     // the "@" prefix: argv[0] other than the path
-	value  string   // the line as one slinit command, for a warning
+	argv     []string // in slinit's $ syntax, as parseExecLine gives it
+	ignore   bool     // the "-" prefix
+	priv     bool     // slinit's "+"
+	argv0    bool     // the "@" prefix: argv[0] other than the path
+	shellSet bool     // it names a variable the shell sets itself (shSetVars)
+	value    string   // the line as one slinit command, for a warning
 }
 
 // foldStartHooks gives several ExecStartPre= (or ExecStartPost=) lines
@@ -1418,10 +1431,23 @@ func foldStartHooks(key, setting string, all []foldCmd, cur *string, priv *bool)
 		return nil
 	}
 	for _, c := range all {
-		if c.argv0 {
+		if c.shellSet {
+			// The shell would read its own value, not the
+			// environment's; load-time expansion is one command's.
+			var dropped []string
+			for _, d := range all[1:] {
+				dropped = append(dropped, d.value)
+			}
 			return []SystemdWarning{{"WARN", fmt.Sprintf(
-				"multiple %s= — one sets argv[0] with \"@\", which a shell running them in turn cannot; "+
-					"slinit takes one %s (dropped: %q)", key, setting, c.value)}}
+				"multiple %s= — %q names a variable the shell sets itself, so they cannot run in turn from one "+
+					"shell; slinit takes one %s, keeping the first (dropped: %q)", key, c.value, setting, strings.Join(dropped, "; "))}}
+		}
+	}
+	var warns []SystemdWarning
+	for _, c := range all {
+		if c.argv0 {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"%s=%s: run in turn from one shell, the program gets its path as argv[0], not the name \"@\" gives", key, c.value)})
 		}
 	}
 	for _, c := range all[1:] {
@@ -1455,8 +1481,8 @@ func foldStartHooks(key, setting string, all []foldCmd, cur *string, priv *bool)
 		return []SystemdWarning{{"WARN", fmt.Sprintf("multiple %s= — an argument holds a newline; keeping the first", key)}}
 	}
 	*cur, *priv = v, all[0].priv
-	return []SystemdWarning{{"NOTE", fmt.Sprintf("%d %s= lines run in turn from one %s (a shell), as systemd runs them",
-		len(all), key, setting)}}
+	return append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%d %s= lines run in turn from one %s (a shell), as systemd runs them",
+		len(all), key, setting)})
 }
 
 // ignoreFailureArgv runs argv through a shell that turns any failure,

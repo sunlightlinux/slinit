@@ -655,4 +655,25 @@ func TestSystemdPrivateDevicesWithRootDirectory(t *testing.T) {
 	if desc.PrivateDevices || desc.Chroot != "/srv/jail" || !lcWarned(warns, "WARN", "PrivateDevices= with RootDirectory") {
 		t.Errorf("private-devices %v chroot %q warns %v", desc.PrivateDevices, desc.Chroot, warns)
 	}
+	// The capability half stays: no mknod, no raw I/O in the jail.
+	got := strings.ToLower(desc.CapabilityBoundingSet)
+	if got == "" || strings.Contains(got, "cap_mknod") || strings.Contains(got, "cap_sys_rawio") || !strings.Contains(got, "cap_net_admin") {
+		t.Errorf("bounding set %q", got)
+	}
+}
+
+// Folded hooks: a line with "@" is folded with the rest, losing only
+// its name; one naming a shell-set variable keeps the first line with
+// a warning saying so, not a fold reading the shell's own value.
+func TestSystemdFoldArgv0AndShellVars(t *testing.T) {
+	_, warns, desc := lcConvert(t, "ExecStart=/bin/x\nExecStartPre=/bin/a\nExecStartPre=/bin/b\nExecStartPre=@/bin/c cname")
+	got := strings.Join(desc.PreStartCommand, "|")
+	if !strings.Contains(got, "'/bin/a' && '/bin/b' && '/bin/c'") || !lcWarned(warns, "WARN", "not the name") {
+		t.Errorf("fold with @: %q %v", got, warns)
+	}
+	_, warns, desc = lcConvert(t, "ExecStart=/bin/x\nExecStartPre=/bin/a $PWD\nExecStartPre=/bin/b")
+	if strings.Join(desc.PreStartCommand, "|") == "" || strings.HasPrefix(desc.PreStartCommand[0], "/bin/sh") ||
+		!lcWarned(warns, "WARN", "shell sets itself") {
+		t.Errorf("fold with $PWD: %q %v", desc.PreStartCommand, warns)
+	}
 }

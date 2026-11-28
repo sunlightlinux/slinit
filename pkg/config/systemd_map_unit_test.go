@@ -133,6 +133,9 @@ func TestSystemdConditionPrefixesAndReset(t *testing.T) {
 			want: []string{}, warn: "WARN:another triggering"},
 		{name: "triggering, one mapping onto several checks", lines: "ConditionPathExists=|/nonexistent\nConditionKernelVersion=|>=1.0 <100.0",
 			want: []string{}, warn: "WARN:another triggering"},
+		// Alone it means all its checks, as systemd's lone triggering check.
+		{name: "triggering alone, several checks", lines: "ConditionKernelVersion=|>=1.0 <100.0",
+			want: []string{"condition-kernel-version = >=1.0", "condition-kernel-version = <100.0"}},
 		// One that always holds satisfies the list.
 		{name: "triggering, one always holds", lines: "ConditionPathExists=|/nonexistent\nConditionControlGroupController=|v2",
 			want: []string{}, warn: "NOTE:always holds"},

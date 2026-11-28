@@ -276,3 +276,14 @@ func TestSystemdTimerPersistent(t *testing.T) {
 		t.Error("Persistent=true not carried")
 	}
 }
+
+// A service its [Install] has wanted by a target is started at boot as
+// well in systemd: no manual = yes.
+func TestSystemdTimerInstalledServiceNotManual(t *testing.T) {
+	dir := t.TempDir()
+	writeUnit(t, dir, "foo.timer", "[Timer]\nOnCalendar=daily\n")
+	desc, warns := sockConvert(t, dir, sockSvc+"\n[Install]\nWantedBy=multi-user.target\n")
+	if desc.StartOnCalendar != "daily" || desc.ManualStart || !sockWarned(warns, "at boot when enabled") {
+		t.Errorf("calendar %q manual %v warns %v", desc.StartOnCalendar, desc.ManualStart, warns)
+	}
+}

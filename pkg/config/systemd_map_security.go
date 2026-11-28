@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"io"
 	"os"
 	"path/filepath"
@@ -627,10 +628,17 @@ func secFinish(cfg *SystemdConfig) []SystemdWarning {
 			// The same: slinit-runner builds the private /dev on the
 			// host's before the chroot, and the loader refuses the pair.
 			// The service sees the jail's /dev, which the jail decides.
+			// The capability half still applies, as systemd drops
+			// CAP_MKNOD and CAP_SYS_RAWIO either way: without it a root
+			// service could mknod a disk node in the jail and read it.
 			cfg.dropMapped("private-devices")
+			if !cfg.capBounding.set {
+				cfg.capBounding.set, cfg.capBounding.mask = true, allCaps
+			}
+			cfg.capBounding.mask &^= 1<<process.CapMknod | 1<<process.CapSysRawio
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("PrivateDevices= with RootDirectory=%s: slinit "+
-				"cannot build a private /dev inside a chroot, so the service sees the jail's own /dev; keep only "+
-				"the pseudo devices there", cfg.chroot)})
+				"cannot build a private /dev inside a chroot, so the service sees the jail's own /dev (keep only "+
+				"the pseudo devices there); CAP_MKNOD and CAP_SYS_RAWIO are still dropped", cfg.chroot)})
 		}
 	}
 	return warns

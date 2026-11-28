@@ -51,30 +51,51 @@ func (c *CalendarStarter) Add(svc Service) {
 	if spec == nil {
 		return
 	}
-	// start-on-calendar-persistent, systemd's Persistent=: a time the
-	// expression named since the last start, while slinit was not
-	// running, starts the service now. With no record of a last start
-	// nothing is caught up, as in systemd.
 	if svc.Record().startOnCalendarPersistent {
-		if last, ok := readStamp(calendarStampPath(name)); ok {
-			if missed := spec.NextAfter(last); !missed.IsZero() && missed.Before(c.now()) {
-				c.logger.Info("Service '%s': start-on-calendar catch-up (missed %v)", name, missed)
-				go func() {
-					if s := c.set.FindService(name, false); s != nil && !c.set.IsShuttingDown() {
-						c.set.calendarFire(s)
-						c.stamp(s)
-					}
-				}()
-			}
-		}
+		c.armCatchUpLocked(name, spec)
+		return
 	}
 	c.armLocked(name, spec)
 }
 
+// armCatchUpLocked is start-on-calendar-persistent, systemd's
+// Persistent=: a time the expression named since the last recorded
+// start, while slinit was not running, starts the service now; then the
+// calendar is armed as usual. The record is read when this timer fires,
+// not at load, and the timer is the service's one, so a second Add
+// (a reload) replaces it rather than catch up twice. With no record
+// nothing is caught up, as in systemd.
+func (c *CalendarStarter) armCatchUpLocked(name string, spec *CalendarSpec) {
+	var t *time.Timer
+	t = time.AfterFunc(0, func() {
+		c.mu.Lock()
+		if c.timers[name] != t {
+			c.mu.Unlock()
+			return
+		}
+		last, ok := readStamp(calendarStampPath(name))
+		missed := time.Time{}
+		if ok {
+			missed = spec.NextAfter(last)
+		}
+		c.armLocked(name, spec)
+		c.mu.Unlock()
+		if missed.IsZero() || !missed.Before(c.now()) {
+			return
+		}
+		c.logger.Info("Service '%s': start-on-calendar catch-up (missed %v)", name, missed)
+		if s := c.set.FindService(name, false); s != nil && c.set.calendarFire(s) {
+			c.stamp(s)
+		}
+	})
+	c.timers[name] = t
+}
+
 // calendarStampPath is where the last start of a persistent
-// start-on-calendar is kept, beside cron-persistent's records.
+// start-on-calendar is kept: a directory of its own under
+// cron-persistent's, whose records are named after services too.
 func calendarStampPath(name string) string {
-	return filepath.Join(cronPersistDir, "calendar."+strings.ReplaceAll(name, "/", "_"))
+	return filepath.Join(cronPersistDir, "calendar", strings.ReplaceAll(name, "/", "_"))
 }
 
 // stamp records now as s's last calendar start, when it is persistent.
@@ -134,12 +155,9 @@ func (c *CalendarStarter) armAfterLocked(name string, spec *CalendarSpec, fired 
 		c.armAfterLocked(name, spec, next)
 		c.mu.Unlock()
 		// By name: a reload that changed the type replaced the record.
-		s := c.set.FindService(name, false)
-		if s == nil || c.set.IsShuttingDown() {
-			return
+		if s := c.set.FindService(name, false); s != nil && c.set.calendarFire(s) {
+			c.stamp(s)
 		}
-		c.set.calendarFire(s)
-		c.stamp(s)
 	})
 	c.timers[name] = t
 }
@@ -160,12 +178,22 @@ func nextCalendarFire(spec *CalendarSpec, now, fired time.Time) time.Time {
 // to run the job again, as systemd runs a finished oneshot again; any
 // other running service is left alone, as a timer that elapses for an
 // active unit does nothing.
-func (ss *ServiceSet) calendarFire(s Service) {
+//
+// The job's run again is not a restart: it is not counted as one, nor
+// cascades to what is part of it (rerunJob); and a job a running
+// service depends on (hard) is not run again, since its stop would
+// wait for that service or take it down, where starting a finished
+// oneshot leaves the units after it alone in systemd. Reports whether
+// it started or ran anything.
+func (ss *ServiceSet) calendarFire(s Service) bool {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
 	r := s.Record()
-	if r.startOnCalendar == nil { // cleared by a reload meanwhile
-		return
+	if r.startOnCalendar == nil || ss.IsShuttingDown() {
+		// Cleared by a reload meanwhile; or a shutdown, checked under
+		// queueMu as StartServiceUnlessShuttingDown does, so it cannot
+		// begin between the check and the start.
+		return false
 	}
 	_, scripted := s.(*ScriptedService)
 	switch st := r.state.Load(); {
@@ -173,10 +201,26 @@ func (ss *ServiceSet) calendarFire(s Service) {
 		ss.logger.Info("Service '%s': start-on-calendar fired", s.Name())
 		s.Start()
 	case st == StateStarted && scripted:
+		if r.IsStartPinned() {
+			ss.logger.Info("Service '%s': start-on-calendar fired; pinned started, so the job is not run again", s.Name())
+			return false
+		}
+		for _, d := range r.dependents {
+			if d.IsHard() && d.From.State() != StateStopped {
+				// Its stop would wait for that service to stop, or
+				// take it down: neither is what a timer does to the
+				// units after a oneshot.
+				ss.logger.Info("Service '%s': start-on-calendar fired; '%s' depends on it and is up, so the job is not run again",
+					s.Name(), d.From.Name())
+				return false
+			}
+		}
 		ss.logger.Info("Service '%s': start-on-calendar fired; running the job again", s.Name())
+		r.rerunJob = true
 		r.Restart()
 	default:
-		return
+		return false
 	}
 	ss.processQueuesLocked()
+	return true
 }

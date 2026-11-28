@@ -285,6 +285,11 @@ type ServiceRecord struct {
 	// startOnCalendarPersistent: catch up a time missed while slinit
 	// was down (calendarstart.go).
 	startOnCalendarPersistent bool
+	// rerunJob marks the stop of a scripted job the calendar runs
+	// again: not a restart, so its dependents, the services part of it
+	// and its prepared-by dependencies are left alone, and it is not
+	// counted as one (calendarFire).
+	rerunJob bool
 	// onFailureStarts: when on-failure last started this service, for
 	// its start limit (onfailure.go).
 	onFailureStarts []time.Time
@@ -1690,6 +1695,9 @@ func (sr *ServiceRecord) StartOnCalendar() *CalendarSpec { return sr.startOnCale
 
 // SetStartOnCalendarPersistent sets start-on-calendar-persistent.
 func (sr *ServiceRecord) SetStartOnCalendarPersistent(on bool) { sr.startOnCalendarPersistent = on }
+
+// StartOnCalendarPersistent reports start-on-calendar-persistent.
+func (sr *ServiceRecord) StartOnCalendarPersistent() bool { return sr.startOnCalendarPersistent }
 
 // StartOnCalendarExpr returns the expression as written.
 func (sr *ServiceRecord) StartOnCalendarExpr() string { return sr.startOnCalendarExpr }
@@ -4007,7 +4015,9 @@ func (sr *ServiceRecord) Stopped() {
 	// restart-delay, so one ordered after: this service does not come
 	// up while it still waits out the delay. RestartMode=direct keeps
 	// them up, as it keeps dependents up.
-	if (willRestart || sr.restarting) && sr.restartMode != RestartModeDirect {
+	rerun := sr.rerunJob
+	sr.rerunJob = false
+	if (willRestart || sr.restarting) && sr.restartMode != RestartModeDirect && !rerun {
 		sr.partOfRestartOnStart = true
 	}
 	sr.restarting = false
@@ -4045,8 +4055,10 @@ func (sr *ServiceRecord) Stopped() {
 	if willRestart {
 		// Record this as a supervisor-driven restart for heartbeat /
 		// health-signal accounting. First-boot BringUp does not count.
-		sr.restarts.Add(1)
-		sr.services.NoteRestart()
+		if !rerun {
+			sr.restarts.Add(1)
+			sr.services.NoteRestart()
+		}
 
 		// Restart any PREPARED_BY dependencies first. They are hard deps
 		// (IsHard returns true), so startCheckDependencies in initiateStart
@@ -4058,7 +4070,7 @@ func (sr *ServiceRecord) Stopped() {
 		// the fresh run: restarting it again killed that run
 		// part-way, and spawned once more past the restart limit.
 		for _, dep := range sr.dependsOn {
-			if dep.DepType == DepPreparedBy && dep.To.Record().startGen.Load() == dep.toStartGen {
+			if !rerun && dep.DepType == DepPreparedBy && dep.To.Record().startGen.Load() == dep.toStartGen {
 				dep.To.Record().Restart()
 			}
 		}
@@ -4068,7 +4080,7 @@ func (sr *ServiceRecord) Stopped() {
 		// bail out here so the two paths don't race. Services without
 		// restart-delay semantics (default ServiceRecord) return false
 		// and the immediate initiateStart runs as before.
-		if sr.self.ScheduleRestartWithBackoff() {
+		if !rerun && sr.self.ScheduleRestartWithBackoff() {
 			sr.restartPending = true
 		} else {
 			sr.initiateStart()
@@ -4260,7 +4272,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 	// systemd RestartMode=direct: keep dependents up through this
 	// service's restart cycle. `withRestart` still gates the parent
 	// itself, only the cascade to dependents is suppressed.
-	restartDeps := withRestart && sr.restartMode != RestartModeDirect
+	restartDeps := withRestart && sr.restartMode != RestartModeDirect && !sr.rerunJob
 
 	if !withRestart {
 		// upstart-style `normal exit`: codes / signals the operator

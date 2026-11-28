@@ -22,10 +22,11 @@ bnd=$(echo "$out" | awk '/CapBnd/ {print $2}')
 # finds an empty directory, not the host's devices.
 cat > /etc/slinit.d/test-339-umount <<'SVC'
 type = scripted
-command = /bin/sh -c "umount -l /dev 2>/dev/null; ls /dev > /run/test-339-umount.ls"
+command = /bin/sh -c "umount -l /dev 2>/dev/null; { ls /dev; echo ls-done; } > /run/test-339-umount.ls"
 private-devices = yes
 SVC
 slinitctl --system start test-339-umount >/dev/null 2>&1
+assert_contains "$(cat /run/test-339-umount.ls 2>/dev/null)" "ls-done" "the umount check ran"
 assert_not_contains "$(cat /run/test-339-umount.ls 2>/dev/null)" "kmsg" "unmounting the private /dev does not bring the host's back"
 _TESTS_RUN=$((_TESTS_RUN + 1))
 # CAP_MKNOD is bit 27.

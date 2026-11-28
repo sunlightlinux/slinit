@@ -341,7 +341,9 @@ func sdFinishTriggers(cfg *SystemdConfig) []SystemdWarning {
 			switch {
 			case err != nil:
 				bad, badWhy = tr, err.Error()
-			case len(preds) > 1:
+			case len(preds) > 1 && len(list) > 1:
+				// Alone, the checks all hold together, as systemd's
+				// lone triggering check means.
 				bad, badWhy = tr, "it maps onto several slinit checks"
 			case len(preds) == 0:
 				always = true
@@ -356,7 +358,7 @@ func sdFinishTriggers(cfg *SystemdConfig) []SystemdWarning {
 				warns = append(warns, cfg.conditionUnchecked(tr.key, tr.val, assert, tr.unchecked)...)
 			case tr.k.gap != "":
 				warns = append(warns, cfg.conditionUnchecked(tr.key, tr.val, assert, tr.k.gap)...)
-			case bad != nil && &tr != bad && (tr.key != bad.key || tr.val != bad.val):
+			case bad != nil && (tr.key != bad.key || tr.val != bad.val):
 				warns = append(warns, cfg.conditionUnchecked(tr.key, tr.val, assert, fmt.Sprintf(
 					"another triggering (|) check of the unit, %s=%s, cannot be checked, and without it "+
 						"\"at least one of them\" would be stricter than systemd's", bad.key, bad.val))...)
