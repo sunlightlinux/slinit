@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`slinit-logind` left an empty cgroup behind at every logout**:
+  `ReleaseSession` comes from inside the session (pam_slinit.so and
+  pam_elogind.so call it from the session's leader), so the scope's
+  rmdir failed with EBUSY and nothing tried again, though a comment
+  promised a reaper. Each console, ssh or display-manager logout leaked
+  one `/sys/fs/cgroup/c<N>`, and so did `TerminateSession`, whose
+  SIGKILL lands asynchronously. A scope still in use is now watched
+  through its `cgroup.events` and removed once it has emptied, with any
+  child cgroups a session process made (systemd keeps an abandoned scope
+  the same way, until it is empty). At startup the scopes of sessions
+  that no longer exist are removed, which clears what earlier versions
+  left. Present in 4.0.x and 4.1.0.
+
 ## [4.1.0] — 2026-11-28
 
 **The first feature release after the 4.0 long-term-support line.** Most

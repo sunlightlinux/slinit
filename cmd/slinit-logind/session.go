@@ -551,9 +551,9 @@ func (m *manager) CreateSession(
 }
 
 // ReleaseSession is the pam_close_session hook. Tear down the JSON
-// record + fifo + cgroup scope (best-effort — a leftover PID keeps
-// the scope alive on the kernel side, we'll get rmdir=EBUSY and
-// leave it for the reaper).
+// record + fifo + cgroup scope. The scope usually still holds the
+// caller, the session's leader, and is removed once it has emptied
+// (scopereaper.go).
 // ReleaseSession is for the session itself (pam_slinit at logout, from
 // inside it) or root. systemd-logind refuses any other caller with the
 // same error.
@@ -598,9 +598,7 @@ func (m *manager) releaseSession(id string) *dbus.Error {
 	_ = os.Remove(sessionFile(id))
 	_ = os.Remove(fifoPath(id)) // left by a slinit-logind before 3.16
 	_ = os.Remove(compatSessionFile(id))
-	if scopeUnderCgroupFS(rec.Scope) {
-		_ = os.Remove(rec.Scope) // rmdir; EBUSY tolerated
-	}
+	m.removeScope(rec.Scope) // now, or once its last process has gone
 	// Drop the per-Session D-Bus object + fire SessionRemoved.
 	if m.conn != nil {
 		m.unregisterSessionObject(id)
@@ -1203,7 +1201,7 @@ func (m *manager) terminateSession(id string) *dbus.Error {
 			_ = killPID(pid, int32(unix.SIGHUP))
 		}
 		scope, procs := rec.Scope, scopeProcs
-		time.AfterFunc(terminateGrace, func() { killScope(scope, procs) })
+		time.AfterFunc(terminateGrace, func() { killScope(scope, procs, m.removeScope) })
 	}
 	return m.releaseSession(id)
 }
@@ -1215,7 +1213,11 @@ func (m *manager) terminateSession(id string) *dbus.Error {
 // at SIGTERM time may since have been handed to another process. The
 // scope is opened without O_CREAT so a scope that has gone away is not
 // recreated as a plain file.
-func killScope(scope string, procs func(string) []int) {
+//
+// The kill is delivered asynchronously, so the scope is removed by
+// remove once it has emptied rather than rmdir'd at once, which used to
+// fail with EBUSY and leave it for good.
+func killScope(scope string, procs func(string) []int, remove func(string)) {
 	f, err := os.OpenFile(scope+"/cgroup.kill", os.O_WRONLY, 0)
 	if err == nil {
 		_, err = f.WriteString("1")
@@ -1226,7 +1228,7 @@ func killScope(scope string, procs func(string) []int) {
 			_ = killPID(pid, int32(unix.SIGKILL))
 		}
 	}
-	_ = os.Remove(scope) // rmdir; EBUSY tolerated, as in releaseSession
+	remove(scope)
 }
 
 // TerminateUser tears down every session owned by the uid then drops

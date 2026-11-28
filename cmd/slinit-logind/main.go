@@ -125,6 +125,11 @@ type manager struct {
 	leaderMu      sync.Mutex
 	leaderWatches map[string]*os.File
 
+	// scopes removes the cgroup scopes of ended sessions once they
+	// have emptied (scopereaper.go); made on first use.
+	scopeOnce sync.Once
+	scopes    *scopeReaper
+
 	// Manager.WallMessage / EnableWallMessages are writable properties
 	// (see managerprops.go). We store what a client sets so the value
 	// round-trips through `loginctl` the way it does under elogind;
@@ -1011,6 +1016,8 @@ func main() {
 	// belongs to a leader that is already gone, and watch the leaders
 	// that are still alive.
 	m.reapDeadSessions()
+	// And the scopes of sessions that are already gone.
+	m.sweepOrphanScopes()
 	// Ensure the always-on seat0 object exists so `loginctl seat-status`
 	// works out of the box.
 	m.ensureSeat("seat0")
