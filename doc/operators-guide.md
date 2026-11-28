@@ -156,13 +156,17 @@ How the relations between units carry over:
 | `OnFailure=` | `on-failure:` | started when this one ends failed, no restart to come |
 | `Upholds=` | `upholds:` | the other is kept started while this one is up |
 | `foo.socket` | `socket-listen` | read with `foo.service`; `Accept=yes` with `foo@.service` is `socket-accept` |
+| `foo.timer` | `start-on-calendar` | read with `foo.service`; `OnCalendar=`, `Persistent=`; `manual = yes` unless `[Install]` wants it at boot |
 
 `part-of`, `conflicts`, `on-failure` and `upholds` link by name and add
 no dependency: the other service need not be installed, and
 `slinit-check` warns about a name that resolves to nothing.
 
 Directives that *do* carry over include the `Protect*` / `Restrict*`
-cluster, `PrivateTmp`, `PrivateDevices`, `ReadOnlyPaths` and the other sandbox paths,
+cluster, `PrivateTmp`, `PrivateDevices`, `DeviceAllow`/`DevicePolicy`
+and `IPAddressAllow`/`IPAddressDeny` (the same eBPF filters on the
+service's cgroup, so the unit gets `slice = system.slice` if it named
+none), `ReadOnlyPaths` and the other sandbox paths,
 `ProtectProc`, `PrivateNetwork`, `CapabilityBoundingSet`,
 `AmbientCapabilities`, `SystemCallFilter`, `RuntimeDirectory` and its
 siblings, `Nice`, `OOMScoreAdjust`, `User`/`Group`, `Environment`, `EnvironmentFile`,

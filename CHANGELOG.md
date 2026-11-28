@@ -118,7 +118,10 @@ verified with `git tag -v`.
   timer-activated unit. One expression is kept; `Persistent=` is
   `start-on-calendar-persistent` (a time missed while down is caught up
   at once, the last start recorded beside cron-persistent's);
-  RandomizedDelaySec= and the monotonic OnBootSec= family are reported.
+  the timer's Condition*= / Assert*= become the service's when only the
+  calendar starts it (fstrim.timer: ConditionVirtualization=!container),
+  the same check twice kept once; RandomizedDelaySec= and the monotonic
+  OnBootSec= family are reported.
 
 - **`condition-capability = CAP_X`**, systemd's `ConditionCapability=`:
   the capability is in slinit's own bounding set, as systemd checks the

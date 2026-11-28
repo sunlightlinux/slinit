@@ -287,3 +287,33 @@ func TestSystemdTimerInstalledServiceNotManual(t *testing.T) {
 		t.Errorf("calendar %q manual %v warns %v", desc.StartOnCalendar, desc.ManualStart, warns)
 	}
 }
+
+// The timer's conditions become the service's when only the calendar
+// starts it (fstrim.timer: ConditionVirtualization=!container).
+func TestSystemdTimerConditions(t *testing.T) {
+	dir := t.TempDir()
+	writeUnit(t, dir, "foo.timer", "[Unit]\nConditionVirtualization=!container\nConditionPathExists=|/x\n[Timer]\nOnCalendar=weekly\n")
+	desc, warns := sockConvert(t, dir, "[Unit]\nConditionPathExists=/etc/foo\nConditionVirtualization=!container\n"+sockSvc)
+	got := predParams(desc)
+	if n := strings.Count(got, "container"); n != 1 {
+		t.Errorf("the check the timer and the service share is there %d times: %q", n, got)
+	}
+	if !strings.Contains(got, "container") || !strings.Contains(got, "/etc/foo") || strings.Contains(got, "/x") ||
+		!sockWarned(warns, "triggering") {
+		t.Errorf("conditions %q warns %v", got, warns)
+	}
+	dir = t.TempDir()
+	writeUnit(t, dir, "foo.timer", "[Unit]\nConditionVirtualization=!container\n[Timer]\nOnCalendar=weekly\n")
+	desc, warns = sockConvert(t, dir, sockSvc+"\n[Install]\nWantedBy=multi-user.target\n")
+	if strings.Contains(predParams(desc), "container") || !sockWarned(warns, "also starts at boot") {
+		t.Errorf("installed: conditions %q warns %v", predParams(desc), warns)
+	}
+}
+
+func predParams(d *ServiceDescription) string {
+	var s []string
+	for _, p := range d.Predicates {
+		s = append(s, p.Param)
+	}
+	return strings.Join(s, "|")
+}

@@ -624,8 +624,13 @@ A service's timer unit is read with it too (since 4.1.0): *foo.timer*'s
 **OnCalendar=** becomes the service's **start-on-calendar**, with
 **manual** = *yes*, so that being loaded starts nothing and the
 calendar alone runs it (a oneshot finished since the last time is run
-again). One expression is kept; **Persistent=**, **RandomizedDelaySec=**
-and the monotonic **OnBootSec=** family are reported, not carried.
+again). One expression is kept; **Persistent=** is
+**start-on-calendar-persistent**; the timer's **Condition\*=** and
+**Assert\*=** become the service's when only the calendar starts it
+(*fstrim.timer*'s *ConditionVirtualization=!container*); a service its
+**[Install]** has wanted by a target does not get **manual**.
+**RandomizedDelaySec=** and the monotonic **OnBootSec=** family are
+reported, not carried.
 
 A service's socket unit is read with it, though (since 4.1.0):
 *foo.socket*, or the units its **Sockets=** names, with their

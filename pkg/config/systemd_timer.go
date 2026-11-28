@@ -42,6 +42,7 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 		return nil
 	}
 	var cals []string
+	var conds [][2]string // the timer's [Unit] Condition*= / Assert*=
 	var warns []SystemdWarning
 	persistent := false
 	for _, f := range append([]string{path}, systemdDropins(unitDirs, name)...) {
@@ -60,6 +61,10 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 				continue
 			}
 			m := kvRe.FindStringSubmatch(line)
+			if m != nil && section == "Unit" && (strings.HasPrefix(m[1], "Condition") || strings.HasPrefix(m[1], "Assert")) {
+				conds = append(conds, [2]string{m[1], strings.TrimSpace(m[2])})
+				continue
+			}
 			if m == nil || section != "Timer" {
 				continue
 			}
@@ -104,6 +109,10 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 	if cfg.installed {
 		// Wanted by a target too: systemd starts it at boot as well as
 		// at the times, and so may slinit.
+		for _, c := range conds {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"%s: %s=%s not carried: it gates the timer, and this service also starts at boot", name, c[0], c[1])})
+		}
 		return append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
 			"%s read: started at OnCalendar=%s (start-on-calendar), and at boot when enabled, as its [Install] asks", name, cals[0])})
 	}
@@ -112,6 +121,20 @@ func applySystemdTimer(cfg *SystemdConfig, unitDirs []string) []SystemdWarning {
 	// dependency on it then waits for the calendar, where systemd would
 	// start it: said, since that is a unit's choice.
 	cfg.setMapped("manual", "yes")
+	// The timer's conditions gate the only thing that starts it, so they
+	// become the service's, ANDed with its own (fstrim.timer:
+	// ConditionVirtualization=!container). Not an empty one, which would
+	// reset the service's own list, nor a triggering one, whose "one of"
+	// would join the service's.
+	for _, c := range conds {
+		v := strings.TrimSpace(trimQuotes(c[1]))
+		if v == "" || strings.HasPrefix(v, "|") {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"%s: %s=%s not carried to the service: an empty or triggering (|) check of the timer cannot join the service's own", name, c[0], c[1])})
+			continue
+		}
+		warns = append(warns, applyUnitKey(cfg, c[0], c[1])...)
+	}
 	return append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
 		"%s read: started at OnCalendar=%s (start-on-calendar), with manual = yes so the calendar alone starts it "+
 			"(a service that depends on it does not start it; drop manual if one should)", name, cals[0])})

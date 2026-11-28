@@ -7,6 +7,7 @@ import (
 	"math/bits"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -277,7 +278,11 @@ func (cfg *SystemdConfig) emitCondition(key, val string, k sdCondKind, assert bo
 		if trigger {
 			param = "|" + param
 		}
-		cfg.conditions = append(cfg.conditions, condDir{prefix + k.pred, param})
+		// The same check twice is the same check, ANDed or ORed: once
+		// is enough (a timer's condition the service has too).
+		if !slices.Contains(cfg.conditions, condDir{prefix + k.pred, param}) {
+			cfg.conditions = append(cfg.conditions, condDir{prefix + k.pred, param})
+		}
 	}
 	return warns
 }
