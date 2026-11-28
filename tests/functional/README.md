@@ -268,7 +268,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 128 | cache-directory | `cache-directory` + `cache-directory-mode` (0710, not the 0755 default) at `/var/cache/<svc>` |
 | 129 | runtime-directory-preserve | `runtime-directory-preserve = yes` keeps `/run/<svc>/…` after stop |
 | 130 | namespace-cgroup | `namespace-cgroup = yes` puts the service in its own cgroup ns |
-| 131 | reboot-argument | nested `slinit --user`: the success action is handed `reboot-argument = recovery` (logged) and the daemon exits |
+| 131 | reboot-argument | nested `slinit --user`: a `success-action = reboot` is handed `reboot-argument = recovery` (logged for RESTART2) and the daemon exits without rebooting |
 | 132 | socket-permissions | `socket-permissions = 0640` sets the listener socket mode |
 | 133 | slinit-init-maker | `-dry-run` doesn't touch disk; real generation writes boot/system-init/getty-tty[N]/README; `-force` overwrites; slinit-check accepts the generated tree |
 | 134 | slinit-seedrng | fresh run writes seed.credit or seed.no-credit under `-seed-dir`; `-skip-credit` accepted; second run rotates the seed (sha256 changes) |
