@@ -43,8 +43,9 @@ exist, but as directives on the service itself — socket activation,
 `start-on-calendar` (a timer's `OnCalendar=`: the service is started at
 those times, with its own sandbox) and the `cron-*` family (a command
 run beside a service), path activation. One file per service, always.
-(A systemd unit's own `foo.socket` is read with `foo.service`, and
-becomes its `socket-listen`; see below.)
+(A systemd unit's own `foo.socket` and `foo.timer` are read with
+`foo.service`, and become its `socket-listen` and `start-on-calendar`;
+see below.)
 
 **5. A service can be running without being "enabled".** slinit
 distinguishes *marked active* (something or someone asked for it
@@ -99,8 +100,9 @@ slinitctl start nginx          # finds /etc/systemd/system/nginx.service
 
 Both spellings work: `nginx` and `nginx.service`. A native description in
 `/etc/slinit.d` always wins, so migrating one service at a time is safe.
-Only `.service` loads; timers and targets are not units slinit pretends
-to understand. A service's socket unit (`nginx.socket`, or what its
+Only `.service` loads; targets are not units slinit pretends to
+understand. A service's timer unit (`fstrim.timer`) is read with it and
+becomes its `start-on-calendar`. A service's socket unit (`nginx.socket`, or what its
 `Sockets=` names) is read with it: its listeners become `socket-listen`,
 so a daemon expecting to be handed its sockets gets them. Drop-ins
 (`nginx.service.d/*.conf`) apply as in systemd. A daemon using

@@ -620,6 +620,13 @@ facilities — **cron=**, path-activation directives, the boot service
 graph — and translating them mechanically would produce a service
 that starts and does the wrong thing.
 
+A service's timer unit is read with it too (since 4.1.0): *foo.timer*'s
+**OnCalendar=** becomes the service's **start-on-calendar**, with
+**manual** = *yes*, so that being loaded starts nothing and the
+calendar alone runs it (a oneshot finished since the last time is run
+again). One expression is kept; **Persistent=**, **RandomizedDelaySec=**
+and the monotonic **OnBootSec=** family are reported, not carried.
+
 A service's socket unit is read with it, though (since 4.1.0):
 *foo.socket*, or the units its **Sockets=** names, with their
 drop-ins, from the unit's directory or the unit directories. Its

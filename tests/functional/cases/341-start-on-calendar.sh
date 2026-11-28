@@ -32,4 +32,18 @@ sleep 2
 m2=$(wc -l < /run/test-341.runs 2>/dev/null || echo 0)
 assert_eq "$m2" "$m" "a reload that drops start-on-calendar disarms it"
 
+# A systemd unit's .timer is read with it: OnCalendar= is its
+# start-on-calendar, with manual = yes.
+rm -f /run/test-341-unit.runs
+slinitctl --system status test-341-unit >/dev/null 2>&1
+sleep 4
+n=$(wc -l < /run/test-341-unit.runs 2>/dev/null || echo 0)
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ "${n:-0}" -ge 2 ]; then
+    echo "OK: the unit's timer ran it $n times in 4s"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: the unit ran ${n:-0} times in 4s from its .timer, want at least 2"
+fi
+
 test_summary

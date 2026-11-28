@@ -470,7 +470,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 338 | reload-command | `slinitctl reload-signal` runs a `reload-command` with `$MAINPID` the service's main pid, fails when it fails, and runs a systemd unit's `ExecReload=` command (fails with the command not run) |
 | 339 | private-devices | a `private-devices` service has /dev/null and the pseudo devices, no /dev/kmsg, and CAP_MKNOD out of its bounding set (fails with the runner flag not passed) |
 | 340 | unit-env-at-run-time | a systemd unit's `ExecStart=` gets `$OPTS` from its `EnvironmentFile=` split into words, `${X}` from `Environment=` as one argument, and `Environment=`'s variables in its environment (fails before 4.1's run-time expansion: `[][inline]`) |
-| 341 | start-on-calendar | a oneshot job with `start-on-calendar` every second and `manual = yes`, only loaded, is run by the calendar more than once in 4s; a reload dropping the setting disarms it (fails with the loaded hook not arming it) |
+| 341 | start-on-calendar | a oneshot job with `start-on-calendar` every second and `manual = yes`, only loaded, is run by the calendar more than once in 4s; a reload dropping the setting disarms it; a systemd oneshot unit with a `.timer` (`OnCalendar=` every second) is run by it likewise (fails with the loaded hook not arming it) |
 
 ## How It Works
 

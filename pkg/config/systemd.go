@@ -17,8 +17,9 @@
 // systemd abstractions that land on different slinit facilities
 // (cron=, path activation directives, the boot graph), and mechanical
 // translation would produce something that looks right and behaves
-// wrong. A service's own socket unit is the exception: it is read with
-// the service and becomes its socket-listen (systemd_socket.go).
+// wrong. A service's own socket and timer units are the exception: they
+// are read with the service and become its socket-listen
+// (systemd_socket.go) and start-on-calendar (systemd_timer.go).
 package config
 
 import (
@@ -338,6 +339,9 @@ func convertSystemdUnit(abs, name string, unitDirs []string, accept bool) (*Syst
 
 	warns := parseSystemdUnit(cfg, string(data), dropins...)
 	warns = append(warns, applySystemdSockets(cfg, unitDirs)...)
+	if !accept {
+		warns = append(warns, applySystemdTimer(cfg, unitDirs)...)
+	}
 	if len(applied) > 0 {
 		warns = append(warns, SystemdWarning{"NOTE", "drop-ins applied: " + strings.Join(applied, " ")})
 		cfg.comments = append(cfg.comments, "With drop-ins: "+strings.Join(applied, " "))

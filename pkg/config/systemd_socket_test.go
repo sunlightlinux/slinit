@@ -224,3 +224,46 @@ func TestReloadCommandTypes(t *testing.T) {
 		t.Errorf("oneshot ExecReload=: %v", warns)
 	}
 }
+
+func TestSystemdTimerRead(t *testing.T) {
+	for _, tc := range []struct {
+		name, timer, dropin string
+		cal                 string
+		manual              bool
+		warn                string
+	}{
+		{name: "daily", timer: "[Timer]\nOnCalendar=daily\nPersistent=true\n", cal: "daily", manual: true, warn: "Persistent=true not carried"},
+		{name: "drop-in resets and sets", timer: "[Timer]\nOnCalendar=daily\n", dropin: "[Timer]\nOnCalendar=\nOnCalendar=Mon 04:00\n", cal: "Mon 04:00", manual: true},
+		{name: "two expressions", timer: "[Timer]\nOnCalendar=daily\nOnCalendar=weekly\n", cal: "daily", manual: true, warn: "takes one expression"},
+		{name: "monotonic only", timer: "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\n", warn: "calendar times only"},
+		{name: "for another unit", timer: "[Timer]\nOnCalendar=daily\nUnit=other.service\n", warn: "not this service"},
+		{name: "bad expression", timer: "[Timer]\nOnCalendar=Funday\n", warn: "no calendar expression"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeUnit(t, dir, "foo.timer", tc.timer)
+			if tc.dropin != "" {
+				os.MkdirAll(filepath.Join(dir, "foo.timer.d"), 0o755)
+				os.WriteFile(filepath.Join(dir, "foo.timer.d", "x.conf"), []byte(tc.dropin), 0o644)
+			}
+			desc, warns := sockConvert(t, dir, sockSvc)
+			if desc.StartOnCalendar != tc.cal || desc.ManualStart != tc.manual {
+				t.Errorf("start-on-calendar %q manual %v, want %q %v", desc.StartOnCalendar, desc.ManualStart, tc.cal, tc.manual)
+			}
+			if tc.warn != "" && !sockWarned(warns, tc.warn) {
+				t.Errorf("no warning containing %q: %v", tc.warn, warns)
+			}
+		})
+	}
+	// A masked timer is not read.
+	root := t.TempDir()
+	etc, lib := filepath.Join(root, "etc"), filepath.Join(root, "lib")
+	writeUnit(t, lib, "foo.timer", "[Timer]\nOnCalendar=daily\n")
+	os.MkdirAll(etc, 0o755)
+	os.Symlink("/dev/null", filepath.Join(etc, "foo.timer"))
+	p := writeUnit(t, lib, "foo.service", sockSvc)
+	d, err := SystemdUnitToServiceDescription(p, "foo", etc, lib)
+	if err != nil || d.StartOnCalendar != "" {
+		t.Errorf("masked timer read: %q %v", d.StartOnCalendar, err)
+	}
+}

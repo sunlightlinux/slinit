@@ -89,6 +89,12 @@ verified with `git tag -v`.
 
 ### Added
 
+- **A service's `.timer` unit is read with it**: `foo.timer`'s
+  `OnCalendar=` becomes `foo`'s `start-on-calendar`, with `manual = yes`
+  so the calendar alone runs it, as the timer alone runs a
+  timer-activated unit. One expression is kept; Persistent=,
+  RandomizedDelaySec= and the monotonic OnBootSec= family are reported.
+
 - **`condition-capability = CAP_X`**, systemd's `ConditionCapability=`:
   the capability is in slinit's own bounding set, as systemd checks the
   manager's (a service needing CAP_SYS_ADMIN is skipped in a container
