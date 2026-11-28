@@ -39,10 +39,12 @@ directive naming the signal to send.
 without starting anything, that is not what `enable` does.
 
 **4. There is no `.socket` / `.timer` / `.path` unit.** Those capabilities
-exist, but as directives on the service itself — socket activation, the
-`cron-calendar` / `cron-interval` family, path activation. One file per
-service, always. (A systemd unit's own `foo.socket` is read with
-`foo.service`, and becomes its `socket-listen`; see below.)
+exist, but as directives on the service itself — socket activation,
+`start-on-calendar` (a timer's `OnCalendar=`: the service is started at
+those times, with its own sandbox) and the `cron-*` family (a command
+run beside a service), path activation. One file per service, always.
+(A systemd unit's own `foo.socket` is read with `foo.service`, and
+becomes its `socket-listen`; see below.)
 
 **5. A service can be running without being "enabled".** slinit
 distinguishes *marked active* (something or someone asked for it
@@ -158,10 +160,10 @@ no dependency: the other service need not be installed, and
 `slinit-check` warns about a name that resolves to nothing.
 
 Directives that *do* carry over include the `Protect*` / `Restrict*`
-cluster, `PrivateTmp`, `ReadOnlyPaths` and the other sandbox paths,
+cluster, `PrivateTmp`, `PrivateDevices`, `ReadOnlyPaths` and the other sandbox paths,
 `ProtectProc`, `PrivateNetwork`, `CapabilityBoundingSet`,
 `AmbientCapabilities`, `SystemCallFilter`, `RuntimeDirectory` and its
-siblings, `Nice`, `OOMScoreAdjust`, `User`/`Group`, `EnvironmentFile`,
+siblings, `Nice`, `OOMScoreAdjust`, `User`/`Group`, `Environment`, `EnvironmentFile`,
 `PIDFile`, `Restart`, and the timeouts.
 
 When a unit is loaded live rather than converted, those same notes go to
